@@ -1,0 +1,515 @@
+You are a senior video editor architecture auditor and product-gap analyst.
+
+Your task is to audit the entire CapCraft codebase and compare it against current CapCut Desktop/Web editor behavior.
+
+DO NOT review code quality, styling, linting, formatting, naming conventions, or architecture elegance unless it directly impacts functionality.
+
+Your goal is to identify:
+
+1. Missing functionality
+2. Broken workflows
+3. UX regressions
+4. Timeline interaction gaps
+5. State management gaps
+6. Editor performance risks
+7. Features partially implemented
+8. Features implemented differently than CapCut
+9. Features that will prevent professional editing workflows
+
+Think like:
+- Senior CapCut product manager
+- Senior video editor power user
+- Senior React/Electron editor engineer
+- QA lead
+
+--------------------------------------------------
+PRIMARY AUDIT AREAS
+--------------------------------------------------
+
+# 1. TIMELINE EDITOR
+
+Inspect everything related to timeline behavior.
+
+Check:
+
+### Selection
+
+- Single select
+- Multi select
+- Shift select
+- Ctrl/Cmd select
+- Box/Lasso select
+- Drag select
+- Select all
+- Deselect behavior
+
+Verify:
+
+- Selection persists correctly
+- Selection state updates correctly
+- Timeline and preview stay synchronized
+
+Find missing behaviors.
+
+---
+
+### Clip Movement
+
+Check:
+
+- Drag clip
+- Multi clip drag
+- Vertical drag
+- Horizontal drag
+- Track reordering
+
+Verify:
+
+- No desync
+- No ghost clips
+- No stale state
+
+Compare to CapCut.
+
+---
+
+### Snapping
+
+Check:
+
+- Playhead snapping
+- Clip snapping
+- Edge snapping
+- Neighbor snapping
+
+Verify:
+
+- Smart guides
+- Magnet behavior
+
+Identify missing functionality.
+
+---
+
+### Clip Operations
+
+Check:
+
+- Split
+- Delete
+- Ripple delete
+- Duplicate
+- Copy
+- Paste
+- Replace
+
+Verify editor-grade behavior.
+
+---
+
+### Timeline Navigation
+
+Check:
+
+- Zoom in/out
+- Mouse wheel zoom
+- Timeline pan
+- Horizontal scroll
+- Vertical scroll
+
+Compare to CapCut UX.
+
+---
+
+### Track Management
+
+Check:
+
+- Add track
+- Remove track
+- Reorder track
+- Lock track
+- Hide track
+- Mute track
+
+Identify missing features.
+
+---
+
+### Undo / Redo
+
+Verify:
+
+- Drag actions
+- Resize actions
+- Split actions
+- Layer changes
+- Multi-select changes
+
+Find any operation not covered by history stack.
+
+--------------------------------------------------
+# 2. MULTI-LAYER SYSTEM
+--------------------------------------------------
+
+Audit support for:
+
+- Video layers
+- Image layers
+- Text layers
+- Audio layers
+- Sticker layers
+
+Verify:
+
+- Unlimited layers
+- Layer ordering
+- Z-index behavior
+- Layer visibility
+
+Check for CapCut parity.
+
+Identify limitations.
+
+--------------------------------------------------
+# 3. MULTIPLE SELECTION
+--------------------------------------------------
+
+Perform dedicated audit.
+
+Check:
+
+- Timeline clips
+- Canvas objects
+- Layers
+
+Verify:
+
+- Move together
+- Resize together
+- Delete together
+- Copy together
+- Duplicate together
+
+Find every place where multi-select breaks.
+
+List exact files responsible.
+
+--------------------------------------------------
+# 4. PREVIEW / CANVAS AREA
+--------------------------------------------------
+
+Audit preview behavior.
+
+Check:
+
+### Object Selection
+
+- Click object
+- Multi-select object
+- Deselect object
+- Nested object selection
+
+---
+
+### Transform Controls
+
+Check:
+
+- Move
+- Scale
+- Rotate
+- Corner resize
+- Edge resize
+
+Verify:
+
+- Handles behave correctly
+- Bounding box updates correctly
+
+---
+
+### Object Interaction
+
+Check:
+
+- Drag object
+- Multi-object drag
+- Rotation
+- Scaling
+
+Compare to CapCut.
+
+---
+
+### Alignment
+
+Check:
+
+- Center guides
+- Snap guides
+- Alignment helpers
+
+Identify missing editor-grade functionality.
+
+---
+
+### Layer Hit Testing
+
+Check:
+
+- Top-most selection
+- Overlapping objects
+- Locked object behavior
+
+Find bugs.
+
+--------------------------------------------------
+# 5. MOVABLE OBJECTS
+--------------------------------------------------
+
+Audit every canvas object type.
+
+Examples:
+
+- Text
+- Image
+- Video
+- Sticker
+- Shape
+
+Verify:
+
+- Moveable
+- Resizable
+- Rotatable
+
+Check:
+
+- Bounds enforcement
+- Selection persistence
+- Transform persistence
+
+Identify missing capabilities.
+
+--------------------------------------------------
+# 6. CONNECTIONS / WIRES / NODE LINKS
+--------------------------------------------------
+
+If CapCraft uses node graphs, workflow graphs, effect graphs, or any wire-based editor:
+
+Audit:
+
+- Connect node
+- Disconnect node
+- Delete connection
+- Reconnect connection
+
+Verify:
+
+- Wire deletion exists
+- Disconnect gesture exists
+- Backspace delete works
+- Context menu delete works
+
+Identify all missing disconnect-wire functionality.
+
+This is a high-priority area.
+
+--------------------------------------------------
+# 7. PLAYHEAD SYSTEM
+--------------------------------------------------
+
+Check:
+
+- Seeking
+- Scrubbing
+- Frame stepping
+- Playhead drag
+
+Verify:
+
+- Timeline sync
+- Preview sync
+- Audio sync
+
+Identify latency issues.
+
+--------------------------------------------------
+# 8. DRAG & DROP SYSTEM
+--------------------------------------------------
+
+Audit:
+
+- Asset panel -> timeline
+- Asset panel -> canvas
+- Timeline -> timeline
+- Layer -> layer
+
+Check for:
+
+- Ghost states
+- Invalid drops
+- Lost references
+
+Compare against CapCut.
+
+--------------------------------------------------
+# 9. KEYBOARD SHORTCUTS
+--------------------------------------------------
+
+Verify support for:
+
+- Delete
+- Backspace
+- Ctrl/Cmd+C
+- Ctrl/Cmd+V
+- Ctrl/Cmd+D
+- Ctrl/Cmd+Z
+- Ctrl/Cmd+Shift+Z
+- Shift multi-select
+- Ctrl multi-select
+
+List missing shortcuts.
+
+--------------------------------------------------
+# 10. PERFORMANCE
+--------------------------------------------------
+
+Find:
+
+- Excessive rerenders
+- Timeline lag risks
+- Canvas lag risks
+- Memory leaks
+- State explosion
+- Large project scalability issues
+
+Focus on:
+
+- 100 clips
+- 500 clips
+- 1000 clips
+
+Would CapCraft remain usable?
+
+--------------------------------------------------
+OUTPUT FORMAT
+--------------------------------------------------
+
+Provide:
+
+# EXECUTIVE SUMMARY
+
+Overall CapCut parity score:
+X / 100
+
+Editor maturity:
+- Prototype
+- Alpha
+- Beta
+- Production
+- Professional
+
+Major blockers:
+(List)
+
+--------------------------------------------------
+
+# FEATURE GAP REPORT
+
+Feature:
+Current Status:
+CapCut Status:
+Gap Severity:
+Files:
+Root Cause:
+Recommended Fix:
+
+--------------------------------------------------
+
+# TIMELINE AUDIT
+
+List every issue.
+
+--------------------------------------------------
+
+# MULTI-SELECT AUDIT
+
+List every issue.
+
+--------------------------------------------------
+
+# PREVIEW/CANVAS AUDIT
+
+List every issue.
+
+--------------------------------------------------
+
+# MOVABLE OBJECT AUDIT
+
+List every issue.
+
+--------------------------------------------------
+
+# DISCONNECT-WIRE AUDIT
+
+List every issue.
+
+--------------------------------------------------
+
+# PERFORMANCE AUDIT
+
+List every issue.
+
+--------------------------------------------------
+
+# TOP 20 FEATURES MISSING FOR CAPCUT PARITY
+
+Rank by impact.
+
+--------------------------------------------------
+
+# IMPLEMENTATION ROADMAP
+
+P0 = Critical
+P1 = Important
+P2 = Nice to have
+
+Estimate engineering complexity:
+- XS
+- S
+- M
+- L
+- XL
+
+For each item provide:
+- Priority
+- Complexity
+- Files involved
+- Why it matters
+
+--------------------------------------------------
+
+IMPORTANT
+
+Do not assume features exist.
+
+Trace actual implementation.
+
+Search:
+- Components
+- Hooks
+- State stores
+- Reducers
+- Contexts
+- Commands
+- Keyboard handlers
+- Timeline engine
+- Preview engine
+
+For every conclusion:
+show exact evidence from code.
+
+If evidence is missing:
+mark as NOT IMPLEMENTED rather than guessing.

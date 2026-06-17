@@ -1,0 +1,35 @@
+# Dependencies
+node_modules/
+package-lock.json
+
+# Build outputs
+out/
+build/
+dist/
+
+# Environment
+.env
+.env.local
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+
+# Binaries (large files)
+resources/bin/*.exe
+resources/bin/*.dll
+models/*.bin
+models-test/*.bin
+
+# Test files
+test_file/*
+*.mp4
+*.wav
+
+# Logs
+*.log
+npm-debug.log*

@@ -1,0 +1,358 @@
+/* ==========================================================================
+   Capcraft Design System — Dark Editor Theme
+   CSS custom properties for consistent visual hierarchy
+   ========================================================================== */
+
+:root {
+  /* Background ladder — 4-stop surface elevation */
+  --bg0: #0f0f0f;        /* App shell background */
+  --bg1: #161616;        /* Panels (MediaPanel, Inspector, Timeline header) */
+  --bg2: #1e1e1e;        /* Inputs, clip thumbnails, dropdowns */
+  --bg3: #252525;        /* Hover states */
+  --bg4: #2e2e2e;        /* Active/selected states */
+
+  /* Borders — always hairline, never solid white */
+  --border: rgba(255, 255, 255, 0.08);
+  --border2: rgba(255, 255, 255, 0.14);
+
+  /* Text hierarchy */
+  --text1: #f0f0f0;      /* Primary text */
+  --text2: #999999;      /* Secondary / labels */
+  --text3: #555555;      /* Muted / disabled */
+
+  /* Track & clip color coding */
+  --accent: #4f7fff;     /* Video clips, active tabs, focus rings */
+  --accent2: #7c5cfc;    /* Caption track */
+  --green: #2ecc71;      /* Audio tracks */
+  --amber: #f59e0b;      /* SFX track */
+  --red: #ef4444;        /* Playhead, error states */
+
+  /* Font stacks */
+  --font-sans: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto,
+    'Helvetica Neue', Arial, sans-serif;
+  --font-mono: 'SF Mono', 'Monaco', 'Inconsolata', 'Roboto Mono', 'Courier New',
+    monospace;
+}
+
+/* ==========================================================================
+   Global scrollbar override — 4px, hidden until hover
+   ========================================================================== */
+
+::-webkit-scrollbar {
+  width: 4px;
+  height: 4px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--bg4);
+  border-radius: 2px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--border2);
+}
+
+/* Hide scrollbar until hover (container query) */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--bg4) transparent;
+}
+
+/* ==========================================================================
+   Typography scale — strict sizing for visual hierarchy
+   ========================================================================== */
+
+/* Panel section titles */
+.section-title {
+  font-size: 10px;
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--text3);
+}
+
+/* Clip labels on timeline */
+.clip-label {
+  font-size: 9px;
+  font-weight: 400;
+  color: var(--text1);
+}
+
+/* Inspector labels */
+.inspector-label {
+  font-size: 10px;
+  font-weight: 400;
+  color: var(--text2);
+}
+
+/* Inspector values */
+.inspector-value {
+  font-size: 10px;
+  font-weight: 400;
+  font-family: var(--font-mono);
+  color: var(--text1);
+}
+
+/* Timecodes */
+.timecode {
+  font-size: 10px;
+  font-family: var(--font-mono);
+  color: var(--text2);
+}
+
+/* Tab labels */
+.tab-label {
+  font-size: 10px;
+  font-weight: 400;
+  color: var(--text3);
+  transition: color 0.15s;
+}
+
+.tab-label.active {
+  color: var(--accent);
+}
+
+/* Toolbar buttons */
+.toolbar-btn {
+  font-size: 11px;
+  font-weight: 400;
+  color: var(--text2);
+  padding: 4px 8px;
+  border-radius: 4px;
+  transition: all 0.15s;
+}
+
+.toolbar-btn:hover {
+  color: var(--text1);
+  background: var(--bg3);
+}
+
+/* ==========================================================================
+   Border conventions — always 0.5px hairline
+   ========================================================================== */
+
+.panel-border {
+  border: 0.5px solid var(--border);
+}
+
+.panel-border-emphasis {
+  border: 0.5px solid var(--border2);
+}
+
+/* Active clip selection — colored border at 60% opacity */
+.clip-selected {
+  border: 1px solid color-mix(in srgb, var(--accent) 60%, transparent);
+}
+
+.clip-selected-audio {
+  border: 1px solid color-mix(in srgb, var(--green) 60%, transparent);
+}
+
+.clip-selected-caption {
+  border: 1px solid color-mix(in srgb, var(--accent2) 60%, transparent);
+}
+
+/* ==========================================================================
+   Resize handles — transparent until hover
+   ========================================================================== */
+
+.resize-handle {
+  background: transparent;
+  flex-shrink: 0;
+  transition: background 0.15s;
+}
+
+.resize-handle:hover {
+  background: var(--accent);
+}
+
+.resize-handle-vertical {
+  width: 4px;
+  cursor: col-resize;
+}
+
+.resize-handle-horizontal {
+  height: 4px;
+  cursor: row-resize;
+}
+
+/* ==========================================================================
+   Common component styles
+   ========================================================================== */
+
+/* Panel base */
+.panel {
+  background: var(--bg1);
+  border: 0.5px solid var(--border);
+}
+
+/* Input fields */
+.input-field {
+  background: var(--bg2);
+  border: 0.5px solid var(--border);
+  border-radius: 4px;
+  color: var(--text1);
+  font-size: 10px;
+  padding: 5px 8px;
+  outline: none;
+  transition: border-color 0.15s;
+}
+
+.input-field:focus {
+  border-color: var(--accent);
+}
+
+/* Buttons */
+.btn {
+  border: none;
+  border-radius: 4px;
+  font-size: 11px;
+  font-weight: 500;
+  padding: 5px 14px;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.btn-primary {
+  background: var(--accent);
+  color: #fff;
+}
+
+.btn-primary:hover {
+  background: color-mix(in srgb, var(--accent) 85%, #fff);
+}
+
+.btn-secondary {
+  background: var(--bg3);
+  color: var(--text1);
+  border: 0.5px solid var(--border);
+}
+
+.btn-secondary:hover {
+  background: var(--bg4);
+}
+
+/* Slider (range input) */
+.slider {
+  -webkit-appearance: none;
+  width: 100%;
+  height: 3px;
+  border-radius: 2px;
+  background: var(--bg4);
+  outline: none;
+  margin: 2px 0 6px;
+}
+
+.slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--accent);
+  cursor: pointer;
+}
+
+.slider::-webkit-slider-thumb:hover {
+  background: color-mix(in srgb, var(--accent) 85%, #fff);
+}
+
+/* Separator */
+.separator {
+  width: 0.5px;
+  height: 16px;
+  background: var(--border);
+  margin: 0 6px;
+}
+
+.separator-horizontal {
+  width: 100%;
+  height: 0.5px;
+  background: var(--border);
+}
+
+/* ==========================================================================
+   Animation keyframes
+   ========================================================================== */
+
+@keyframes fade-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes slide-in-right {
+  from {
+    transform: translateX(100%);
+  }
+  to {
+    transform: translateX(0);
+  }
+}
+
+@keyframes progress-fill {
+  from {
+    width: 0%;
+  }
+  to {
+    width: 100%;
+  }
+}
+
+/* ==========================================================================
+   Utility classes
+   ========================================================================== */
+
+.truncate-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mono {
+  font-family: var(--font-mono);
+}
+
+.uppercase-tracking {
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+/* ==========================================================================
+   Export drawer — slides in from right
+   ========================================================================== */
+
+.export-drawer {
+  position: absolute;
+  right: 0;
+  top: 38px;
+  bottom: 0;
+  width: 280px;
+  background: var(--bg1);
+  border-left: 0.5px solid var(--border);
+  transform: translateX(100%);
+  transition: transform 0.2s ease;
+  z-index: 100;
+  overflow-y: auto;
+}
+
+.export-drawer.open {
+  transform: translateX(0);
+}
+
+/* ==========================================================================
+   Empty states — minimal, single muted text line
+   ========================================================================== */
+
+.empty-state {
+  font-size: 9px;
+  color: var(--text3);
+  text-align: center;
+  padding: 20px;
+}

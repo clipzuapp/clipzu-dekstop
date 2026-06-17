@@ -1,0 +1,269 @@
+import React from 'react'
+import { useShallow } from 'zustand/react/shallow'
+import { useExport, EXPORT_PRESETS } from '../../store/useExport'
+import type { PresetKey } from '../../store/useExport'
+import { useTimeline, DEFAULT_TRANSFORM } from '../../store/useTimeline'
+import { useCaption } from '../../store/useCaption'
+import { useToast } from '../../store/useToast'
+import { formatDuration } from '../../utils/format'
+
+/**
+ * ExportDialog - Modal for export configuration and queue management
+ */
+export function ExportDialog({ onClose }: { onClose: () => void }): JSX.Element {
+  const {
+    preset, setPreset,
+    upscaleEnabled, setUpscaleEnabled,
+    upscaleAlgorithm, setUpscaleAlgorithm,
+    codec, setCodec,
+    qualityPreset, setQualityPreset,
+    queue, startExport, cancelExport, clearQueue
+  } = useExport(useShallow((s) => ({
+    preset: s.preset,
+    setPreset: s.setPreset,
+    upscaleEnabled: s.upscaleEnabled,
+    setUpscaleEnabled: s.setUpscaleEnabled,
+    upscaleAlgorithm: s.upscaleAlgorithm,
+    setUpscaleAlgorithm: s.setUpscaleAlgorithm,
+    codec: s.codec,
+    setCodec: s.setCodec,
+    qualityPreset: s.qualityPreset,
+    setQualityPreset: s.setQualityPreset,
+    queue: s.queue,
+    startExport: s.startExport,
+    cancelExport: s.cancelExport,
+    clearQueue: s.clearQueue
+  })))
+
+  const { clips, audioTracks, textClips, totalDurationMs } = useTimeline(useShallow((s) => ({
+    clips: s.clips,
+    audioTracks: s.audioTracks,
+    textClips: s.textClips,
+    totalDurationMs: s.totalDurationMs
+  })))
+
+  const captionStyle = useCaption((s) => s.activeStyle)
+
+  const [isExporting, setIsExporting] = React.useState(false)
+
+  const handleExport = async (): Promise<void> => {
+    if (clips.length === 0) {
+      useToast.getState().warning('No clips in timeline to export')
+      return
+    }
+
+    const outputPath = await window.electron.ipcRenderer.invoke(
+      'ffmpeg:openSaveDialog',
+      `export_${Date.now()}.mp4`
+    )
+    if (!outputPath) return
+
+    setIsExporting(true)
+    try {
+      // Create temp SRT if captions exist
+      let srtPath: string | null = null
+      if (textClips.length > 0) {
+        srtPath = await window.electron.ipcRenderer.invoke('project:createTempSRT', textClips)
+      }
+
+      await startExport({
+        clipPaths: clips.map((c) => c.path),
+        clipTrackIndices: clips.map((c) => c.trackIndex),
+        clipTransforms: clips.map((c) => c.transform ?? DEFAULT_TRANSFORM),
+        audioTracks: audioTracks
+          .filter((t) => !t.muted)
+          .map((t) => ({ path: t.path, startMs: t.startMs, volume: t.volume })),
+        srtPath,
+        captionStyle: textClips.length > 0
+          ? {
+              fontFamily: captionStyle.fontFamily,
+              fontSize: captionStyle.fontSize,
+              fontColor: captionStyle.color,
+              bgColor: captionStyle.bgColor,
+              bgOpacity: captionStyle.bgOpacity
+            }
+          : null,
+        outputPath,
+        totalDurationMs
+      })
+
+      // Also export SRT sidecar
+      if (textClips.length > 0) {
+        await window.electron.ipcRenderer.invoke(
+          'project:exportSRT',
+          textClips,
+          outputPath
+        )
+      }
+
+      useToast.getState().success('Export complete')
+    } catch (err) {
+      console.error('Export failed:', err)
+      useToast.getState().error(`Export failed: ${(err as Error).message}`)
+    } finally {
+      setIsExporting(false)
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50">
+      <div className="bg-editor-panel border border-editor-border rounded-xl shadow-modal w-[520px] max-h-[80vh] overflow-y-auto">
+        {/* Header */}
+        <div className="flex items-center justify-between p-4 border-b border-editor-border">
+          <h2 className="text-lg font-semibold">Export</h2>
+          <button className="text-gray-500 hover:text-gray-300" onClick={onClose}>
+            &times;
+          </button>
+        </div>
+
+        {/* Body */}
+        <div className="p-4 space-y-4">
+          {/* Preset Picker */}
+          <div className="space-y-1">
+            <label className="text-[10px] text-gray-500 uppercase tracking-wider">Preset</label>
+            <select
+              value={preset}
+              onChange={(e) => setPreset(e.target.value as PresetKey)}
+              className="input w-full"
+            >
+              {Object.entries(EXPORT_PRESETS).map(([key, val]) => (
+                <option key={key} value={key}>
+                  {val.label}
+                </option>
+              ))}
+            </select>
+            {preset !== 'custom' && (
+              <p className="text-[10px] text-gray-500">
+                {EXPORT_PRESETS[preset].width}x{EXPORT_PRESETS[preset].height}
+              </p>
+            )}
+          </div>
+
+          {/* Codec */}
+          <div className="space-y-1">
+            <label className="text-[10px] text-gray-500 uppercase tracking-wider">Codec</label>
+            <div className="flex gap-1">
+              {(['h264', 'h265', 'prores', 'vp9'] as const).map((c) => (
+                <button
+                  key={c}
+                  className={`btn flex-1 text-xs ${codec === c ? 'btn-primary' : 'btn-secondary'}`}
+                  onClick={() => setCodec(c)}
+                >
+                  {c === 'h264' ? 'H.264' : c === 'h265' ? 'H.265' : c === 'prores' ? 'ProRes' : 'VP9'}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {/* Quality */}
+          <div className="space-y-1">
+            <label className="text-[10px] text-gray-500 uppercase tracking-wider">Quality</label>
+            <div className="flex gap-1">
+              <button
+                className={`btn flex-1 text-xs ${qualityPreset === 'fast' ? 'btn-primary' : 'btn-secondary'}`}
+                onClick={() => setQualityPreset('fast')}
+              >
+                Fast (Social)
+              </button>
+              <button
+                className={`btn flex-1 text-xs ${qualityPreset === 'slow' ? 'btn-primary' : 'btn-secondary'}`}
+                onClick={() => setQualityPreset('slow')}
+              >
+                High Quality
+              </button>
+            </div>
+          </div>
+
+          {/* Upscale */}
+          <div className="space-y-1">
+            <div className="flex items-center gap-2">
+              <input
+                type="checkbox"
+                checked={upscaleEnabled}
+                onChange={(e) => setUpscaleEnabled(e.target.checked)}
+                className="accent-accent"
+              />
+              <label className="text-xs text-gray-300">4K Upscale (lanczos, CPU-only)</label>
+            </div>
+            {upscaleEnabled && (
+              <div className="flex gap-1 ml-6">
+                <button
+                  className={`btn text-xs ${upscaleAlgorithm === 'lanczos' ? 'btn-primary' : 'btn-secondary'}`}
+                  onClick={() => setUpscaleAlgorithm('lanczos')}
+                >
+                  Lanczos
+                </button>
+                <button
+                  className={`btn text-xs ${upscaleAlgorithm === 'bicubic' ? 'btn-primary' : 'btn-secondary'}`}
+                  onClick={() => setUpscaleAlgorithm('bicubic')}
+                >
+                  Bicubic
+                </button>
+              </div>
+            )}
+          </div>
+
+          {/* Info */}
+          <div className="p-2 bg-editor-surface rounded text-xs text-gray-400 space-y-1">
+            <p>Clips: {clips.length} | Audio: {audioTracks.length} | Captions: {textClips.length}</p>
+            <p>Duration: {formatDuration(totalDurationMs)}</p>
+          </div>
+
+          {/* Export Button */}
+          <button
+            className="btn btn-primary w-full py-2"
+            onClick={handleExport}
+            disabled={isExporting || clips.length === 0}
+          >
+            {isExporting ? 'Exporting...' : 'Start Export'}
+          </button>
+
+          {/* Queue */}
+          {queue.length > 0 && (
+            <div className="space-y-2">
+              <div className="flex items-center justify-between">
+                <h4 className="text-xs font-semibold text-gray-300">Queue</h4>
+                <button className="text-[10px] text-gray-500 hover:text-gray-300" onClick={clearQueue}>
+                  Clear completed
+                </button>
+              </div>
+              {queue.map((job) => (
+                <div key={job.id} className="p-2 bg-editor-surface rounded border border-editor-border">
+                  <div className="flex items-center justify-between mb-1">
+                    <span className="text-[10px] text-gray-400 truncate">{job.outputPath}</span>
+                    <span className={`text-[10px] capitalize ${
+                      job.status === 'completed' ? 'text-success' :
+                      job.status === 'error' ? 'text-danger' :
+                      job.status === 'running' ? 'text-accent' : 'text-gray-500'
+                    }`}>
+                      {job.status}
+                    </span>
+                  </div>
+                  {job.status === 'running' && (
+                    <div className="flex items-center gap-2">
+                      <div className="flex-1 h-1.5 bg-editor-bg rounded overflow-hidden">
+                        <div
+                          className="h-full bg-accent transition-all"
+                          style={{ width: `${job.progress}%` }}
+                        />
+                      </div>
+                      <span className="text-[10px] text-gray-500">{Math.round(job.progress)}%</span>
+                      <button
+                        className="text-[10px] text-danger hover:text-danger-hover"
+                        onClick={() => cancelExport(job.id)}
+                      >
+                        Cancel
+                      </button>
+                    </div>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  )
+}
+
+export default ExportDialog

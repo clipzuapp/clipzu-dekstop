@@ -1,0 +1,17 @@
+**Iteration 1** — Diagnosing the current UI problems (rigid layout, no visual hierarchy, poor dark-mode contrast). **Iteration 2** — CapCut's design principles extracted and adapted. **Iteration 3** — Final production-grade mockup with panel-by-panel spec.
+
+Let's start with the layout architecture:Now the detailed UI spec — full dark editor mockup with all panels, controls, and visual hierarchy rules:Now the component-level spec your coding agent needs — colors, spacing, behavior rules:Here's the full blueprint summary your agent in Qoder can act on directly:
+
+---
+
+**Iteration result — 3 problems diagnosed, 3 solutions designed:**
+
+**Problem 1 — Rigid layout.** Fix: implement CSS `resize` handles between panels (drag divider between media/preview, preview/inspector, timeline/main). Store panel sizes in `localStorage` keyed to the project. Min/max constraints per panel as listed in the token card.
+
+**Problem 2 — Bad visual hierarchy.** The root issue is insufficient surface separation — if everything is the same background color, the eye can't tell panels apart. Fix: use the 4-stop bg ladder (`#0f0f0f → #161616 → #1e1e1e → #252525`). App shell = bg-0, panels = bg-1, inputs/clip thumbnails = bg-2, hover states = bg-3. Borders are `rgba(255,255,255,0.08)` — always hairlines, never solid white.
+
+**Problem 3 — Whisper feels slow.** The latency is real but the UX makes it feel worse because it blocks. Fix: stream caption segments into the UI as Whisper emits them (it already emits per-segment events), show progress inside the caption track (not a modal), and display estimated time remaining. The user can keep editing video while transcription runs.
+
+**Key CapCut patterns to copy exactly:** the caption strip beneath preview (horizontal scrolling pills, active one highlighted), the inspector panel that context-switches between caption styling and clip transform depending on selection, and the 4-track timeline color coding (blue video, green audio, amber SFX, purple captions).
+
+Hand this entire thread to your Qoder + Deepseek V4 Pro agent — the mockup, token card, and interaction rules are all it needs to make targeted CSS/component changes without touching the logic layer.

@@ -1,0 +1,96 @@
+
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { font-family: var(--font-sans); }
+.token-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; padding: 4px 0; }
+.token-card { background: var(--color-background-primary); border: 0.5px solid var(--color-border-tertiary); border-radius: var(--border-radius-lg); padding: 14px 16px; }
+.tc-title { font-size: 13px; font-weight: 500; color: var(--color-text-primary); margin-bottom: 10px; }
+.tc-row { display: flex; align-items: center; gap: 10px; margin-bottom: 7px; }
+.swatch { width: 20px; height: 20px; border-radius: 4px; flex-shrink: 0; }
+.tc-label { font-size: 11px; color: var(--color-text-secondary); flex: 1; }
+.tc-mono { font-size: 10px; font-family: var(--font-mono); color: var(--color-text-tertiary); }
+.rule-list { display: flex; flex-direction: column; gap: 8px; }
+.rule { display: flex; gap: 8px; align-items: flex-start; }
+.rule-badge { font-size: 9px; font-weight: 500; padding: 2px 6px; border-radius: 3px; flex-shrink: 0; margin-top: 1px; }
+.rb-do { background: var(--color-background-success); color: var(--color-text-success); }
+.rb-dont { background: var(--color-background-danger); color: var(--color-text-danger); }
+.rule-text { font-size: 11px; color: var(--color-text-secondary); line-height: 1.5; }
+.full-card { background: var(--color-background-primary); border: 0.5px solid var(--color-border-tertiary); border-radius: var(--border-radius-lg); padding: 14px 16px; margin-bottom: 12px; }
+.prop-table { width: 100%; border-collapse: collapse; font-size: 11px; }
+.prop-table th { text-align: left; font-size: 10px; font-weight: 500; color: var(--color-text-tertiary); padding: 0 0 6px; border-bottom: 0.5px solid var(--color-border-tertiary); }
+.prop-table td { padding: 5px 0; border-bottom: 0.5px solid var(--color-border-tertiary); color: var(--color-text-secondary); vertical-align: top; }
+.prop-table td:first-child { color: var(--color-text-primary); font-weight: 500; padding-right: 12px; width: 120px; }
+.prop-table td:last-child { font-family: var(--font-mono); font-size: 10px; color: var(--color-text-tertiary); padding-left: 8px; }
+.prop-table tr:last-child td { border-bottom: none; }
+</style>
+
+<div class="full-card">
+  <div class="tc-title">Color system — dark editor theme</div>
+  <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-top:4px">
+    <div class="tc-row"><div class="swatch" style="background:#0f0f0f;border:0.5px solid #333"></div><span class="tc-label">bg-0 — app shell</span><span class="tc-mono">#0f0f0f</span></div>
+    <div class="tc-row"><div class="swatch" style="background:#161616;border:0.5px solid #333"></div><span class="tc-label">bg-1 — panels</span><span class="tc-mono">#161616</span></div>
+    <div class="tc-row"><div class="swatch" style="background:#1e1e1e;border:0.5px solid #333"></div><span class="tc-label">bg-2 — inputs</span><span class="tc-mono">#1e1e1e</span></div>
+    <div class="tc-row"><div class="swatch" style="background:#252525;border:0.5px solid #333"></div><span class="tc-label">bg-3 — hover state</span><span class="tc-mono">#252525</span></div>
+    <div class="tc-row"><div class="swatch" style="background:#4f7fff"></div><span class="tc-label">accent — video clips</span><span class="tc-mono">#4f7fff</span></div>
+    <div class="tc-row"><div class="swatch" style="background:#7c5cfc"></div><span class="tc-label">caption track</span><span class="tc-mono">#7c5cfc</span></div>
+    <div class="tc-row"><div class="swatch" style="background:#2ecc71"></div><span class="tc-label">audio track</span><span class="tc-mono">#2ecc71</span></div>
+    <div class="tc-row"><div class="swatch" style="background:#f59e0b"></div><span class="tc-label">sfx track</span><span class="tc-mono">#f59e0b</span></div>
+  </div>
+</div>
+
+<div class="token-grid">
+  <div class="token-card">
+    <div class="tc-title">Typography scale</div>
+    <table class="prop-table">
+      <tr><th>Use</th><th>Size / weight</th><th>Color</th></tr>
+      <tr><td>Panel section title</td><td>10px / 500, uppercase, 0.5px tracking</td><td>#555 (text-3)</td></tr>
+      <tr><td>Clip labels on timeline</td><td>9px / 400</td><td>#f0f0f0</td></tr>
+      <tr><td>Inspector labels</td><td>10px / 400</td><td>#999</td></tr>
+      <tr><td>Inspector values</td><td>10px / 400, mono</td><td>#f0f0f0</td></tr>
+      <tr><td>Timecode</td><td>9–10px / 400, mono</td><td>#999</td></tr>
+      <tr><td>Tab labels</td><td>10px / 400</td><td>#555 inactive, #4f7fff active</td></tr>
+      <tr><td>Toolbar buttons</td><td>11px / 400</td><td>#999</td></tr>
+    </table>
+  </div>
+
+  <div class="token-card">
+    <div class="tc-title">Spacing + layout</div>
+    <table class="prop-table">
+      <tr><th>Element</th><th>Value</th><th>Rule</th></tr>
+      <tr><td>Toolbar height</td><td>38px</td><td>fixed</td></tr>
+      <tr><td>Panel borders</td><td>0.5px solid rgba(255,255,255,.08)</td><td>always hairline</td></tr>
+      <tr><td>Media panel width</td><td>140px default</td><td>resizable 100–220px</td></tr>
+      <tr><td>Inspector width</td><td>162px default</td><td>resizable 140–240px</td></tr>
+      <tr><td>Timeline height</td><td>142px default</td><td>resizable 100–300px</td></tr>
+      <tr><td>Track heights</td><td>Video: 30px · Audio/SFX/Cap: 24px</td><td>fixed per type</td></tr>
+      <tr><td>Clip border-radius</td><td>3px</td><td>subtle, not pill</td></tr>
+      <tr><td>Panel section padding</td><td>8px 10px</td><td>tight but breathable</td></tr>
+    </table>
+  </div>
+</div>
+
+<div class="full-card" style="margin-top:12px">
+  <div class="tc-title">Interaction rules — what to fix in Qoder</div>
+  <div class="rule-list">
+    <div class="rule"><span class="rule-badge rb-do">DO</span><span class="rule-text">Active timeline clip gets 1px colored border (same hue as track, 60% opacity) + slight brightness boost — never a background color change that loses waveform readability</span></div>
+    <div class="rule"><span class="rule-badge rb-do">DO</span><span class="rule-text">Caption strip auto-scrolls horizontally to keep active caption pill centered — active pill gets accent border + tinted bg</span></div>
+    <div class="rule"><span class="rule-badge rb-do">DO</span><span class="rule-text">Inspector context switches instantly when selection changes — use CSS transitions on opacity only (150ms), never layout shift</span></div>
+    <div class="rule"><span class="rule-badge rb-do">DO</span><span class="rule-text">Whisper status lives in the toolbar as a persistent indicator (green dot = ready, amber = transcribing with progress %, red = error)</span></div>
+    <div class="rule"><span class="rule-badge rb-do">DO</span><span class="rule-text">All sliders in inspector update values on input (live preview), debounce actual store writes by 50ms</span></div>
+    <div class="rule"><span class="rule-badge rb-dont">DON'T</span><span class="rule-text">Never use modal dialogs mid-edit — export dialog should be a side drawer or bottom sheet, not a blocking overlay that hides the canvas</span></div>
+    <div class="rule"><span class="rule-badge rb-dont">DON'T</span><span class="rule-text">Don't show empty states with big centered illustrations — use a single muted text line ("Drag clips here" at 11px) in the timeline empty state</span></div>
+    <div class="rule"><span class="rule-badge rb-dont">DON'T</span><span class="rule-text">Never re-render the entire inspector on every playhead tick — tie inspector only to selection state, not playback state</span></div>
+    <div class="rule"><span class="rule-badge rb-dont">DON'T</span><span class="rule-text">Don't use system default scrollbars in panels — style them: 4px wide, bg-3 thumb, transparent track, hidden until hover</span></div>
+    <div class="rule"><span class="rule-badge rb-dont">DON'T</span><span class="rule-text">Don't block the UI thread during Whisper transcription — show a non-blocking progress bar in the caption track area, app stays responsive</span></div>
+  </div>
+</div>
+
+<div class="full-card">
+  <div class="tc-title">Whisper UX — making it feel fast even when it's slow</div>
+  <div class="rule-list">
+    <div class="rule"><span class="rule-badge rb-do">DO</span><span class="rule-text">Show "Transcribing… 34%" with a thin progress bar inside the caption track — not a modal spinner that blocks editing</span></div>
+    <div class="rule"><span class="rule-badge rb-do">DO</span><span class="rule-text">Stream caption pills into the strip as each segment completes (nodejs-whisper emits segments) — don't wait for the whole transcription to finish</span></div>
+    <div class="rule"><span class="rule-badge rb-do">DO</span><span class="rule-text">Show estimated time remaining ("~40s left") derived from realtime factor × remaining audio duration</span></div>
+    <div class="rule"><span class="rule-badge rb-dont">DON'T</span><span class="rule-text">Never run Whisper on the main thread — always in worker_threads. If app freezes during transcription, this is the cause</span></div>
+  </div>
+</div>
