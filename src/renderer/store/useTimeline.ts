@@ -128,6 +128,8 @@ export interface TextClip {
   text: string
   style?: CaptionStyle
   words?: Array<{ word: string; startMs: number; endMs: number }>
+  /** 'whisper' = from token-level JSON timestamps, 'synthetic' = character-count estimate */
+  wordTimestampsSource?: 'whisper' | 'synthetic'
 
   // ---- Ownership metadata ----
   /** Unique ID of the source that generated this caption (clip id, track id, 'timeline', or undefined for imports) */
@@ -711,9 +713,27 @@ export const useTimeline = create<TimelineState & TimelineActions>()(
       set((state) => {
         const clip = state.textClips.find((c) => c.id === id)
         if (clip) {
+          const oldStartMs = clip.startMs
+          const oldDuration = clip.durationMs
           Object.assign(clip, updates)
           if (updates.startMs !== undefined || updates.durationMs !== undefined) {
             clip.endMs = clip.startMs + clip.durationMs
+          }
+          // When duration shrinks (not a move), clip words to new bounds
+          if (clip.words && updates.durationMs !== undefined && updates.durationMs < oldDuration) {
+            const startShift = clip.startMs - oldStartMs
+            if (startShift > 0) {
+              // Left trim: remove words before trimmed region, shift remaining left
+              clip.words = clip.words
+                .filter((w) => w.endMs > startShift)
+                .map((w) => ({ ...w, startMs: w.startMs - startShift, endMs: w.endMs - startShift }))
+            }
+            // Right trim (or combined): remove words past new duration
+            clip.words = clip.words.filter((w) => w.startMs < clip.durationMs)
+            if (clip.words.length > 0) {
+              const last = clip.words[clip.words.length - 1]
+              if (last.endMs > clip.durationMs) last.endMs = clip.durationMs
+            }
           }
         }
       })
@@ -723,9 +743,27 @@ export const useTimeline = create<TimelineState & TimelineActions>()(
       set((state) => {
         const clip = state.textClips.find((c) => c.id === id)
         if (clip) {
+          const oldStartMs = clip.startMs
+          const oldDuration = clip.durationMs
           Object.assign(clip, updates)
           if (updates.startMs !== undefined || updates.durationMs !== undefined) {
             clip.endMs = clip.startMs + clip.durationMs
+          }
+          // When duration shrinks (not a move), clip words to new bounds
+          if (clip.words && updates.durationMs !== undefined && updates.durationMs < oldDuration) {
+            const startShift = clip.startMs - oldStartMs
+            if (startShift > 0) {
+              // Left trim: remove words before trimmed region, shift remaining left
+              clip.words = clip.words
+                .filter((w) => w.endMs > startShift)
+                .map((w) => ({ ...w, startMs: w.startMs - startShift, endMs: w.endMs - startShift }))
+            }
+            // Right trim (or combined): remove words past new duration
+            clip.words = clip.words.filter((w) => w.startMs < clip.durationMs)
+            if (clip.words.length > 0) {
+              const last = clip.words[clip.words.length - 1]
+              if (last.endMs > clip.durationMs) last.endMs = clip.durationMs
+            }
           }
         }
       })
@@ -797,23 +835,31 @@ export const useTimeline = create<TimelineState & TimelineActions>()(
         if (idx < 0) return
         const clip = state.textClips[idx]
 
-        // Redistribute words by timing relative to the clip's own startMs.
-        // Word timestamps are in the same absolute time base as clip.startMs/endMs.
-        // Filter: word endMs <= splitAtMs → left half; endMs > splitAtMs → right half.
-        // Right-half words are offset so they become relative to the new clip's startMs.
+        // Word timestamps are clip-relative (0-based from clip.startMs).
+        // Convert absolute split point to clip-relative for comparison.
+        const relativeSplit = splitAtMs - clip.startMs
+
         let firstWords = clip.words
         let secondWords = clip.words
         if (clip.words && clip.words.length > 0) {
-          firstWords = clip.words.filter((w) => w.endMs <= splitAtMs)
+          firstWords = clip.words.filter((w) => w.endMs <= relativeSplit)
           secondWords = clip.words
-            .filter((w) => w.endMs > splitAtMs)
+            .filter((w) => w.endMs > relativeSplit)
             .map((w) => ({
               ...w,
               // Normalize to be relative to the second clip's startMs
-              startMs: w.startMs - splitAtMs,
-              endMs: w.endMs - splitAtMs
+              startMs: w.startMs - relativeSplit,
+              endMs: w.endMs - relativeSplit
             }))
         }
+
+        // Redistribute text to match redistributed words
+        const firstText = firstWords && firstWords.length > 0
+          ? firstWords.map((w) => w.word).join(' ')
+          : clip.text
+        const secondText = secondWords && secondWords.length > 0
+          ? secondWords.map((w) => w.word).join(' ')
+          : clip.text
 
         const first: TextClip = {
           id: `${clip.id}_a`,
@@ -821,9 +867,10 @@ export const useTimeline = create<TimelineState & TimelineActions>()(
           durationMs: splitAtMs - clip.startMs,
           endMs: splitAtMs,
           trackIndex: clip.trackIndex,
-          text: clip.text,
+          text: firstText,
           style: clip.style ? { ...clip.style } : undefined,
           words: firstWords,
+          wordTimestampsSource: clip.wordTimestampsSource,
           sourceId: clip.sourceId,
           sourceType: clip.sourceType,
           transcriptionJobId: clip.transcriptionJobId
@@ -834,9 +881,10 @@ export const useTimeline = create<TimelineState & TimelineActions>()(
           durationMs: clip.endMs - splitAtMs,
           endMs: clip.endMs,
           trackIndex: clip.trackIndex,
-          text: clip.text,
+          text: secondText,
           style: clip.style ? { ...clip.style } : undefined,
           words: secondWords,
+          wordTimestampsSource: clip.wordTimestampsSource,
           sourceId: clip.sourceId,
           sourceType: clip.sourceType,
           transcriptionJobId: clip.transcriptionJobId

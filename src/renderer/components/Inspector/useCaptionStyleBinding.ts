@@ -27,13 +27,14 @@ export function useCaptionStyleBinding(): {
   const applyStyleToSelected = useCallback(
     (partial: Partial<CaptionStyle>) => {
       applyStyle(partial)
-      if (selectedTextClipId && selectedTextClip?.style) {
+      if (selectedTextClipId) {
+        const baseStyle = selectedTextClip?.style ?? activeStyle
         updateTextClipLive(selectedTextClipId, {
-          style: { ...selectedTextClip.style, ...partial }
+          style: { ...baseStyle, ...partial }
         })
       }
     },
-    [applyStyle, selectedTextClipId, selectedTextClip, updateTextClipLive]
+    [applyStyle, selectedTextClipId, selectedTextClip, activeStyle, updateTextClipLive]
   )
 
   return { effectiveStyle, applyStyleToSelected }

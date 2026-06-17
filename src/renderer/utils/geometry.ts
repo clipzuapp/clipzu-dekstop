@@ -63,6 +63,60 @@ export function measureTextWidthPx(text: string, fontFamily: string, fontSize: n
 }
 
 /**
+ * Wrap text into lines using the same algorithm as Preview canvas wrapText().
+ * Uses Canvas2D measureText for accuracy. Falls back to heuristic.
+ */
+export function wrapTextToLines(
+  text: string,
+  fontFamily: string,
+  fontSize: number,
+  fontWeight: number,
+  maxWidth: number
+): string[] {
+  const words = text.split(' ')
+  const lines: string[] = []
+  let currentLine = ''
+
+  for (const word of words) {
+    const testLine = currentLine ? `${currentLine} ${word}` : word
+    const w = measureTextWidthPx(testLine, fontFamily, fontSize, fontWeight)
+    if (w > maxWidth && currentLine) {
+      lines.push(currentLine)
+      currentLine = word
+    } else {
+      currentLine = testLine
+    }
+  }
+  if (currentLine) lines.push(currentLine)
+  return lines
+}
+
+/**
+ * Measure wrapped text block dimensions in pixels.
+ * Returns { width, height, lines } matching the canvas rendering.
+ */
+export function measureWrappedTextBlock(
+  text: string,
+  fontFamily: string,
+  fontSize: number,
+  fontWeight: number,
+  maxWidth: number
+): { width: number; height: number; lines: string[] } {
+  const lines = wrapTextToLines(text, fontFamily, fontSize, fontWeight, maxWidth)
+  if (lines.length === 0) return { width: 0, height: 0, lines: [] }
+  let maxLineWidth = 0
+  for (const line of lines) {
+    const w = measureTextWidthPx(line, fontFamily, fontSize, fontWeight)
+    if (w > maxLineWidth) maxLineWidth = w
+  }
+  return {
+    width: maxLineWidth,
+    height: lines.length * fontSize * 1.3,
+    lines
+  }
+}
+
+/**
  * Get bounding box for a TextClip in percentage coordinates (for DOM overlay).
  * Returns { left, top, width, height } all as 0–100 percentages.
  */
@@ -77,10 +131,13 @@ export function getTextClipPercentBounds(
   canvasWidth: number,
   canvasHeight: number
 ): TextClipBoundsPercent {
-  const estW = measureTextWidthPx(text, fontFamily, fontSize, fontWeight) * scale
-  const estH = fontSize * 1.3 * scale
-  const wPct = (estW / canvasWidth) * 100
-  const hPct = (estH / canvasHeight) * 100
+  // Use resolution-scaled font size so measureText matches canvas drawing
+  const resScale = canvasWidth / 1080
+  const renderFontSize = fontSize * resScale * scale
+  const maxWidth = canvasWidth * 0.8
+  const block = measureWrappedTextBlock(text, fontFamily, renderFontSize, fontWeight, maxWidth)
+  const wPct = (block.width / canvasWidth) * 100
+  const hPct = (block.height / canvasHeight) * 100
   return {
     left: styleX - wPct / 2,
     top: styleY - hPct / 2,
@@ -104,13 +161,16 @@ export function getTextClipPixelBounds(
   canvasWidth: number,
   canvasHeight: number
 ): TextClipBoundsPixel {
-  const estW = measureTextWidthPx(text, fontFamily, fontSize, fontWeight) * scale
-  const estH = fontSize * 1.3 * scale
+  // Use resolution-scaled font size so measureText matches canvas drawing
+  const resScale = canvasWidth / 1080
+  const renderFontSize = fontSize * resScale * scale
+  const maxWidth = canvasWidth * 0.8
+  const block = measureWrappedTextBlock(text, fontFamily, renderFontSize, fontWeight, maxWidth)
   return {
-    x: (styleX / 100) * canvasWidth - estW / 2,
-    y: (styleY / 100) * canvasHeight - estH / 2,
-    width: estW,
-    height: estH
+    x: (styleX / 100) * canvasWidth - block.width / 2,
+    y: (styleY / 100) * canvasHeight - block.height / 2,
+    width: block.width,
+    height: block.height
   }
 }
 

@@ -54,13 +54,33 @@ export const ANIMATION_PRESETS: Record<string, AnimationPreset> = {
 export function getAnimationProgress(
   preset: string,
   elapsedMs: number,
-  _totalDurationMs: number
+  totalDurationMs: number
 ): { scale: number; opacity: number; translateY: number; charIndex: number } {
   const anim = ANIMATION_PRESETS[preset]
   if (!anim || anim.duration === 0) {
     return { scale: 1, opacity: 1, translateY: 0, charIndex: -1 }
   }
 
+  // Exit animation: reverse the entry effect near the end of the caption
+  const exitStart = totalDurationMs - anim.duration
+  if (elapsedMs > exitStart && totalDurationMs > anim.duration * 2) {
+    const exitElapsed = elapsedMs - exitStart
+    const exitProgress = Math.min(1, exitElapsed / anim.duration)
+    const exitEased = applyEasing(exitProgress, anim.easing === 'ease-out' ? 'ease-in' : 'ease-out')
+
+    switch (preset) {
+      case 'pop':
+        return { scale: 1.0 - 0.2 * exitEased, opacity: 1, translateY: 0, charIndex: -1 }
+      case 'fade':
+        return { scale: 1, opacity: 1 - exitEased, translateY: 0, charIndex: -1 }
+      case 'slide-up':
+        return { scale: 1, opacity: 1, translateY: -12 * exitEased, charIndex: -1 }
+      default:
+        return { scale: 1, opacity: 1, translateY: 0, charIndex: -1 }
+    }
+  }
+
+  // Entry animation
   const progress = Math.min(1, elapsedMs / anim.duration)
   const easedProgress = applyEasing(progress, anim.easing)
 

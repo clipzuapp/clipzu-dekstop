@@ -27,16 +27,16 @@ import { useToast } from '../store/useToast'
 // Layout defaults
 // ---------------------------------------------------------------------------
 
-const DEFAULT_MEDIA_PANEL_W = 140
-const DEFAULT_INSPECTOR_W = 162
-const DEFAULT_TIMELINE_H = 142
+const DEFAULT_MEDIA_PANEL_W = 280
+const DEFAULT_INSPECTOR_W = 300
+const DEFAULT_TIMELINE_H = 200
 
-const MEDIA_PANEL_MIN = 100
-const MEDIA_PANEL_MAX = 220
-const INSPECTOR_MIN = 140
-const INSPECTOR_MAX = 260
-const TIMELINE_MIN = 100
-const TIMELINE_MAX = 320
+const MEDIA_PANEL_MIN = 180
+const MEDIA_PANEL_MAX = 420
+const INSPECTOR_MIN = 220
+const INSPECTOR_MAX = 480
+const TIMELINE_MIN = 120
+const TIMELINE_MAX = 400
 
 type ActiveTool = 'select' | 'blade' | 'hand' | 'zoom'
 
@@ -78,7 +78,7 @@ export default function Page(): JSX.Element {
           ? startPos - currentPos // dragging right handle: moving left = bigger inspector
           : direction === 'horizontal-left'
             ? currentPos - startPos // dragging left handle: moving right = bigger media panel
-            : currentPos - startPos // vertical: moving down = bigger timeline
+            : startPos - currentPos // vertical: moving UP = bigger timeline (handle is at top edge)
       const newVal = Math.min(max, Math.max(min, startVal + delta))
       setter(newVal)
     }
@@ -187,7 +187,8 @@ export default function Page(): JSX.Element {
         y: 90,
         rotation: 0,
         scale: 1,
-        animation: 'pop'
+        animation: 'pop',
+        captionMode: 'full-phrase'
       }
     })
 

@@ -3,6 +3,7 @@ import { useShallow } from 'zustand/react/shallow'
 import { useExport, EXPORT_PRESETS } from '../../store/useExport'
 import type { PresetKey } from '../../store/useExport'
 import { useTimeline, DEFAULT_TRANSFORM } from '../../store/useTimeline'
+import { useProject } from '../../store/useProject'
 import { useCaption } from '../../store/useCaption'
 import { useToast } from '../../store/useToast'
 import { formatDuration } from '../../utils/format'
@@ -42,6 +43,8 @@ export function ExportDialog({ onClose }: { onClose: () => void }): JSX.Element 
     totalDurationMs: s.totalDurationMs
   })))
 
+  const projectResolution = useProject((s) => s.resolution)
+
   const captionStyle = useCaption((s) => s.activeStyle)
 
   const [isExporting, setIsExporting] = React.useState(false)
@@ -78,13 +81,22 @@ export function ExportDialog({ onClose }: { onClose: () => void }): JSX.Element 
           ? {
               fontFamily: captionStyle.fontFamily,
               fontSize: captionStyle.fontSize,
+              fontWeight: captionStyle.fontWeight,
               fontColor: captionStyle.color,
               bgColor: captionStyle.bgColor,
-              bgOpacity: captionStyle.bgOpacity
+              bgOpacity: captionStyle.bgOpacity,
+              strokeColor: captionStyle.strokeColor,
+              strokeWidth: captionStyle.strokeWidth,
+              x: captionStyle.x,
+              y: captionStyle.y,
+              alignment: captionStyle.alignment,
+              position: captionStyle.position
             }
           : null,
         outputPath,
-        totalDurationMs
+        totalDurationMs,
+        projectWidth: projectResolution.width,
+        projectHeight: projectResolution.height
       })
 
       // Also export SRT sidecar

@@ -27,12 +27,23 @@ interface ExportParams {
   captionStyle: {
     fontFamily: string
     fontSize: number
+    fontWeight: number
     fontColor: string
     bgColor: string
     bgOpacity: number
+    strokeColor: string
+    strokeWidth: number
+    x: number
+    y: number
+    alignment: 'left' | 'center' | 'right'
+    position: 'top' | 'center' | 'bottom'
   } | null
   outputWidth: number
   outputHeight: number
+  /** Reference canvas width (project resolution) for font-size scaling */
+  projectWidth: number
+  /** Reference canvas height (project resolution) for position calculation */
+  projectHeight: number
   codec: 'h264' | 'h265' | 'prores' | 'vp9'
   qualityPreset: 'fast' | 'slow'
   outputPath: string
@@ -101,6 +112,8 @@ class ExportQueueManager {
       captionStyle: params.captionStyle,
       outputWidth: params.upscaleEnabled ? Math.round(params.outputWidth / 2) : params.outputWidth,
       outputHeight: params.upscaleEnabled ? Math.round(params.outputHeight / 2) : params.outputHeight,
+      projectWidth: params.projectWidth,
+      projectHeight: params.projectHeight,
       codec: params.codec,
       qualityPreset: params.qualityPreset,
       outputPath: params.upscaleEnabled ? `${params.outputPath}.tmp.mp4` : params.outputPath

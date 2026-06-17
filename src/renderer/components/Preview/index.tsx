@@ -1,9 +1,11 @@
-import { useRef, useEffect, useCallback } from 'react'
+import { useRef, useEffect, useCallback, useState } from 'react'
 import { useTimeline } from '../../store/useTimeline'
+import type { TextClip } from '../../store/useTimeline'
 import { useCaption } from '../../store/useCaption'
 import { useProject } from '../../store/useProject'
 import { formatTime } from '../../utils/format'
 import { getAnimationProgress } from '../StylePanel/AnimationPresets'
+import { resolveActiveWord, buildRevealText, createActivationCache, type ActivationCache } from '../../utils/wordActivation'
 import { TransformOverlay } from './TransformOverlay'
 
 /**
@@ -22,6 +24,8 @@ export function Preview(): JSX.Element {
   const animFrameRef = useRef<number>(0)
   /** Track which clip is loaded in <video> to avoid redundant src changes */
   const loadedClipIdRef = useRef<string | null>(null)
+  /** Per-clip activation caches — avoids O(log n) binary search every frame during playback */
+  const activationCacheMapRef = useRef<Map<string, ActivationCache>>(new Map())
 
   const playheadMs = useTimeline((s) => s.playheadMs)
   const clips = useTimeline((s) => s.clips)
@@ -41,6 +45,9 @@ export function Preview(): JSX.Element {
 
   const projectResolution = useProject((s) => s.resolution)
   const masterVolume = useTimeline((s) => s.masterVolume)
+
+  // === Temporary caption debug overlay ===
+  const [debugVisible, setDebugVisible] = useState(false)
 
   // Keep refs in sync with latest state for use inside event callbacks
   const isPlayingRef = useRef(isPlaying)
@@ -184,6 +191,16 @@ export function Preview(): JSX.Element {
 
   // ---- effect 5: canvas annotation loop (captions + transform box overlay) ----
 
+  // Prune stale activation caches when textClips change (clips removed/merged/split)
+  useEffect(() => {
+    const currentIds = new Set(textClips.map((tc) => tc.id))
+    for (const id of activationCacheMapRef.current.keys()) {
+      if (!currentIds.has(id)) {
+        activationCacheMapRef.current.delete(id)
+      }
+    }
+  }, [textClips])
+
   useEffect(() => {
     const canvas = canvasRef.current
     if (!canvas) return
@@ -210,30 +227,54 @@ export function Preview(): JSX.Element {
       if (activeCaption) {
         const elapsed = currentMs - activeCaption.startMs
         const totalCaptionDuration = activeCaption.endMs - activeCaption.startMs
-        // Use per-clip style if the text clip has one, otherwise fall back to global caption style
+        // Per-clip style resolution: each TextClip has its own `style?: CaptionStyle`.
+        // This means captionMode, revealFadeMs, and all visual properties are per-clip,
+        // NOT global. Creators can mix karaoke + single-word + word-reveal in one timeline.
         const style = activeCaption.style ?? captionStyle
         const anim = getAnimationProgress(style.animation, elapsed, totalCaptionDuration)
-
-        // Determine display text (typewriter effect)
-        let displayText = activeCaption.text
-        if (style.animation === 'typewriter' && anim.charIndex >= 0) {
-          displayText = activeCaption.text.slice(0, anim.charIndex)
+        const mode = style.captionMode ?? 'full-phrase'
+        const words = activeCaption.words
+        const isSynthetic = activeCaption.wordTimestampsSource === 'synthetic'
+        // Get or create per-clip activation cache (O(1) fast path for sequential playback)
+        let cache = activationCacheMapRef.current.get(activeCaption.id)
+        if (!cache) {
+          cache = createActivationCache()
+          activationCacheMapRef.current.set(activeCaption.id, cache)
         }
+        const activation = words ? resolveActiveWord(words, elapsed, isSynthetic, cache) : null
 
         ctx.save()
         ctx.globalAlpha = anim.opacity
 
         if (anim.scale !== 1 || anim.translateY !== 0) {
-          ctx.translate(canvas.width / 2, canvas.height / 2)
+          // Transform around the caption's actual position, not canvas center
+          const originX = (style.x / 100) * canvas.width
+          const originY = (style.y / 100) * canvas.height
+          ctx.translate(originX, originY)
           ctx.scale(anim.scale, anim.scale)
-          ctx.translate(-canvas.width / 2, -canvas.height / 2 + anim.translateY)
+          ctx.translate(-originX, -originY + anim.translateY)
         }
 
-        // Karaoke mode: pass word timing info
-        if (style.animation === 'karaoke' && activeCaption.words) {
-          drawKaraokeCaption(ctx, canvas.width, canvas.height, activeCaption.text, activeCaption.words, elapsed, style)
-        } else {
-          drawCaption(ctx, canvas.width, canvas.height, displayText, style)
+        // Dispatch to caption mode renderer
+        switch (mode) {
+          case 'word-reveal':
+            drawWordRevealCaption(ctx, canvas.width, canvas.height, activeCaption.text, words, elapsed, style)
+            break
+          case 'karaoke':
+            drawKaraokeCaption(ctx, canvas.width, canvas.height, activeCaption.text, words, elapsed, style)
+            break
+          case 'single-word':
+            drawSingleWordCaption(ctx, canvas.width, canvas.height, activation, style)
+            break
+          case 'full-phrase':
+          default:
+            // Typewriter animation still works in full-phrase mode
+            let displayText = activeCaption.text
+            if (style.animation === 'typewriter' && anim.charIndex >= 0) {
+              displayText = activeCaption.text.slice(0, anim.charIndex)
+            }
+            drawFullPhraseCaption(ctx, canvas.width, canvas.height, displayText, style)
+            break
         }
 
         ctx.restore()
@@ -506,8 +547,23 @@ export function Preview(): JSX.Element {
       {/* Interactive transform overlay — above canvas, reads same store values */}
       <TransformOverlay />
 
+      {/* ===== TEMPORARY: Caption Debug Overlay ===== */}
+      {debugVisible && (
+        <CaptionDebugOverlay
+          playheadMs={playheadMs}
+          textClips={textClips}
+        />
+      )}
+
       {/* Play controls */}
-      <div className="absolute bottom-0 left-0 right-0 h-10 bg-gradient-to-t from-black/80 to-transparent flex items-center justify-center pointer-events-none">
+      <div className="absolute bottom-0 left-0 right-0 h-10 bg-gradient-to-t from-black/80 to-transparent flex items-center justify-between px-2 pointer-events-none">
+        <button
+          onClick={() => setDebugVisible((v) => !v)}
+          title="Toggle Caption Debug (temporary)"
+          className={`pointer-events-auto px-2 py-0.5 rounded text-[10px] font-mono transition-colors ${debugVisible ? 'bg-accent text-white' : 'bg-white/10 text-gray-400 hover:text-white'}`}
+        >
+          DBG
+        </button>
         <button
           onClick={togglePlay}
           className="pointer-events-auto w-8 h-8 flex items-center justify-center text-white hover:text-accent transition-colors"
@@ -559,38 +615,46 @@ export function Preview(): JSX.Element {
 // Caption drawing
 // ---------------------------------------------------------------------------
 
-function drawCaption(
+// Shared style type used by all caption drawing functions.
+// NOTE: This is the VISUAL LAYER — it consumes timing data from the word
+// activation engine (resolveActiveWord) but does not compute timing itself.
+// Font, color, scale, outline, etc. are kept separate from {activeWord, prevWord, nextWord}.
+interface CaptionDrawStyle {
+  fontFamily: string
+  fontSize: number
+  fontWeight: number
+  color: string
+  strokeColor: string
+  strokeWidth: number
+  bgColor: string
+  bgOpacity: number
+  alignment: 'left' | 'center' | 'right'
+  x: number
+  y: number
+  /** Uniform scale multiplier (1.0 = native size). Applied on top of resolution scale. */
+  scale: number
+  /** Smooth word reveal fade duration in ms. 0 = instant (default). */
+  revealFadeMs?: number
+}
+
+/** Mode 1: Full Phrase — display entire phrase, no word-level logic */
+function drawFullPhraseCaption(
   ctx: CanvasRenderingContext2D,
   width: number,
   height: number,
   text: string,
-  style: {
-    fontFamily: string
-    fontSize: number
-    fontWeight: number
-    color: string
-    strokeColor: string
-    strokeWidth: number
-    bgColor: string
-    bgOpacity: number
-    alignment: 'left' | 'center' | 'right'
-    x: number
-    y: number
-    animation: string
-  }
+  style: CaptionDrawStyle
 ): void {
-  const scale = width / 1080
-  const fontSize = style.fontSize * scale
-  const padding = 8 * scale
+  const resScale = width / 1080
+  const fontSize = style.fontSize * resScale * (style.scale ?? 1)
+  const padding = 8 * resScale
 
   ctx.font = `${style.fontWeight} ${fontSize}px ${style.fontFamily}`
   ctx.textBaseline = 'middle'
 
-  // Position from style.x / style.y (percentage-based, single source of truth)
   const cx = (style.x / 100) * width
   const cy = (style.y / 100) * height
 
-  // Horizontal alignment
   const alignMap: Record<string, CanvasTextAlign> = { left: 'left', center: 'center', right: 'right' }
   ctx.textAlign = alignMap[style.alignment] ?? 'center'
 
@@ -615,7 +679,7 @@ function drawCaption(
 
   ctx.fillStyle = style.color
   ctx.strokeStyle = style.strokeColor
-  ctx.lineWidth = style.strokeWidth * scale
+  ctx.lineWidth = style.strokeWidth * resScale
 
   lines.forEach((line, i) => {
     const lineY = cy - totalHeight / 2 + i * lineHeight + lineHeight / 2
@@ -624,17 +688,189 @@ function drawCaption(
   })
 }
 
+/** Mode 2: Word Reveal — words become visible only after their startTime.
+ *  Supports optional revealFadeMs for smooth word appearance. */
+function drawWordRevealCaption(
+  ctx: CanvasRenderingContext2D,
+  width: number,
+  height: number,
+  fullText: string,
+  words: Array<{ word: string; startMs: number; endMs: number }> | undefined,
+  elapsedMs: number,
+  style: CaptionDrawStyle
+): void {
+  if (!words || words.length === 0) {
+    drawFullPhraseCaption(ctx, width, height, fullText, style)
+    return
+  }
+
+  const revealFadeMs = style.revealFadeMs ?? 0
+  const activation = resolveActiveWord(words, elapsedMs, false)
+
+  // Determine the index of the last visible word
+  let lastVisibleIdx = -1
+  if (activation.activeWord) {
+    lastVisibleIdx = activation.activeIndex
+  } else if (activation.nextWord && activation.prevWord) {
+    // In a gap — show up to prevWord
+    lastVisibleIdx = words.indexOf(activation.prevWord)
+  } else if (activation.prevWord && !activation.nextWord) {
+    // Past all words — show full text
+    lastVisibleIdx = words.length - 1
+  }
+
+  if (lastVisibleIdx < 0) return
+
+  // Fast path: no fade or last word fully faded in — use batch draw
+  if (revealFadeMs <= 0 || words.length === 0 || elapsedMs - words[lastVisibleIdx].startMs >= revealFadeMs) {
+    const revealText = buildRevealText(words, lastVisibleIdx)
+    if (revealText) drawFullPhraseCaption(ctx, width, height, revealText, style)
+    return
+  }
+
+  // Smooth path: render each word individually so the last word can fade in
+  drawWordRevealSmooth(ctx, width, height, words, lastVisibleIdx, elapsedMs, revealFadeMs, style)
+}
+
+/**
+ * Per-word smooth reveal renderer.
+ * Draws each revealed word at the correct screen position with individual opacity.
+ * Handles text wrapping, alignment, stroke, and background box.
+ */
+function drawWordRevealSmooth(
+  ctx: CanvasRenderingContext2D,
+  width: number,
+  height: number,
+  words: Array<{ word: string; startMs: number; endMs: number }>,
+  lastVisibleIdx: number,
+  elapsedMs: number,
+  revealFadeMs: number,
+  style: CaptionDrawStyle
+): void {
+  const resScale = width / 1080
+  const fontSize = style.fontSize * resScale * (style.scale ?? 1)
+  const padding = 8 * resScale
+
+  ctx.font = `${style.fontWeight} ${fontSize}px ${style.fontFamily}`
+  ctx.textBaseline = 'middle'
+
+  const alignMap: Record<string, CanvasTextAlign> = { left: 'left', center: 'center', right: 'right' }
+  const align = alignMap[style.alignment] ?? 'center'
+  ctx.textAlign = align
+
+  const cx = (style.x / 100) * width
+  const cy = (style.y / 100) * height
+  const lineHeight = fontSize * 1.3
+  const maxWidth = width * 0.8
+
+  // Smoothstep easing for natural fade feel
+  const lastWord = words[lastVisibleIdx]
+  const rawProgress = Math.max(0, Math.min(1, (elapsedMs - lastWord.startMs) / revealFadeMs))
+  const easedFade = rawProgress * rawProgress * (3 - 2 * rawProgress) // smoothstep
+
+  // Build word-wrapped lines with per-word opacity
+  interface WordSpan { text: string; opacity: number; wordIdx: number }
+  const lines: WordSpan[][] = []
+  let currentLine: WordSpan[] = []
+  let currentLineWidth = 0
+
+  for (let i = 0; i <= lastVisibleIdx; i++) {
+    const w = words[i]
+    // First word on a line has no leading space
+    const displayText = currentLine.length === 0 ? w.word : ' ' + w.word
+    const wordWidth = ctx.measureText(displayText).width
+    const opacity = i === lastVisibleIdx ? easedFade : 1
+
+    if (currentLine.length > 0 && currentLineWidth + wordWidth > maxWidth) {
+      lines.push(currentLine)
+      currentLine = []
+      currentLineWidth = 0
+      // Re-measure without leading space for new line
+      const noSpaceText = w.word
+      const noSpaceWidth = ctx.measureText(noSpaceText).width
+      currentLine.push({ text: noSpaceText, opacity, wordIdx: i })
+      currentLineWidth = noSpaceWidth
+    } else {
+      currentLine.push({ text: displayText, opacity, wordIdx: i })
+      currentLineWidth += wordWidth
+    }
+  }
+  if (currentLine.length > 0) lines.push(currentLine)
+
+  const totalHeight = lines.length * lineHeight
+
+  // Draw background box behind all lines (single rectangle, full opacity)
+  if (style.bgOpacity > 0) {
+    let maxLineW = 0
+    for (const line of lines) {
+      const fullText = line.map((s) => s.text).join('')
+      const lw = ctx.measureText(fullText).width
+      if (lw > maxLineW) maxLineW = lw
+    }
+
+    let bgX: number
+    if (align === 'left') bgX = cx - padding
+    else if (align === 'right') bgX = cx - maxLineW - padding
+    else bgX = cx - maxLineW / 2 - padding
+    const bgY = cy - totalHeight / 2 - padding
+    const bgW = maxLineW + padding * 2
+    const bgH = totalHeight + padding * 2
+
+    ctx.fillStyle = style.bgColor
+    ctx.globalAlpha = style.bgOpacity
+    ctx.fillRect(bgX, bgY, bgW, bgH)
+    ctx.globalAlpha = 1
+  }
+
+  // Draw each word with its individual opacity
+  for (let li = 0; li < lines.length; li++) {
+    const line = lines[li]
+    const fullLineText = line.map((s) => s.text).join('')
+    const fullLineWidth = ctx.measureText(fullLineText).width
+    const lineY = cy - totalHeight / 2 + li * lineHeight + lineHeight / 2
+
+    let startX: number
+    if (align === 'center') startX = cx - fullLineWidth / 2
+    else if (align === 'right') startX = cx - fullLineWidth
+    else startX = cx
+
+    let cursorX = startX
+
+    for (const span of line) {
+      // Remove leading space for rendering (the space is baked into measurements)
+      const renderText = span.text.replace(/^ /, '')
+      const spanWidth = ctx.measureText(span.text).width
+      const wordCenterX = cursorX + spanWidth / 2
+
+      ctx.globalAlpha = span.opacity
+      ctx.fillStyle = style.color
+      ctx.strokeStyle = style.strokeColor
+      ctx.lineWidth = style.strokeWidth * resScale
+
+      if (style.strokeWidth > 0) {
+        ctx.strokeText(renderText, wordCenterX, lineY)
+      }
+      ctx.fillText(renderText, wordCenterX, lineY)
+
+      cursorX += spanWidth
+    }
+  }
+
+  ctx.globalAlpha = 1
+}
+
+/** Mode 3: Karaoke Highlight — full phrase visible, active word highlighted */
 function drawKaraokeCaption(
   ctx: CanvasRenderingContext2D,
   width: number,
   height: number,
   text: string,
-  words: Array<{ word: string; startMs: number; endMs: number }>,
+  words: Array<{ word: string; startMs: number; endMs: number }> | undefined,
   elapsedMs: number,
-  style: Parameters<typeof drawCaption>[4]
+  style: CaptionDrawStyle
 ): void {
-  const scale = width / 1080
-  const fontSize = style.fontSize * scale
+  const resScale = width / 1080
+  const fontSize = style.fontSize * resScale * (style.scale ?? 1)
   ctx.font = `${style.fontWeight} ${fontSize}px ${style.fontFamily}`
   ctx.textAlign = 'center'
   ctx.textBaseline = 'middle'
@@ -643,21 +879,27 @@ function drawKaraokeCaption(
   const cy = (style.y / 100) * height
   const lineH = fontSize * 1.3
 
-  // Find which word is active
-  const activeWordIdx = words.findIndex((w) => elapsedMs >= w.startMs && elapsedMs < w.endMs)
+  if (!words || words.length === 0) {
+    // Fallback: draw normally without highlight
+    drawFullPhraseCaption(ctx, width, height, text, style)
+    return
+  }
+
+  const activation = resolveActiveWord(words, elapsedMs, false)
 
   // Draw full text first in normal color
   ctx.fillStyle = style.color
   ctx.strokeStyle = style.strokeColor
-  ctx.lineWidth = style.strokeWidth * scale
+  ctx.lineWidth = style.strokeWidth * resScale
   if (style.strokeWidth > 0) ctx.strokeText(text, cx, cy)
   ctx.fillText(text, cx, cy)
 
-  // Highlight active word in accent color
-  if (activeWordIdx >= 0) {
-    const activeWord = words[activeWordIdx].word
-    // Measure position of word in line (simple approximation)
-    const beforeText = words.slice(0, activeWordIdx).map((w) => w.word).join(' ')
+  // Highlight active word
+  if (activation.activeWord) {
+    const activeIdx = activation.activeIndex
+    const activeWord = activation.activeWord.word
+    // Measure position of word in the full text
+    const beforeText = words.slice(0, activeIdx).map((w) => w.word).join(' ')
     const beforeW = ctx.measureText(beforeText + (beforeText ? ' ' : '')).width
     const totalW = ctx.measureText(text).width
     const wordW = ctx.measureText(activeWord).width
@@ -669,6 +911,20 @@ function drawKaraokeCaption(
     ctx.fillStyle = '#000'
     ctx.fillText(activeWord, startX + wordW / 2, cy)
   }
+}
+
+/** Mode 4: Single Active Word — display only the active word, centered */
+function drawSingleWordCaption(
+  ctx: CanvasRenderingContext2D,
+  width: number,
+  height: number,
+  activation: ReturnType<typeof resolveActiveWord> | null,
+  style: CaptionDrawStyle
+): void {
+  if (!activation?.activeWord) return
+
+  const word = activation.activeWord.word
+  drawFullPhraseCaption(ctx, width, height, word, style)
 }
 
 function wrapText(ctx: CanvasRenderingContext2D, text: string, maxWidth: number): string[] {
@@ -748,3 +1004,67 @@ function drawTransformBox(
 }
 
 export default Preview
+
+// =============================================================================
+// TEMPORARY: Caption Debug Overlay — toggle via "DBG" button in play controls.
+// TODO: Remove before production release.
+// =============================================================================
+
+interface CaptionDebugOverlayProps {
+  playheadMs: number
+  textClips: TextClip[]
+}
+
+function CaptionDebugOverlay({ playheadMs, textClips }: CaptionDebugOverlayProps): JSX.Element | null {
+  const activeCaption = textClips.find(
+    (tc) => playheadMs >= tc.startMs && playheadMs < tc.endMs
+  )
+
+  if (!activeCaption) {
+    return (
+      <div className="absolute top-10 left-2 z-50 bg-black/85 text-[11px] font-mono text-gray-300 rounded px-2 py-1.5 select-none pointer-events-none">
+        <span className="text-gray-500">No active caption</span>
+      </div>
+    )
+  }
+
+  const elapsed = playheadMs - activeCaption.startMs
+  const words = activeCaption.words
+  const source = activeCaption.wordTimestampsSource ?? 'none'
+  const activation = words
+    ? resolveActiveWord(words, elapsed, activeCaption.wordTimestampsSource === 'synthetic')
+    : null
+  const activeWord = activation?.activeWord
+
+  return (
+    <div className="absolute top-10 left-2 z-50 bg-black/90 text-[11px] font-mono text-gray-200 rounded px-3 py-2 select-none pointer-events-none space-y-0.5 border border-white/10">
+      <div className="text-[9px] text-gray-500 uppercase tracking-wider mb-1">Caption Debug</div>
+      <div className="flex gap-2">
+        <span className="text-gray-500">Source:</span>
+        <span className={source === 'whisper' ? 'text-green-400' : source === 'synthetic' ? 'text-yellow-400' : 'text-red-400'}>
+          {source.toUpperCase()}
+        </span>
+      </div>
+      <div className="flex gap-2">
+        <span className="text-gray-500">Word Count:</span>
+        <span>{words?.length ?? 0}</span>
+      </div>
+      <div className="flex gap-2">
+        <span className="text-gray-500">Active Word:</span>
+        <span className="text-cyan-300">{activeWord ? `"${activeWord.word}"` : '—'}</span>
+      </div>
+      {activeWord && (
+        <>
+          <div className="flex gap-2">
+            <span className="text-gray-500">Active Start:</span>
+            <span>{activeWord.startMs}ms</span>
+          </div>
+          <div className="flex gap-2">
+            <span className="text-gray-500">Active End:</span>
+            <span>{activeWord.endMs}ms</span>
+          </div>
+        </>
+      )}
+    </div>
+  )
+}

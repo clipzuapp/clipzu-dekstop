@@ -116,6 +116,46 @@ export function StylePanel(): JSX.Element {
         </div>
       </div>
 
+      {/* Caption Mode */}
+      <div className="space-y-1">
+        <label className="text-[10px] text-gray-500 uppercase tracking-wider">Caption Mode</label>
+        <div className="grid grid-cols-2 gap-1">
+          {(['full-phrase', 'word-reveal', 'karaoke', 'single-word'] as const).map((mode) => (
+            <button
+              key={mode}
+              className={`btn text-xs capitalize ${
+                activeStyle.captionMode === mode ? 'btn-primary' : 'btn-secondary'
+              }`}
+              onClick={() => applyStyle({ captionMode: mode })}
+            >
+              {mode.replace('-', ' ')}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {/* Word Reveal Fade (only shown in word-reveal mode) */}
+      {activeStyle.captionMode === 'word-reveal' && (
+        <div className="space-y-1">
+          <label className="text-[10px] text-gray-500 uppercase tracking-wider">
+            Reveal Fade: {activeStyle.revealFadeMs ?? 0}ms
+          </label>
+          <input
+            type="range"
+            min={0}
+            max={200}
+            step={10}
+            value={activeStyle.revealFadeMs ?? 0}
+            onChange={(e) => applyStyle({ revealFadeMs: parseInt(e.target.value) })}
+            className="w-full accent-accent"
+          />
+          <div className="flex justify-between text-[9px] text-gray-600">
+            <span>Instant</span>
+            <span>Smooth</span>
+          </div>
+        </div>
+      )}
+
       {/* Animation */}
       <div className="space-y-1">
         <label className="text-[10px] text-gray-500 uppercase tracking-wider">Animation</label>

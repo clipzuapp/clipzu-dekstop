@@ -10,6 +10,8 @@ export interface CaptionEntry {
   endMs: number
   text: string
   words?: Array<{ word: string; startMs: number; endMs: number }>
+  /** Source of word-level timestamps: 'whisper' = from token-level JSON, 'synthetic' = estimated */
+  wordTimestampsSource?: 'whisper' | 'synthetic'
   /** Per-entry position override (percentage 0-100 of canvas). Falls back to captionStyle.x/y. */
   position?: { x: number; y: number }
 }

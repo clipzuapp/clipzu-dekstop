@@ -211,10 +211,15 @@ export class FFmpegService {
     audioTracks: Array<{ path: string; startMs: number; volume: number }>
     srtPath: string | null
     captionStyle: {
-      fontFamily: string; fontSize: number; fontColor: string
-      bgColor: string; bgOpacity: number
+      fontFamily: string; fontSize: number; fontWeight: number
+      fontColor: string; bgColor: string; bgOpacity: number
+      strokeColor: string; strokeWidth: number
+      x: number; y: number
+      alignment: 'left' | 'center' | 'right'
+      position: 'top' | 'center' | 'bottom'
     } | null
     outputWidth: number; outputHeight: number
+    projectWidth: number; projectHeight: number
     codec: 'h264' | 'h265' | 'prores' | 'vp9'
     qualityPreset: 'fast' | 'slow'
     outputPath: string
@@ -222,9 +227,11 @@ export class FFmpegService {
     const {
       clipPaths, clipTrackIndices, clipTransforms, audioTracks,
       srtPath, captionStyle, outputWidth, outputHeight,
-      codec, qualityPreset, outputPath
+      projectWidth, projectHeight, codec, qualityPreset, outputPath
     } = params
 
+    // Reserved: projectHeight for future aspect-ratio-aware marginV scaling
+    void projectHeight
     // Sort clips by trackIndex ascending (track 0 at bottom, highest on top)
     const clipOrder = clipPaths.map((_, i) => i).sort((a, b) => clipTrackIndices[a] - clipTrackIndices[b])
 
@@ -292,9 +299,42 @@ export class FFmpegService {
 
     if (srtPath && captionStyle) {
       const escapedSrtPath = srtPath.replace(/\\/g, '/').replace(/:/g, '\\:')
-      const fontColor = captionStyle.fontColor.replace('#', '&H00')
-      const bgColor = captionStyle.bgColor.replace('#', '&H00')
-      const subtitlesFilter = `${videoFilter}subtitles='${escapedSrtPath}':force_style='FontName=${captionStyle.fontFamily},FontSize=${captionStyle.fontSize},PrimaryColour=${fontColor},BackColour=${bgColor},Outline=1,Shadow=1,Alignment=2,MarginV=30'[captioned]`
+      // Scale font size proportionally: preview uses width/1080, export uses outputWidth/projectWidth
+      const refWidth = projectWidth ?? outputWidth
+      const fontSize = Math.round(captionStyle.fontSize * outputWidth / refWidth)
+      // ASS color format: &HAABBGGRR (alpha + BGR reversed from #RRGGBB)
+      const toAssColor = (hex: string, opacity?: number): string => {
+        const alpha = opacity !== undefined ? Math.round(opacity * 255).toString(16).padStart(2, '0').toUpperCase() : '00'
+        const r = hex.slice(1, 3)
+        const g = hex.slice(3, 5)
+        const b = hex.slice(5, 7)
+        return `&H${alpha}${b}${g}${r}`
+      }
+      const fontColor = toAssColor(captionStyle.fontColor)
+      const bgColor = toAssColor(captionStyle.bgColor, captionStyle.bgOpacity ?? 0.5)
+      const strokeColor = toAssColor(captionStyle.strokeColor ?? '#000000')
+      // Map editor alignment + position to ASS Alignment codes (1-9)
+      const assAlignment: Record<string, number> = {
+        'bottom-left': 1, 'bottom-center': 2, 'bottom-right': 3,
+        'center-left': 4, 'center-center': 5, 'center-right': 6,
+        'top-left': 7, 'top-center': 8, 'top-right': 9
+      }
+      const alignKey = `${captionStyle.position ?? 'bottom'}-${captionStyle.alignment ?? 'center'}`
+      const alignment = assAlignment[alignKey] ?? 2
+      // Compute MarginV from y% based on caption position
+      const y = captionStyle.y ?? 90
+      const position = captionStyle.position ?? 'bottom'
+      let marginV: number
+      if (position === 'top') {
+        marginV = Math.round(y / 100 * outputHeight)
+      } else if (position === 'center') {
+        marginV = Math.round(((y - 50) / 100) * outputHeight)
+      } else {
+        marginV = Math.round((100 - y) / 100 * outputHeight)
+      }
+      const fontWeight = (captionStyle.fontWeight ?? 500) >= 700 ? '1' : '0'
+      const outlineWidth = Math.max(1, Math.round((captionStyle.strokeWidth ?? 0) * outputWidth / refWidth))
+      const subtitlesFilter = `${videoFilter}subtitles='${escapedSrtPath}':force_style='FontName=${captionStyle.fontFamily},FontSize=${fontSize},Bold=${fontWeight},PrimaryColour=${fontColor},BackColour=${bgColor},OutlineColour=${strokeColor},Outline=${outlineWidth},Shadow=0,Alignment=${alignment},MarginV=${marginV},MarginL=10,MarginR=10'[captioned]`
       filterParts.push(subtitlesFilter)
       videoFilter = '[captioned]'
     }

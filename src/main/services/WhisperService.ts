@@ -74,6 +74,7 @@ export interface TranscriptionResult {
     endMs: number
     text: string
     words?: Array<{ word: string; startMs: number; endMs: number }>
+    wordTimestampsSource?: 'whisper' | 'synthetic'
   }>
   language: string
   /** Telemetry from the transcription run (for diagnostics) */
@@ -99,6 +100,8 @@ export interface TranscriptionTelemetry {
   bytesReceived?: number
   /** Raw stderr content for diagnostic logging */
   stderrText?: string
+  /** Drift analysis: synthetic vs whisper word timestamps (ms). Only populated when JSON tokens exist. */
+  wordTimingDriftMs?: { min: number; max: number; mean: number; count: number }
 }
 
 export interface TranscriptionOptions {
@@ -122,6 +125,8 @@ interface CaptionEntry {
   endMs: number
   text: string
   words?: Array<{ word: string; startMs: number; endMs: number }>
+  /** Source of word-level timestamps: 'whisper' = from token-level JSON, 'synthetic' = estimated */
+  wordTimestampsSource?: 'whisper' | 'synthetic'
 }
 
 export class WhisperService {
@@ -358,7 +363,7 @@ export class WhisperService {
       '-m', modelPath, '-f', '-',
       '-l', (options.language || 'auto'),
       '-t', String(Math.max(1, cpus().length - 1)),
-      '-ng', '-nfa', '-pp', '-osrt', '-np',
+      '-ng', '-nfa', '-pp', '-osrt', '-ojf', '-np',
       '-of', srtOutPath
     ]
     console.log(`[WhisperService] STREAMING args: ${whisperArgs.join(' ')}`)
@@ -456,6 +461,26 @@ export class WhisperService {
         let entries: CaptionEntry[] = []
         // -osrt writes to a FILE, not stdout. Read the generated .srt file.
         const srtFilePath = srtOutPath + '.srt'
+        
+        // Also read JSON output for word-level token timestamps
+        let jsonTokens: Array<Array<{ word: string; startMs: number; endMs: number }>> | null = null
+        const jsonFilePath = srtOutPath + '.json'
+        try {
+          if (existsSync(jsonFilePath)) {
+            const jsonContent = readFileSync(jsonFilePath, 'utf-8')
+            console.log(`[WhisperService] STREAMING read JSON file: ${jsonFilePath} (${jsonContent.length}B)`)
+            jsonTokens = WhisperService.parseJsonTokens(jsonContent)
+            if (jsonTokens) {
+              console.log(`[WhisperService] STREAMING parsed ${jsonTokens.length} segments with word tokens`)
+            }
+            unlinkSync(jsonFilePath)
+          } else {
+            console.warn(`[WhisperService] STREAMING JSON file not found: ${jsonFilePath}`)
+          }
+        } catch (e) {
+          console.warn(`[WhisperService] STREAMING failed to read/parse JSON: ${(e as Error).message}`)
+        }
+        
         try {
           if (existsSync(srtFilePath)) {
             const srtContent = readFileSync(srtFilePath, 'utf-8')
@@ -463,14 +488,18 @@ export class WhisperService {
             console.log(`[WhisperService] STREAMING read SRT file: ${srtFilePath} (${srtContent.length}B)`)
             console.log(`[WhisperService] STREAMING SRT RAW CONTENT:\n${srtContent || '(EMPTY)'}`)
             if (srtContent.trim()) {
-              entries = WhisperService.parseSRTOutput(srtContent, options.wordTimestamps ?? true)
+              const parsed = WhisperService.parseSRTOutput(srtContent, options.wordTimestamps ?? true, jsonTokens)
+              entries = parsed.entries
+              telemetry.wordTimingDriftMs = parsed.driftMs
             }
             unlinkSync(srtFilePath)
           } else {
             console.warn(`[WhisperService] STREAMING SRT file not found: ${srtFilePath}`)
             telemetry.stdoutLength = stdout.length
             if (stdout.trim()) {
-              entries = WhisperService.parseSRTOutput(stdout, options.wordTimestamps ?? true)
+              const parsed = WhisperService.parseSRTOutput(stdout, options.wordTimestamps ?? true, jsonTokens)
+              entries = parsed.entries
+              telemetry.wordTimingDriftMs = parsed.driftMs
             }
           }
         } catch (e) {
@@ -538,7 +567,7 @@ export class WhisperService {
       '-m', modelPath, '-f', audioInputPath,
       '-l', (options.language || 'auto'),
       '-t', String(Math.max(1, cpus().length - 1)),
-      '-ng', '-nfa', '-pp', '-osrt', '-np',
+      '-ng', '-nfa', '-pp', '-osrt', '-ojf', '-np',
       '-of', srtOutPath
     ]
     console.log(`[WhisperService] FILE args: ${args.join(' ')}`)
@@ -594,20 +623,44 @@ export class WhisperService {
         let entries: CaptionEntry[] = []
         // -osrt writes to a FILE, not stdout. Read the generated .srt file.
         const srtFilePath = srtOutPath + '.srt'
+        
+        // Also read JSON output for word-level token timestamps
+        let jsonTokens: Array<Array<{ word: string; startMs: number; endMs: number }>> | null = null
+        const jsonFilePath = srtOutPath + '.json'
+        try {
+          if (existsSync(jsonFilePath)) {
+            const jsonContent = readFileSync(jsonFilePath, 'utf-8')
+            console.log(`[WhisperService] FILE read JSON file: ${jsonFilePath} (${jsonContent.length}B)`)
+            jsonTokens = WhisperService.parseJsonTokens(jsonContent)
+            if (jsonTokens) {
+              console.log(`[WhisperService] FILE parsed ${jsonTokens.length} segments with word tokens`)
+            }
+            unlinkSync(jsonFilePath)
+          } else {
+            console.warn(`[WhisperService] FILE JSON file not found: ${jsonFilePath}`)
+          }
+        } catch (e) {
+          console.warn(`[WhisperService] FILE failed to read/parse JSON: ${(e as Error).message}`)
+        }
+        
         try {
           if (existsSync(srtFilePath)) {
             const srtContent = readFileSync(srtFilePath, 'utf-8')
             telemetry.stdoutLength = srtContent.length
             console.log(`[WhisperService] FILE read SRT file: ${srtFilePath} (${srtContent.length}B)`)
             if (srtContent.trim()) {
-              entries = WhisperService.parseSRTOutput(srtContent, options.wordTimestamps ?? true)
+              const parsed = WhisperService.parseSRTOutput(srtContent, options.wordTimestamps ?? true, jsonTokens)
+              entries = parsed.entries
+              telemetry.wordTimingDriftMs = parsed.driftMs
             }
             unlinkSync(srtFilePath)
           } else {
             console.warn(`[WhisperService] FILE SRT file not found: ${srtFilePath}`)
             telemetry.stdoutLength = stdout.length
             if (stdout.trim()) {
-              entries = WhisperService.parseSRTOutput(stdout, options.wordTimestamps ?? true)
+              const parsed = WhisperService.parseSRTOutput(stdout, options.wordTimestamps ?? true, jsonTokens)
+              entries = parsed.entries
+              telemetry.wordTimingDriftMs = parsed.driftMs
             }
           }
         } catch (e) {
@@ -1310,17 +1363,207 @@ export class WhisperService {
     }
   }
 
-  /** Parse SRT content into CaptionEntry[] */
-  private static parseSRTOutput(content: string, wordTimestamps: boolean): CaptionEntry[] {
+  /**
+   * Parse whisper.cpp JSON output into token arrays per segment.
+   * Returns null if parsing fails (triggers synthetic fallback).
+   *
+   * Whisper JSON structure (v1.8.x):
+   *   { transcription: [{ offsets: { from, to }, tokens: [{ text, offsets: { from, to } }] }] }
+   *
+   * Alternate structures from different whisper.cpp builds:
+   *   { result: { segments: [...] } }  — older builds
+   *   { segments: [...] }              — server-mode
+   *
+   * Token-to-word merging rule:
+   *   - BPE tokens start with a space to mark word boundaries
+   *   - Subword continuations (no space prefix) merge into the current word
+   *   - Word startMs = first token start, endMs = last token end
+   *
+   * Verified with test cases:
+   *   "don't"  → [" don", "'t"]          → "don't"
+   *   "I'm"    → [" I", "'m"]            → "I'm"
+   *   "CapCraft"   → [" Cap", "Craft"]        → "CapCraft"
+   *   "AI-powered" → [" AI", "-powered"]      → "AI-powered"
+   *   "GPT-5"      → [" G", "PT", "-", "5"]   → "GPT-5"
+   *   "T-Selection"→ [" T", "-Selection"]     → "T-Selection"
+   */
+  private static parseJsonTokens(jsonContent: string): Array<Array<{ word: string; startMs: number; endMs: number }>> | null {
+    let parsed: any
+    try {
+      parsed = JSON.parse(jsonContent)
+    } catch {
+      console.warn('[WhisperService] JSON parse failed — invalid JSON syntax')
+      return null
+    }
+
+    // Try multiple known whisper.cpp JSON structures
+    let segments: any[] | null = null
+    let structureLabel = 'unknown'
+
+    if (Array.isArray(parsed?.transcription) && parsed.transcription.length > 0) {
+      segments = parsed.transcription
+      structureLabel = 'v1.8.x (transcription array)'
+    } else if (Array.isArray(parsed?.result?.segments) && parsed.result.segments.length > 0) {
+      segments = parsed.result.segments
+      structureLabel = 'older build (result.segments)'
+    } else if (Array.isArray(parsed?.segments) && parsed.segments.length > 0) {
+      segments = parsed.segments
+      structureLabel = 'server-mode (segments)'
+    }
+
+    if (!segments) {
+      const keys = parsed ? Object.keys(parsed).join(', ') : '(empty)'
+      console.warn(`[WhisperService] JSON structure not recognized. Top-level keys: ${keys}`)
+      return null
+    }
+
+    console.log(`[WhisperService] JSON structure detected: ${structureLabel}, ${segments.length} segments`)
+
+    // Diagnostic: dump first segment's keys to identify field names
+    if (segments.length > 0) {
+      const firstSegKeys = Object.keys(segments[0]).join(', ')
+      const hasTokens = 'tokens' in segments[0]
+      const hasTokenLevel = (segments[0] as any)?.token_level !== undefined
+      console.log(`[WhisperService] First segment keys: [${firstSegKeys}], hasTokens=${hasTokens}, hasTokenLevel=${hasTokenLevel}`)
+    }
+
+    let totalTokens = 0
+    let totalWords = 0
+    let segmentsWithTokens = 0
+    let segmentsWithoutTokens = 0
+
+    const result = segments.map((seg: any, segIdx: number) => {
+      const tokens: any[] = seg?.tokens
+      if (!Array.isArray(tokens) || tokens.length === 0) {
+        segmentsWithoutTokens++
+        return []
+      }
+
+      segmentsWithTokens++
+      totalTokens += tokens.length
+
+      const segFrom: number = seg?.offsets?.from ?? seg?.t0 ?? 0
+      const segTo: number = seg?.offsets?.to ?? seg?.t1 ?? 0
+      const words: Array<{ word: string; startMs: number; endMs: number }> = []
+      let currentWordTokens: Array<{ text: string; startMs: number; endMs: number }> = []
+
+      for (const tok of tokens) {
+        const tokText: string = tok?.text ?? ''
+        // Skip whisper.cpp special tokens (IDs >= 50364: [_BEG_], [_TT_NNN], etc.).
+        // -ojf emits ALL decoded tokens including control markers, which corrupt
+        // word text and timing if not filtered here.
+        const tokId: number | undefined = tok?.id
+        if (tokId !== undefined && tokId >= 50364) continue
+        // Try multiple timestamp field names (whisper.cpp versions differ)
+        const from: number = tok?.offsets?.from ?? tok?.t0 ?? tok?.timestamps?.from ?? 0
+        const to: number = tok?.offsets?.to ?? tok?.t1 ?? tok?.timestamps?.to ?? 0
+
+        if (from === 0 && to === 0 && tokText.length > 0) {
+          // Token has text but no timing — suspicious, log once per segment
+          if (currentWordTokens.length === 0 && words.length === 0) {
+            console.warn(`[WhisperService] Segment ${segIdx}: tokens missing timestamp fields (offsets.from/to, t0/t1). Falling back to synthetic for this segment.`)
+          }
+          // Return empty to force synthetic fallback for this segment
+          return []
+        }
+
+        // A token starting with space indicates a new word boundary
+        if (tokText.startsWith(' ') && currentWordTokens.length > 0) {
+          const wordText = currentWordTokens.map((t) => t.text).join('').replace(/^\s+/, '').trim()
+          if (wordText) {
+            const wStart = currentWordTokens[0].startMs
+            const wEnd = currentWordTokens[currentWordTokens.length - 1].endMs
+            // Sanity: word timing must be within segment bounds
+            if (wEnd < wStart || wStart < segFrom || wEnd > segTo + 50) {
+              console.warn(`[WhisperService] Segment ${segIdx}: word "${wordText}" timing [${wStart},${wEnd}] outside segment [${segFrom},${segTo}] — discarding`)
+            } else {
+              words.push({ word: wordText, startMs: wStart, endMs: wEnd })
+            }
+          }
+          currentWordTokens = []
+        }
+
+        if (tokText.trim()) {
+          currentWordTokens.push({ text: tokText, startMs: from, endMs: to })
+        }
+      }
+
+      // Flush final word
+      if (currentWordTokens.length > 0) {
+        const wordText = currentWordTokens.map((t) => t.text).join('').replace(/^\s+/, '').trim()
+        if (wordText) {
+          const wStart = currentWordTokens[0].startMs
+          const wEnd = currentWordTokens[currentWordTokens.length - 1].endMs
+          if (wEnd >= wStart && wStart >= segFrom - 10) {
+            words.push({ word: wordText, startMs: wStart, endMs: wEnd })
+          }
+        }
+      }
+
+      totalWords += words.length
+
+      // Validate word count roughly matches text word count
+      if (words.length > 0 && seg?.text) {
+        const textWordCount = (seg.text as string).split(/\s+/).filter(Boolean).length
+        if (Math.abs(words.length - textWordCount) > textWordCount * 0.5) {
+          console.warn(`[WhisperService] Segment ${segIdx}: token-merged word count (${words.length}) differs significantly from text word count (${textWordCount}). Text: "${seg.text}"`)
+        }
+      }
+
+      return words
+    })
+
+    console.log(
+      `[WhisperService] JSON parse summary: ${segmentsWithTokens}/${segments.length} segments have tokens, ` +
+      `${totalTokens} tokens → ${totalWords} words. ` +
+      `${segmentsWithoutTokens} segments will use synthetic fallback.`
+    )
+
+    // If most segments lack tokens, the JSON is effectively useless
+    if (segmentsWithTokens === 0) {
+      console.warn('[WhisperService] No segments contain token arrays — JSON output is present but empty. Using synthetic fallback.')
+      return null
+    }
+
+    return result
+  }
+  
+  /**
+   * Fallback: distribute segment duration evenly across words by character count.
+   * Returns words marked as synthetic with timestamps RELATIVE to segment start (0-based).
+   */
+  private static syntheticWords(text: string, startMs: number, endMs: number): Array<{ word: string; startMs: number; endMs: number; synthetic: true }> {
+    const rawWords = text.split(/\s+/).filter(Boolean)
+    if (rawWords.length <= 1) return []
+  
+    // Proportional by character count (more accurate than even split)
+    const totalChars = rawWords.reduce((sum, w) => sum + w.length, 0)
+    const durationMs = endMs - startMs
+    let cursor = 0
+  
+    return rawWords.map((word) => {
+      const wordDuration = Math.round(durationMs * (word.length / totalChars))
+      const wStart = cursor
+      const wEnd = cursor + wordDuration
+      cursor = wEnd
+      return { word, startMs: wStart, endMs: wEnd, synthetic: true as const }
+    })
+  }
+  
+  /** Parse SRT content into CaptionEntry[] with optional JSON token data for word timestamps */
+  private static parseSRTOutput(content: string, wordTimestamps: boolean, jsonTokens?: Array<Array<{ word: string; startMs: number; endMs: number }>> | null): { entries: CaptionEntry[]; driftMs?: { min: number; max: number; mean: number; count: number } } {
     const entries: CaptionEntry[] = []
     const blocks = content.trim().split(/\n\s*\n/)
+
+    // Drift tracking: compare whisper timestamps vs synthetic (character-count) estimates
+    let driftDiffs: number[] = []
 
     for (const block of blocks) {
       const lines = block.trim().split('\n')
       if (lines.length < 3) continue
 
       const timeMatch = lines[1].match(
-        /(\d{2}):(\d{2}):(\d{2})[,.](\d{3})\s*-->\s*(\d{2}):(\d{2}):(\d{2})[,.](\d{3})/
+        /(\d{2}):(\d{2}):(\d{2})[, .](\d{3})\s*-->\s*(\d{2}):(\d{2}):(\d{2})[, .](\d{3})/
       )
       if (!timeMatch) continue
 
@@ -1339,29 +1582,58 @@ export class WhisperService {
       const text = lines.slice(2).join(' ').replace(/<\/?[^>]+(>|$)/g, '').trim()
 
       if (text) {
+        const idx = entries.length
         const entry: CaptionEntry = {
-          id: `cap_${entries.length}`,
+          id: `cap_${idx}`,
           startMs,
           endMs,
           text
         }
 
         if (wordTimestamps && text.includes(' ')) {
-          const words = text.split(/\s+/).filter(Boolean)
-          const durationMs = endMs - startMs
-          const wordDuration = durationMs / words.length
+          // Prefer actual Whisper token timestamps from JSON
+          const tokenWords = jsonTokens?.[idx]
+          if (tokenWords && tokenWords.length > 0) {
+            const textWords = text.split(/\s+/).filter(Boolean)
+            // Normalize absolute Whisper timestamps to be clip-relative (0-based).
+            // This ensures word timing survives move, copy/paste, and undo/redo.
+            entry.words = tokenWords.map((w) => ({ word: w.word, startMs: w.startMs - startMs, endMs: w.endMs - startMs }))
+            entry.wordTimestampsSource = 'whisper'
 
-          entry.words = words.map((word, i) => ({
-            word,
-            startMs: Math.round(startMs + i * wordDuration),
-            endMs: Math.round(startMs + (i + 1) * wordDuration)
-          }))
+            // Compute drift: compare whisper vs synthetic for the same segment
+            if (tokenWords.length === textWords.length) {
+              const synthetic = WhisperService.syntheticWords(text, startMs, endMs)
+              for (let i = 0; i < tokenWords.length; i++) {
+                // Normalize token timestamps to relative for fair comparison
+                const driftStart = Math.abs((tokenWords[i].startMs - startMs) - synthetic[i].startMs)
+                const driftEnd = Math.abs((tokenWords[i].endMs - startMs) - synthetic[i].endMs)
+                driftDiffs.push(driftStart, driftEnd)
+              }
+            }
+          } else {
+            // Fallback: proportional character-count estimation
+            entry.words = WhisperService.syntheticWords(text, startMs, endMs)
+            entry.wordTimestampsSource = 'synthetic'
+          }
         }
 
         entries.push(entry)
       }
     }
 
-    return entries
+    // Compute drift statistics
+    let driftMs: { min: number; max: number; mean: number; count: number } | undefined
+    if (driftDiffs.length > 0) {
+      const sum = driftDiffs.reduce((a, b) => a + b, 0)
+      driftMs = {
+        min: Math.round(Math.min(...driftDiffs)),
+        max: Math.round(Math.max(...driftDiffs)),
+        mean: Math.round(sum / driftDiffs.length),
+        count: driftDiffs.length
+      }
+      console.log(`[WhisperService] Word timing drift (whisper vs synthetic): min=${driftMs.min}ms max=${driftMs.max}ms mean=${driftMs.mean}ms (${driftMs.count} samples)`)
+    }
+
+    return { entries, driftMs }
   }
 }

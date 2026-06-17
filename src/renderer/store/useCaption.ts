@@ -22,6 +22,10 @@ export interface CaptionStyle {
   /** Uniform scale multiplier (1.0 = native size) */
   scale: number
   animation: 'none' | 'pop' | 'fade' | 'slide-up' | 'karaoke' | 'typewriter'
+  /** Word-level caption display mode (independent from entry animation) */
+  captionMode: 'full-phrase' | 'word-reveal' | 'karaoke' | 'single-word'
+  /** Smooth fade-in for words in word-reveal mode (ms). 0 = instant (default). 80-120ms recommended. */
+  revealFadeMs?: number
 }
 
 interface CaptionState {
@@ -71,7 +75,9 @@ const defaultStyle: CaptionStyle = {
   y: 90,
   rotation: 0,
   scale: 1,
-  animation: 'pop'
+  animation: 'pop',
+  captionMode: 'full-phrase',
+  revealFadeMs: 0
 }
 
 const initialState: CaptionState = {
@@ -134,6 +140,7 @@ export const useCaption = create<CaptionState & CaptionActions>()(
             text: entry.text,
             style: { ...activeStyle },
             words: entry.words,
+            wordTimestampsSource: entry.wordTimestampsSource,
             sourceId: audioPath,
             sourceType: 'clip' as const,
             transcriptionJobId: jobId
@@ -237,6 +244,7 @@ export const useCaption = create<CaptionState & CaptionActions>()(
             text: entry.text,
             style: { ...activeStyle },
             words: entry.words,
+            wordTimestampsSource: entry.wordTimestampsSource,
             sourceId: clipId,
             sourceType: 'clip' as const,
             transcriptionJobId: jobId
@@ -326,6 +334,7 @@ export const useCaption = create<CaptionState & CaptionActions>()(
             text: entry.text,
             style: { ...activeStyle },
             words: entry.words,
+            wordTimestampsSource: entry.wordTimestampsSource,
             sourceId: `track_${trackIndex}`,
             sourceType: 'audioTrack' as const,
             transcriptionJobId: jobId
@@ -422,6 +431,7 @@ export const useCaption = create<CaptionState & CaptionActions>()(
             text: entry.text,
             style: { ...activeStyle },
             words: entry.words,
+            wordTimestampsSource: entry.wordTimestampsSource,
             sourceId: 'timeline',
             sourceType: 'timeline' as const,
             transcriptionJobId: jobId
@@ -471,7 +481,9 @@ export const useCaption = create<CaptionState & CaptionActions>()(
         id: `text_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
         startMs: orig.endMs + 50,
         durationMs: orig.durationMs,
-        endMs: orig.endMs + 50 + orig.durationMs
+        endMs: orig.endMs + 50 + orig.durationMs,
+        style: orig.style ? { ...orig.style } : undefined,
+        words: orig.words ? orig.words.map((w) => ({ ...w })) : undefined
       }
       timeline.addTextClip(newClip)
       timeline.selectTextClip(newClip.id)
@@ -565,6 +577,24 @@ export const useCaption = create<CaptionState & CaptionActions>()(
       const a = timeline.textClips.find((tc) => tc.id === id1)
       const b = timeline.textClips.find((tc) => tc.id === id2)
       if (!a || !b) return
+
+      // Normalize b's word timestamps to be relative to the merged clip's startMs
+      const bOffset = b.startMs - a.startMs
+      const mergedWords: TextClip['words'] = [
+        ...(a.words ?? []),
+        ...(b.words ?? []).map((w) => ({
+          ...w,
+          startMs: w.startMs + bOffset,
+          endMs: w.endMs + bOffset
+        }))
+      ]
+
+      // Preserve wordTimestampsSource: whisper wins over synthetic
+      const mergedSource: TextClip['wordTimestampsSource'] =
+        a.wordTimestampsSource === 'whisper' || b.wordTimestampsSource === 'whisper'
+          ? 'whisper'
+          : a.wordTimestampsSource ?? b.wordTimestampsSource
+
       const mergedId = `${id1}_merged`
       const mergedClip: TextClip = {
         id: mergedId,
@@ -574,6 +604,8 @@ export const useCaption = create<CaptionState & CaptionActions>()(
         trackIndex: a.trackIndex,
         text: `${a.text} ${b.text}`.trim(),
         style: a.style,
+        words: mergedWords.length > 0 ? mergedWords : undefined,
+        wordTimestampsSource: mergedSource,
         sourceId: a.sourceId ?? b.sourceId,
         sourceType: a.sourceType ?? b.sourceType,
         transcriptionJobId: a.transcriptionJobId ?? b.transcriptionJobId
@@ -590,41 +622,58 @@ export const useCaption = create<CaptionState & CaptionActions>()(
     reformatForShorts: () => {
       pushUndoSnapshot()
       const timeline = useTimeline.getState()
-      const MAX_WORDS = 8
-      const MIN_WORDS = 3
       const clips = [...timeline.textClips].sort((a, b) => a.startMs - b.startMs)
 
       const newClips: TextClip[] = []
+
       for (const clip of clips) {
-        const words = clip.text.trim().split(/\s+/).filter(Boolean)
-        if (words.length < MIN_WORDS && newClips.length > 0) {
-          const prev = newClips[newClips.length - 1]
-          prev.text = `${prev.text} ${clip.text}`.trim()
-          prev.endMs = clip.endMs
-          prev.durationMs = prev.endMs - prev.startMs
-        } else if (words.length > MAX_WORDS) {
-          const durationMs = clip.endMs - clip.startMs
-          const chunkCount = Math.ceil(words.length / MAX_WORDS)
-          const msPerChunk = durationMs / chunkCount
-          for (let i = 0; i < chunkCount; i++) {
+        // --- PATH A: Real word timestamps — one clip per word, timecode-driven ---
+        if (clip.words && clip.words.length > 0) {
+          const words = clip.words
+
+          for (let i = 0; i < words.length; i++) {
+            const w = words[i]
             newClips.push({
               id: `${clip.id}_short_${i}`,
-              startMs: Math.round(clip.startMs + i * msPerChunk),
-              durationMs: Math.round(msPerChunk),
-              endMs: Math.round(clip.startMs + (i + 1) * msPerChunk),
+              startMs: Math.round(clip.startMs + w.startMs),
+              durationMs: Math.round(w.endMs - w.startMs),
+              endMs: Math.round(clip.startMs + w.endMs),
               trackIndex: clip.trackIndex,
-              text: words.slice(i * MAX_WORDS, (i + 1) * MAX_WORDS).join(' '),
+              text: w.word,
               style: clip.style,
+              words: [{ ...w, startMs: 0, endMs: w.endMs - w.startMs }],
+              wordTimestampsSource: clip.wordTimestampsSource ?? undefined,
               sourceId: clip.sourceId,
               sourceType: clip.sourceType,
               transcriptionJobId: clip.transcriptionJobId
             })
           }
-        } else {
-          newClips.push({ ...clip })
+          continue
+        }
+
+        // --- PATH B: No word timestamps — split text by spaces equally across duration ---
+        const textWords = clip.text.trim().split(/\s+/).filter(Boolean)
+        if (textWords.length === 0) continue
+
+        const durationMs = clip.endMs - clip.startMs
+        const msPerWord = durationMs / textWords.length
+        for (let i = 0; i < textWords.length; i++) {
+          newClips.push({
+            id: `${clip.id}_short_${i}`,
+            startMs: Math.round(clip.startMs + i * msPerWord),
+            durationMs: Math.round(msPerWord),
+            endMs: Math.round(clip.startMs + (i + 1) * msPerWord),
+            trackIndex: clip.trackIndex,
+            text: textWords[i],
+            style: clip.style,
+            wordTimestampsSource: clip.wordTimestampsSource ?? undefined,
+            sourceId: clip.sourceId,
+            sourceType: clip.sourceType,
+            transcriptionJobId: clip.transcriptionJobId
+          })
         }
       }
-      // Single atomic replace — avoid N+N state updates
+
       useTimeline.setState({ textClips: newClips })
     },
 

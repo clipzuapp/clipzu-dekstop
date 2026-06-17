@@ -53,6 +53,8 @@ interface ExportActions {
     captionStyle: any
     outputPath: string
     totalDurationMs: number
+    projectWidth: number
+    projectHeight: number
   }) => Promise<void>
   cancelExport: (jobId: string) => Promise<void>
   clearQueue: () => void

@@ -50,7 +50,8 @@ export function TextPanel(): JSX.Element {
         y: 90,
         rotation: 0,
         scale: 1,
-        animation: preset.animation as any
+        animation: preset.animation as any,
+        captionMode: 'full-phrase'
       }
     })
 
@@ -122,7 +123,8 @@ export function TextPanel(): JSX.Element {
                 y: 90,
                 rotation: 0,
                 scale: 1,
-                animation: 'pop'
+                animation: 'pop',
+                captionMode: 'full-phrase'
               }
             })
             useTimeline.getState().selectTextClip(newId)

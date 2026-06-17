@@ -227,7 +227,10 @@ function ClipBasicTab(): JSX.Element {
 // Caption Style Tab (rightTab='basic' + caption/textClip selected)
 // ---------------------------------------------------------------------------
 
-const FONT_OPTIONS = ['Inter', 'Arial', 'Roboto', 'Impact', 'Oswald']
+const FONT_OPTIONS = [
+  'Inter', 'Bebas Neue', 'Montserrat', 'Poppins', 'Anton', 'Oswald', 'Fredoka',
+  'Arial', 'Roboto', 'Impact'
+]
 const ANIM_PRESETS: Array<'none' | 'pop' | 'fade' | 'slide-up' | 'karaoke' | 'typewriter'> = [
   'pop', 'fade', 'slide-up', 'karaoke', 'typewriter', 'none'
 ]
@@ -355,6 +358,47 @@ function CaptionStyleTab(): JSX.Element {
           }}
           style={{ width: '100%', accentColor: 'var(--accent)' }} />
       </div>
+
+      {/* Caption Mode */}
+      <SectionHeader title="Caption Mode" />
+      <div style={{ padding: '0 12px' }}>
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '4px' }}>
+          {(['full-phrase', 'word-reveal', 'karaoke', 'single-word'] as const).map((mode) => (
+            <button key={mode}
+              onClick={() => applyStyleToSelected({ captionMode: mode })}
+              style={{
+                padding: '4px 2px', fontSize: '10px', borderRadius: '3px', cursor: 'pointer',
+                background: effectiveStyle.captionMode === mode ? 'rgba(79,127,255,0.2)' : 'var(--bg2)',
+                color: effectiveStyle.captionMode === mode ? 'var(--accent)' : 'var(--text3)',
+                border: effectiveStyle.captionMode === mode
+                  ? '0.5px solid rgba(79,127,255,0.4)'
+                  : '0.5px solid var(--border)',
+                textTransform: 'capitalize'
+              }}>
+              {mode.replace('-', ' ')}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {/* Reveal Fade (word-reveal only) */}
+      {effectiveStyle.captionMode === 'word-reveal' && (
+        <>
+          <SectionHeader title="Reveal Fade" />
+          <div style={{ padding: '0 12px' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '2px' }}>
+              <span style={{ fontSize: '10px', color: 'var(--text3)' }}>Fade Duration</span>
+              <span style={{ fontSize: '10px', color: 'var(--text1)', fontFamily: 'monospace' }}>{effectiveStyle.revealFadeMs ?? 0}ms</span>
+            </div>
+            <input type="range" min={0} max={200} step={10} value={effectiveStyle.revealFadeMs ?? 0}
+              onChange={(e) => applyStyleToSelected({ revealFadeMs: parseInt(e.target.value) })}
+              style={{ width: '100%', accentColor: 'var(--accent)' }} />
+            <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '9px', color: 'var(--text3)', marginTop: '2px' }}>
+              <span>Instant</span><span>Smooth</span>
+            </div>
+          </div>
+        </>
+      )}
 
       {/* Position */}
       <SectionHeader title="Position" />
