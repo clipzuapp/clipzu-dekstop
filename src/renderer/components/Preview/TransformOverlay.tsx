@@ -1,4 +1,4 @@
-import { useRef, useCallback } from 'react'
+import { useRef, useCallback, useMemo } from 'react'
 import { useTimeline } from '../../store/useTimeline'
 import { useProject } from '../../store/useProject'
 import { getTextClipPercentBounds } from '../../utils/geometry'
@@ -18,10 +18,19 @@ type DragOp = 'move' | 'resize-ne' | 'resize-nw' | 'resize-se' | 'resize-sw' | '
 export function TransformOverlay(): JSX.Element | null {
   const containerRef = useRef<HTMLDivElement>(null)
 
-  const selectedClipId = useTimeline((s) => s.selectedClipId)
-  const selectedTextClipId = useTimeline((s) => s.selectedTextClipId)
+  const focusedId = useTimeline((s) => s.focusedId)
   const clips = useTimeline((s) => s.clips)
   const textClips = useTimeline((s) => s.textClips)
+
+  const selectedClipId = useMemo(() => {
+    if (!focusedId) return null
+    return clips.some((c) => c.id === focusedId) ? focusedId : null
+  }, [focusedId, clips])
+
+  const selectedTextClipId = useMemo(() => {
+    if (!focusedId) return null
+    return textClips.some((tc) => tc.id === focusedId) ? focusedId : null
+  }, [focusedId, textClips])
   const updateTextClipLive = useTimeline((s) => s.updateTextClipLive)
   const beginDragCapture = useTimeline((s) => s.beginDragCapture)
   const commitDrag = useTimeline((s) => s.commitDrag)

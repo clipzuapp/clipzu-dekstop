@@ -6,6 +6,7 @@ import { registerFFmpegHandler } from './ipc/ffmpeg.handler'
 import { registerWhisperHandler } from './ipc/whisper.handler'
 import { registerExportHandler } from './ipc/export.handler'
 import { registerProjectHandler } from './ipc/project.handler'
+import { registerSFXHandler } from './ipc/sfx.handler'
 import { FFmpegService } from './services/FFmpegService'
 import { WhisperService, type ModelCompatibilityInfo } from './services/WhisperService'
 import { ThumbnailService } from './services/ThumbnailService'
@@ -164,6 +165,7 @@ app.whenReady().then(() => {
   registerWhisperHandler(getWindow, whisper, ffmpeg)
   registerExportHandler(exportQueue)
   registerProjectHandler(getWindow)
+  registerSFXHandler(getWindow)
 
   // Push startup validation result to renderer after it loads
   const validation = validateStartupDeps(ffmpegPath, ffprobePath, modelPath)

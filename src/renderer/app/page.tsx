@@ -15,12 +15,13 @@ import { LeftRail, type LeftTabId } from '../components/LeftRail/index'
 import { RightRail, type RightTabId } from '../components/RightRail/index'
 import { TextPanel } from '../components/TextPanel/index'
 import { CaptionEditor } from '../components/CaptionEditor/index'
+import { AudioPanel } from '../components/AudioPanel/index'
 import { ComingSoonPanel } from '../components/ComingSoonPanel/index'
 import { useExport } from '../store/useExport'
 import { useProject, type ProjectState, type ProjectActions } from '../store/useProject'
 import { useStartup } from '../store/useStartup'
-import { useTimeline } from '../store/useTimeline'
-import { useCaption } from '../store/useCaption'
+import { useTimeline, createTextClip } from '../store/useTimeline'
+import { useCaption, defaultStyle } from '../store/useCaption'
 import { useToast } from '../store/useToast'
 
 // ---------------------------------------------------------------------------
@@ -150,50 +151,29 @@ export default function Page(): JSX.Element {
       useToast.getState().warning('Add a video clip to the timeline first.')
       return
     }
-    const targetId = timeline.selectedClipId ?? clips[0].id
+    const targetId = timeline.focusedId ?? clips[0]?.id
     try {
       await useCaption.getState().transcribeClip(targetId)
     } catch (e) {
       console.error('Transcription failed:', e)
+      useToast.getState().error(`Transcription failed: ${(e as Error).message}`)
     }
   }, [])
 
   const handleAddText = useCallback(() => {
     const { playheadMs, totalDurationMs } = useTimeline.getState()
     const durationMs = Math.min(3000, Math.max(500, totalDurationMs - playheadMs))
-    const ts = Date.now()
-    const rand = Math.random().toString(36).slice(2, 6)
-    const newId = `text_${ts}_${rand}`
 
-    useTimeline.getState().addTextClip({
-      id: newId,
+    const clip = createTextClip({
+      text: 'New text',
       startMs: playheadMs,
       durationMs,
       endMs: playheadMs + durationMs,
-      trackIndex: 0,
-      text: 'New text',
-      style: {
-        fontFamily: 'Inter',
-        fontSize: 48,
-        fontWeight: 700,
-        color: '#ffffff',
-        strokeColor: '#000000',
-        strokeWidth: 1,
-        bgColor: '#000000',
-        bgOpacity: 0.5,
-        alignment: 'center',
-        position: 'bottom',
-        x: 50,
-        y: 90,
-        rotation: 0,
-        scale: 1,
-        animation: 'pop',
-        captionMode: 'full-phrase'
-      }
+      style: { ...defaultStyle },
     })
 
-    // Auto-select the new text clip so Inspector shows it
-    useTimeline.getState().selectTextClip(newId)
+    useTimeline.getState().addTextClip(clip)
+    useTimeline.getState().selectTextClip(clip.id)
   }, [])
 
   const missingItems = validation
@@ -405,7 +385,7 @@ export default function Page(): JSX.Element {
             {activeLeftTab === 'captions' && <CaptionEditor />}
             {activeLeftTab === 'templates' && <ComingSoonPanel label="Templates" />}
             {activeLeftTab === 'elements' && <ComingSoonPanel label="Elements" />}
-            {activeLeftTab === 'audio' && <ComingSoonPanel label="Audio" />}
+            {activeLeftTab === 'audio' && <AudioPanel />}
             {activeLeftTab === 'transcript' && <ComingSoonPanel label="Transcript" />}
             {activeLeftTab === 'effects' && <ComingSoonPanel label="Effects" />}
             {activeLeftTab === 'transitions' && <ComingSoonPanel label="Transitions" />}

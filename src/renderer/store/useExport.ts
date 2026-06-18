@@ -48,9 +48,27 @@ interface ExportActions {
     clipPaths: string[]
     clipTrackIndices: number[]
     clipTransforms: Array<{ x: number; y: number; scaleX: number; scaleY: number; rotation: number; opacity: number; cropTop: number; cropBottom: number; cropLeft: number; cropRight: number } | null>
+    clipVolumes: Array<{ volume: number; muted: boolean }>
     audioTracks: Array<{ path: string; startMs: number; volume: number }>
     srtPath: string | null
-    captionStyle: any
+    captionStyle: {
+      fontFamily: string
+      fontSize: number
+      fontWeight: number
+      fontColor: string
+      bgColor: string
+      bgOpacity: number
+      strokeColor: string
+      strokeWidth: number
+      x: number
+      y: number
+      alignment: 'left' | 'center' | 'right'
+      position: 'top' | 'center' | 'bottom'
+      scale?: number
+      captionMode?: 'full-phrase' | 'word-reveal' | 'karaoke' | 'single-word'
+      animation?: 'none' | 'pop' | 'fade' | 'slide-up' | 'karaoke' | 'typewriter'
+      revealFadeMs?: number
+    } | null
     outputPath: string
     totalDurationMs: number
     projectWidth: number

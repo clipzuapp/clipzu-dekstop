@@ -31,6 +31,7 @@ export function PlaybackControls(): JSX.Element {
   }
 
   const handleJumpStart = (): void => {
+    if (isPlaying) setPlaying(false) // Stop playback when jumping to start
     setPlayhead(0)
   }
 

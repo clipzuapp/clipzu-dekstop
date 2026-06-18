@@ -1,11 +1,12 @@
-import { useTimeline } from '../../store/useTimeline'
+import { useTimeline, createTextClip } from '../../store/useTimeline'
+import { defaultStyle, type CaptionStyle } from '../../store/useCaption'
 import { Type } from 'lucide-react'
 
 interface TextPreset {
   label: string
   fontSize: number
   fontWeight: number
-  animation: string
+  animation: CaptionStyle['animation']
   description: string
 }
 
@@ -24,38 +25,22 @@ export function TextPanel(): JSX.Element {
   const handleAddPreset = (preset: TextPreset): void => {
     const { playheadMs, totalDurationMs } = useTimeline.getState()
     const durationMs = Math.min(3000, Math.max(500, totalDurationMs - playheadMs))
-    const ts = Date.now()
-    const rand = Math.random().toString(36).slice(2, 6)
-    const newId = `text_${ts}_${rand}`
 
-    useTimeline.getState().addTextClip({
-      id: newId,
+    const clip = createTextClip({
+      text: preset.label,
       startMs: playheadMs,
       durationMs,
       endMs: playheadMs + durationMs,
-      trackIndex: 0,
-      text: preset.label,
       style: {
-        fontFamily: 'Inter',
+        ...defaultStyle,
         fontSize: preset.fontSize,
         fontWeight: preset.fontWeight,
-        color: '#ffffff',
-        strokeColor: '#000000',
-        strokeWidth: 1,
-        bgColor: '#000000',
-        bgOpacity: 0.5,
-        alignment: 'center',
-        position: 'bottom',
-        x: 50,
-        y: 90,
-        rotation: 0,
-        scale: 1,
-        animation: preset.animation as any,
-        captionMode: 'full-phrase'
+        animation: preset.animation
       }
     })
 
-    useTimeline.getState().selectTextClip(newId)
+    useTimeline.getState().addTextClip(clip)
+    useTimeline.getState().selectTextClip(clip.id)
   }
 
   return (
@@ -95,39 +80,19 @@ export function TextPanel(): JSX.Element {
       <div style={{ padding: '10px 12px' }}>
         <button
           onClick={() => {
-            // Reuse handleAddText logic inline
             const { playheadMs, totalDurationMs } = useTimeline.getState()
             const durationMs = Math.min(3000, Math.max(500, totalDurationMs - playheadMs))
-            const ts = Date.now()
-            const rand = Math.random().toString(36).slice(2, 6)
-            const newId = `text_${ts}_${rand}`
-            useTimeline.getState().addTextClip({
-              id: newId,
+
+            const clip = createTextClip({
+              text: 'New text',
               startMs: playheadMs,
               durationMs,
               endMs: playheadMs + durationMs,
-              trackIndex: 0,
-              text: 'New text',
-              style: {
-                fontFamily: 'Inter',
-                fontSize: 48,
-                fontWeight: 700,
-                color: '#ffffff',
-                strokeColor: '#000000',
-                strokeWidth: 1,
-                bgColor: '#000000',
-                bgOpacity: 0.5,
-                alignment: 'center',
-                position: 'bottom',
-                x: 50,
-                y: 90,
-                rotation: 0,
-                scale: 1,
-                animation: 'pop',
-                captionMode: 'full-phrase'
-              }
+              style: { ...defaultStyle },
             })
-            useTimeline.getState().selectTextClip(newId)
+
+            useTimeline.getState().addTextClip(clip)
+            useTimeline.getState().selectTextClip(clip.id)
           }}
           style={{
             width: '100%',

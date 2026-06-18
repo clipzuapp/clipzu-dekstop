@@ -60,19 +60,19 @@ interface CaptionActions {
   detectAndStoreSilences: (gapThresholdMs?: number) => Array<{ startMs: number; endMs: number; durationMs: number }>
 }
 
-const defaultStyle: CaptionStyle = {
+export const defaultStyle: CaptionStyle = {
   fontFamily: 'Inter',
   fontSize: 48,
-  fontWeight: 500,
+  fontWeight: 700,
   color: '#ffffff',
   strokeColor: '#000000',
-  strokeWidth: 0,
+  strokeWidth: 1,
   bgColor: '#000000',
   bgOpacity: 0.5,
   alignment: 'center',
   position: 'bottom',
   x: 50,
-  y: 90,
+  y: 75,
   rotation: 0,
   scale: 1,
   animation: 'pop',
@@ -91,94 +91,106 @@ const initialState: CaptionState = {
 /** Module-level cleanup for whisper:progress listener to prevent leaks */
 let whisperProgressCleanup: (() => void) | null = null
 
+/**
+ * Shared transcription lifecycle — status/progress management, IPC invocation,
+ * TextClip mapping, error handling, and progress listener cleanup.
+ * Used by transcribe, transcribeClip, transcribeTrack, and transcribeTimeline.
+ */
+async function _runTranscription(
+  set: (fn: (state: any) => void) => void,
+  invokeIpc: () => Promise<{ entries?: CaptionEntry[]; language?: string }>,
+  sourceId: string,
+  sourceType: TextClip['sourceType']
+): Promise<{ entries?: CaptionEntry[]; language?: string } | null> {
+  set((state: any) => {
+    state.status = 'transcribing'
+    state.progress = 0
+    state.error = null
+  })
+
+  if (whisperProgressCleanup) {
+    whisperProgressCleanup()
+    whisperProgressCleanup = null
+  }
+
+  try {
+    const handler = (_event: any, percent: number) => {
+      useCaption.getState().setProgress(percent)
+    }
+    whisperProgressCleanup = window.electron.ipcRenderer.on('whisper:progress', handler)
+
+    const result = await invokeIpc()
+
+    // Map entries to TextClips and insert in batch
+    if (result.entries && result.entries.length > 0) {
+      const { addTextClips } = useTimeline.getState()
+      const activeStyle = useCaption.getState().activeStyle
+      const jobId = `job_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`
+      const newClips: TextClip[] = result.entries.map((entry, idx) => ({
+        id: `text_${Date.now()}_${idx}`,
+        startMs: entry.startMs,
+        durationMs: entry.endMs - entry.startMs,
+        endMs: entry.endMs,
+        trackIndex: 0,
+        text: entry.text,
+        style: { ...activeStyle },
+        words: entry.words,
+        wordTimestampsSource: entry.wordTimestampsSource,
+        sourceId,
+        sourceType,
+        transcriptionJobId: jobId
+      }))
+      addTextClips(newClips)
+    } else {
+      useToast.getState().warning('Transcription produced no captions — check audio track or model.')
+    }
+
+    set((state: any) => {
+      state.status = 'done'
+      state.progress = 100
+      state.language = result.language || 'auto'
+    })
+
+    return result
+  } catch (err) {
+    set((state: any) => {
+      state.status = 'error'
+      state.error = (err as Error).message
+    })
+    return null
+  } finally {
+    if (whisperProgressCleanup) {
+      whisperProgressCleanup()
+      whisperProgressCleanup = null
+    }
+  }
+}
+
 export const useCaption = create<CaptionState & CaptionActions>()(
   immer((set) => ({
     ...initialState,
 
     transcribe: async (audioPath: string, language?: string) => {
-      set((state) => {
-        state.status = 'transcribing'
-        state.progress = 0
-        state.error = null
-      })
+      await _runTranscription(
+        set,
+        () => window.electron.ipcRenderer.invoke('whisper:transcribe', audioPath, language || 'auto', true),
+        audioPath,
+        'clip'
+      )
 
-      // Clean up previous listener before registering a new one
-      if (whisperProgressCleanup) {
-        whisperProgressCleanup()
-        whisperProgressCleanup = null
-      }
-
+      // Auto-detect silence gaps and add timeline markers
       try {
-        // Listen for progress updates
-        const handler = (_event: any, percent: number) => {
-          useCaption.getState().setProgress(percent)
-        }
-        whisperProgressCleanup = window.electron.ipcRenderer.on('whisper:progress', handler)
-
-        const result = await window.electron.ipcRenderer.invoke(
-          'whisper:transcribe',
-          audioPath,
-          language || 'auto',
-          true
-        ) as { entries?: CaptionEntry[]; language?: string }
-
-        if (!result.entries || result.entries.length === 0) {
-          useToast.getState().warning('Transcription produced no captions — check audio track or model.')
-        }
-
-        // Create TextClips from transcription result (same flow as transcribeClip)
-        if (result.entries && result.entries.length > 0) {
-          const { addTextClips } = useTimeline.getState()
-          const activeStyle = useCaption.getState().activeStyle
-          const jobId = `job_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`
-          const newClips: TextClip[] = result.entries.map((entry, idx) => ({
-            id: `text_${Date.now()}_${idx}`,
-            startMs: entry.startMs,
-            durationMs: entry.endMs - entry.startMs,
-            endMs: entry.endMs,
-            trackIndex: 0,
-            text: entry.text,
-            style: { ...activeStyle },
-            words: entry.words,
-            wordTimestampsSource: entry.wordTimestampsSource,
-            sourceId: audioPath,
-            sourceType: 'clip' as const,
-            transcriptionJobId: jobId
-          }))
-          addTextClips(newClips)
-          useToast.getState().success(`Transcription complete — ${newClips.length} captions`)
-        }
-
-        set((state) => {
-          state.status = 'done'
-          state.progress = 100
-          state.language = result.language || language || 'auto'
-        })
-
-        // Auto-detect silence gaps and add timeline markers
-        try {
-          const { useTimeline } = await import('./useTimeline')
-          const captionState = useCaption.getState()
-          const silences = captionState.detectAndStoreSilences(1500)
-          silences.forEach((s) => {
-            useTimeline.getState().addMarker({
-              timeMs: s.startMs,
-              label: `Silence ${Math.round(s.durationMs / 100) / 10}s`,
-              color: '#FF6B6B'
-            })
+        const { useTimeline } = await import('./useTimeline')
+        const captionState = useCaption.getState()
+        const silences = captionState.detectAndStoreSilences(1500)
+        silences.forEach((s) => {
+          useTimeline.getState().addMarker({
+            timeMs: s.startMs,
+            label: `Silence ${Math.round(s.durationMs / 100) / 10}s`,
+            color: '#FF6B6B'
           })
-        } catch { /* non-critical */ }
-      } catch (err) {
-        set((state) => {
-          state.status = 'error'
-          state.error = (err as Error).message
         })
-      } finally {
-        if (whisperProgressCleanup) {
-          whisperProgressCleanup()
-          whisperProgressCleanup = null
-        }
-      }
+      } catch { /* non-critical */ }
     },
 
     cancelTranscription: async () => {
@@ -200,85 +212,25 @@ export const useCaption = create<CaptionState & CaptionActions>()(
         return
       }
 
-      set((state) => {
-        state.status = 'transcribing'
-        state.progress = 0
-        state.error = null
-      })
-
-      if (whisperProgressCleanup) {
-        whisperProgressCleanup()
-        whisperProgressCleanup = null
-      }
-
-      try {
-        const handler = (_event: any, percent: number) => {
-          useCaption.getState().setProgress(percent)
-        }
-        whisperProgressCleanup = window.electron.ipcRenderer.on('whisper:progress', handler)
-
-        const result = await window.electron.ipcRenderer.invoke(
-          'whisper:transcribeFromTimeline',
-          {
-            type: 'clip',
-            clipPath: clip.path,
-            trimStartMs: clip.trimStart,
-            trimEndMs: clip.trimEnd,
-            sourceDurationMs: clip.sourceDurationMs,
-            language: language || 'auto'
-          }
-        ) as { entries?: CaptionEntry[]; language?: string }
-
-        // Create TextClips from transcription result in a single batch
-        const { addTextClips } = useTimeline.getState()
-        const activeStyle = useCaption.getState().activeStyle
-        const jobId = `job_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`
-        
-        if (result.entries) {
-          const newClips: TextClip[] = result.entries.map((entry, idx) => ({
-            id: `text_${Date.now()}_${idx}`,
-            startMs: entry.startMs,
-            durationMs: entry.endMs - entry.startMs,
-            endMs: entry.endMs,
-            trackIndex: 0,
-            text: entry.text,
-            style: { ...activeStyle },
-            words: entry.words,
-            wordTimestampsSource: entry.wordTimestampsSource,
-            sourceId: clipId,
-            sourceType: 'clip' as const,
-            transcriptionJobId: jobId
-          }))
-          addTextClips(newClips)
-        }
-
-        if (!result.entries || result.entries.length === 0) {
-          useToast.getState().warning('Transcription produced no captions — check audio track or model.')
-        }
-
-        set((state) => {
-          state.status = 'done'
-          state.progress = 100
-          state.language = result.language || language || 'auto'
-        })
-      } catch (err) {
-        set((state) => {
-          state.status = 'error'
-          state.error = (err as Error).message
-        })
-      } finally {
-        if (whisperProgressCleanup) {
-          whisperProgressCleanup()
-          whisperProgressCleanup = null
-        }
-      }
+      await _runTranscription(
+        set,
+        () => window.electron.ipcRenderer.invoke('whisper:transcribeFromTimeline', {
+          type: 'clip',
+          clipPath: clip.path,
+          trimStartMs: clip.trimStart,
+          trimEndMs: clip.trimEnd,
+          sourceDurationMs: clip.sourceDurationMs,
+          language: language || 'auto'
+        }),
+        clipId,
+        'clip'
+      )
     },
 
     transcribeTrack: async (trackIndex: number, language?: string) => {
       const timeline = useTimeline.getState()
-      // Filter clips and audio tracks that belong to this track index
       const trackClips = timeline.clips.filter((c) => c.trackIndex === trackIndex)
-      
+
       if (trackClips.length === 0) {
         set((state) => {
           state.status = 'error'
@@ -287,81 +239,22 @@ export const useCaption = create<CaptionState & CaptionActions>()(
         return
       }
 
-      set((state) => {
-        state.status = 'transcribing'
-        state.progress = 0
-        state.error = null
-      })
+      const mixSources = trackClips.map((c) => ({
+        path: c.path, startMs: c.startMs, durationMs: c.durationMs
+      }))
+      const allPaths = trackClips.map((c) => c.path)
 
-      if (whisperProgressCleanup) {
-        whisperProgressCleanup()
-        whisperProgressCleanup = null
-      }
-
-      try {
-        const handler = (_event: any, percent: number) => {
-          useCaption.getState().setProgress(percent)
-        }
-        whisperProgressCleanup = window.electron.ipcRenderer.on('whisper:progress', handler)
-
-        // Build mix sources scoped to this track only
-        const mixSources = trackClips.map((c) => ({
-          path: c.path, startMs: c.startMs, durationMs: c.durationMs
-        }))
-        const allPaths = trackClips.map((c) => c.path)
-
-        const result = await window.electron.ipcRenderer.invoke(
-          'whisper:transcribeFromTimeline',
-          {
-            type: 'timeline',
-            mixPaths: allPaths,
-            mixSources,
-            language: language || 'auto'
-          }
-        ) as { entries?: CaptionEntry[]; language?: string }
-
-        const { addTextClips } = useTimeline.getState()
-        const activeStyle = useCaption.getState().activeStyle
-        const jobId = `job_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`
-        
-        if (result.entries) {
-          const newClips: TextClip[] = result.entries.map((entry, idx) => ({
-            id: `text_${Date.now()}_${idx}`,
-            startMs: entry.startMs,
-            durationMs: entry.endMs - entry.startMs,
-            endMs: entry.endMs,
-            trackIndex: 0,
-            text: entry.text,
-            style: { ...activeStyle },
-            words: entry.words,
-            wordTimestampsSource: entry.wordTimestampsSource,
-            sourceId: `track_${trackIndex}`,
-            sourceType: 'audioTrack' as const,
-            transcriptionJobId: jobId
-          }))
-          addTextClips(newClips)
-        }
-
-        if (!result.entries || result.entries.length === 0) {
-          useToast.getState().warning('Transcription produced no captions — check audio track or model.')
-        }
-
-        set((state) => {
-          state.status = 'done'
-          state.progress = 100
-          state.language = result.language || language || 'auto'
-        })
-      } catch (err) {
-        set((state) => {
-          state.status = 'error'
-          state.error = (err as Error).message
-        })
-      } finally {
-        if (whisperProgressCleanup) {
-          whisperProgressCleanup()
-          whisperProgressCleanup = null
-        }
-      }
+      await _runTranscription(
+        set,
+        () => window.electron.ipcRenderer.invoke('whisper:transcribeFromTimeline', {
+          type: 'timeline',
+          mixPaths: allPaths,
+          mixSources,
+          language: language || 'auto'
+        }),
+        `track_${trackIndex}`,
+        'audioTrack'
+      )
     },
 
     transcribeTimeline: async (language?: string) => {
@@ -374,91 +267,30 @@ export const useCaption = create<CaptionState & CaptionActions>()(
         return
       }
 
-      set((state) => {
-        state.status = 'transcribing'
-        state.progress = 0
-        state.error = null
-      })
+      const clipAudioPaths = timeline.clips.map((c) => c.path)
+      const voiceAudioPaths = timeline.audioTracks
+        .filter((a) => a.role === 'voice')
+        .map((a) => a.path)
+      const allPaths = [...clipAudioPaths, ...voiceAudioPaths]
 
-      if (whisperProgressCleanup) {
-        whisperProgressCleanup()
-        whisperProgressCleanup = null
-      }
-
-      try {
-        const handler = (_event: any, percent: number) => {
-          useCaption.getState().setProgress(percent)
-        }
-        whisperProgressCleanup = window.electron.ipcRenderer.on('whisper:progress', handler)
-
-        // Filter to voice-only tracks + video clip audio for transcription.
-        // Music, SFX, and ambient tracks are excluded to avoid garbled captions.
-        const clipAudioPaths = timeline.clips.map((c) => c.path)
-        const voiceAudioPaths = timeline.audioTracks
+      const mixSources = [
+        ...timeline.clips.map((c) => ({ path: c.path, startMs: c.startMs, durationMs: c.durationMs })),
+        ...timeline.audioTracks
           .filter((a) => a.role === 'voice')
-          .map((a) => a.path)
-        const allPaths = [...clipAudioPaths, ...voiceAudioPaths]
+          .map((a) => ({ path: a.path, startMs: a.startMs, durationMs: a.durationMs }))
+      ]
 
-        // Build timing metadata for time-offset audio mixing
-        const mixSources = [
-          ...timeline.clips.map((c) => ({ path: c.path, startMs: c.startMs, durationMs: c.durationMs })),
-          ...timeline.audioTracks
-            .filter((a) => a.role === 'voice')
-            .map((a) => ({ path: a.path, startMs: a.startMs, durationMs: a.durationMs }))
-        ]
-
-        const result = await window.electron.ipcRenderer.invoke(
-          'whisper:transcribeFromTimeline',
-          {
-            type: 'timeline',
-            mixPaths: allPaths,
-            mixSources,
-            language: language || 'auto'
-          }
-        ) as { entries?: CaptionEntry[]; language?: string }
-
-        const { addTextClips } = useTimeline.getState()
-        const activeStyle = useCaption.getState().activeStyle
-        const jobId = `job_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`
-        
-        if (result.entries) {
-          const newClips: TextClip[] = result.entries.map((entry, idx) => ({
-            id: `text_${Date.now()}_${idx}`,
-            startMs: entry.startMs,
-            durationMs: entry.endMs - entry.startMs,
-            endMs: entry.endMs,
-            trackIndex: 0,
-            text: entry.text,
-            style: { ...activeStyle },
-            words: entry.words,
-            wordTimestampsSource: entry.wordTimestampsSource,
-            sourceId: 'timeline',
-            sourceType: 'timeline' as const,
-            transcriptionJobId: jobId
-          }))
-          addTextClips(newClips)
-        }
-
-        if (!result.entries || result.entries.length === 0) {
-          useToast.getState().warning('Transcription produced no captions — check audio track or model.')
-        }
-
-        set((state) => {
-          state.status = 'done'
-          state.progress = 100
-          state.language = result.language || language || 'auto'
-        })
-      } catch (err) {
-        set((state) => {
-          state.status = 'error'
-          state.error = (err as Error).message
-        })
-      } finally {
-        if (whisperProgressCleanup) {
-          whisperProgressCleanup()
-          whisperProgressCleanup = null
-        }
-      }
+      await _runTranscription(
+        set,
+        () => window.electron.ipcRenderer.invoke('whisper:transcribeFromTimeline', {
+          type: 'timeline',
+          mixPaths: allPaths,
+          mixSources,
+          language: language || 'auto'
+        }),
+        'timeline',
+        'timeline'
+      )
     },
 
     editEntry: (id, text) => {
@@ -589,6 +421,36 @@ export const useCaption = create<CaptionState & CaptionActions>()(
         }))
       ]
 
+      // Non-destructive trim: reconstruct originals from merged clips
+      const aHasOriginals = a.originalWords && a.originalStartMs !== undefined && a.originalEndMs !== undefined
+      const bHasOriginals = b.originalWords && b.originalStartMs !== undefined && b.originalEndMs !== undefined
+      let mergedOriginalWords: TextClip['originalWords']
+      let mergedOriginalStartMs: number | undefined
+      let mergedOriginalEndMs: number | undefined
+
+      if (aHasOriginals && bHasOriginals) {
+        // Both have originals: merge with offset normalization
+        const bOrigOffset = b.originalStartMs! - a.originalStartMs!
+        mergedOriginalWords = [
+          ...a.originalWords!,
+          ...b.originalWords!.map((w) => ({
+            ...w,
+            startMs: w.startMs + bOrigOffset,
+            endMs: w.endMs + bOrigOffset
+          }))
+        ]
+        mergedOriginalStartMs = Math.min(a.originalStartMs!, b.originalStartMs!)
+        mergedOriginalEndMs = Math.max(a.originalEndMs!, b.originalEndMs!)
+      } else if (aHasOriginals) {
+        mergedOriginalWords = a.originalWords!.map((w) => ({ ...w }))
+        mergedOriginalStartMs = a.originalStartMs
+        mergedOriginalEndMs = a.originalEndMs
+      } else if (bHasOriginals) {
+        mergedOriginalWords = b.originalWords!.map((w) => ({ ...w }))
+        mergedOriginalStartMs = b.originalStartMs
+        mergedOriginalEndMs = b.originalEndMs
+      }
+
       // Preserve wordTimestampsSource: whisper wins over synthetic
       const mergedSource: TextClip['wordTimestampsSource'] =
         a.wordTimestampsSource === 'whisper' || b.wordTimestampsSource === 'whisper'
@@ -608,14 +470,19 @@ export const useCaption = create<CaptionState & CaptionActions>()(
         wordTimestampsSource: mergedSource,
         sourceId: a.sourceId ?? b.sourceId,
         sourceType: a.sourceType ?? b.sourceType,
-        transcriptionJobId: a.transcriptionJobId ?? b.transcriptionJobId
+        transcriptionJobId: a.transcriptionJobId ?? b.transcriptionJobId,
+        originalWords: mergedOriginalWords,
+        originalStartMs: mergedOriginalStartMs,
+        originalEndMs: mergedOriginalEndMs
       }
       // Atomic: add merged + remove originals + select in one setState (no extra snapshots)
       useTimeline.setState((state) => {
         state.textClips = state.textClips
           .filter((tc) => tc.id !== id1 && tc.id !== id2)
         state.textClips.push(mergedClip)
-        state.selectedTextClipId = mergedId
+        state.selectedIds = [mergedId]
+        state.focusedId = mergedId
+        state.anchorId = mergedId
       })
     },
 

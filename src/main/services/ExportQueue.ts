@@ -18,13 +18,7 @@ interface ExportJob {
   completedAt?: number
 }
 
-interface ExportParams {
-  clipPaths: string[]
-  clipTrackIndices: number[]
-  clipTransforms: Array<ClipTransformExport | null>
-  audioTracks: Array<{ path: string; startMs: number; volume: number }>
-  srtPath: string | null
-  captionStyle: {
+export interface ExportCaptionStyle {
     fontFamily: string
     fontSize: number
     fontWeight: number
@@ -37,7 +31,24 @@ interface ExportParams {
     y: number
     alignment: 'left' | 'center' | 'right'
     position: 'top' | 'center' | 'bottom'
-  } | null
+    /** Uniform scale multiplier (1.0 = native size). Must match preview style.scale. */
+    scale?: number
+    /** Word-level caption display mode */
+    captionMode?: 'full-phrase' | 'word-reveal' | 'karaoke' | 'single-word'
+    /** Entry-level animation preset */
+    animation?: 'none' | 'pop' | 'fade' | 'slide-up' | 'karaoke' | 'typewriter'
+    /** Smooth fade-in for words in word-reveal mode (ms) */
+    revealFadeMs?: number
+  }
+
+interface ExportParams {
+  clipPaths: string[]
+  clipTrackIndices: number[]
+  clipTransforms: Array<ClipTransformExport | null>
+  clipVolumes?: Array<{ volume: number; muted: boolean }>
+  audioTracks: Array<{ path: string; startMs: number; volume: number }>
+  srtPath: string | null
+  captionStyle: ExportCaptionStyle | null
   outputWidth: number
   outputHeight: number
   /** Reference canvas width (project resolution) for font-size scaling */
@@ -107,6 +118,7 @@ class ExportQueueManager {
       clipPaths: params.clipPaths,
       clipTrackIndices: params.clipTrackIndices,
       clipTransforms: params.clipTransforms,
+      clipVolumes: params.clipVolumes,
       audioTracks: params.audioTracks,
       srtPath: params.srtPath,
       captionStyle: params.captionStyle,

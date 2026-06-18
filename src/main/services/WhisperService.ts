@@ -3,6 +3,7 @@ import { join, dirname, basename } from 'path'
 import { openSync, readSync, closeSync, unlinkSync, existsSync, readFileSync, writeFileSync, statSync } from 'fs'
 import { tmpdir, cpus, totalmem, release } from 'os'
 import { randomUUID } from 'crypto'
+import { parseSRT, type CaptionEntry } from '../../shared/utils/srt'
 import type { FFmpegService } from './FFmpegService'
 
 /** Discriminated failure modes for model validation */
@@ -117,16 +118,6 @@ export interface TranscriptionOptions {
   trimEndMs?: number
   /** Total duration of the source media (used for trim-aware extraction) */
   sourceDurationMs?: number
-}
-
-interface CaptionEntry {
-  id: string
-  startMs: number
-  endMs: number
-  text: string
-  words?: Array<{ word: string; startMs: number; endMs: number }>
-  /** Source of word-level timestamps: 'whisper' = from token-level JSON, 'synthetic' = estimated */
-  wordTimestampsSource?: 'whisper' | 'synthetic'
 }
 
 export class WhisperService {
@@ -1387,6 +1378,13 @@ export class WhisperService {
    *   "GPT-5"      → [" G", "PT", "-", "5"]   → "GPT-5"
    *   "T-Selection"→ [" T", "-Selection"]     → "T-Selection"
    */
+  /**
+   * Minimum token ID for whisper.cpp special tokens (e.g., [BLANK], [SOT], [EOT], etc.).
+   * Tokens at or above this ID are control tokens with no linguistic meaning or timing.
+   * Reference: whisper.cpp ggml headers.
+   */
+  private static readonly WHISPER_SPECIAL_TOKEN_MIN_ID = 50364
+
   private static parseJsonTokens(jsonContent: string): Array<Array<{ word: string; startMs: number; endMs: number }>> | null {
     let parsed: any
     try {
@@ -1453,7 +1451,7 @@ export class WhisperService {
         // -ojf emits ALL decoded tokens including control markers, which corrupt
         // word text and timing if not filtered here.
         const tokId: number | undefined = tok?.id
-        if (tokId !== undefined && tokId >= 50364) continue
+        if (tokId !== undefined && tokId >= WhisperService.WHISPER_SPECIAL_TOKEN_MIN_ID) continue
         // Try multiple timestamp field names (whisper.cpp versions differ)
         const from: number = tok?.offsets?.from ?? tok?.t0 ?? tok?.timestamps?.from ?? 0
         const to: number = tok?.offsets?.to ?? tok?.t1 ?? tok?.timestamps?.to ?? 0
@@ -1552,39 +1550,24 @@ export class WhisperService {
   
   /** Parse SRT content into CaptionEntry[] with optional JSON token data for word timestamps */
   private static parseSRTOutput(content: string, wordTimestamps: boolean, jsonTokens?: Array<Array<{ word: string; startMs: number; endMs: number }>> | null): { entries: CaptionEntry[]; driftMs?: { min: number; max: number; mean: number; count: number } } {
+    // Delegate block-level SRT parsing to shared utility, then enrich with whisper-specific processing
+    const rawEntries = parseSRT(content)
     const entries: CaptionEntry[] = []
-    const blocks = content.trim().split(/\n\s*\n/)
 
     // Drift tracking: compare whisper timestamps vs synthetic (character-count) estimates
     let driftDiffs: number[] = []
 
-    for (const block of blocks) {
-      const lines = block.trim().split('\n')
-      if (lines.length < 3) continue
+    for (const raw of rawEntries) {
+      const startMs = raw.startMs
+      const endMs = raw.endMs
 
-      const timeMatch = lines[1].match(
-        /(\d{2}):(\d{2}):(\d{2})[, .](\d{3})\s*-->\s*(\d{2}):(\d{2}):(\d{2})[, .](\d{3})/
-      )
-      if (!timeMatch) continue
-
-      const startMs =
-        parseInt(timeMatch[1]) * 3600000 +
-        parseInt(timeMatch[2]) * 60000 +
-        parseInt(timeMatch[3]) * 1000 +
-        parseInt(timeMatch[4])
-
-      const endMs =
-        parseInt(timeMatch[5]) * 3600000 +
-        parseInt(timeMatch[6]) * 60000 +
-        parseInt(timeMatch[7]) * 1000 +
-        parseInt(timeMatch[8])
-
-      const text = lines.slice(2).join(' ').replace(/<\/?[^>]+(>|$)/g, '').trim()
+      // Whisper SRT: strip HTML tags, join multiline with spaces
+      const text = raw.text.replace(/\n/g, ' ').replace(/<\/?[^>]+(>|$)/g, '').trim()
 
       if (text) {
-        const idx = entries.length
+        const idx = rawEntries.indexOf(raw)
         const entry: CaptionEntry = {
-          id: `cap_${idx}`,
+          id: raw.id,
           startMs,
           endMs,
           text
@@ -1596,7 +1579,6 @@ export class WhisperService {
           if (tokenWords && tokenWords.length > 0) {
             const textWords = text.split(/\s+/).filter(Boolean)
             // Normalize absolute Whisper timestamps to be clip-relative (0-based).
-            // This ensures word timing survives move, copy/paste, and undo/redo.
             entry.words = tokenWords.map((w) => ({ word: w.word, startMs: w.startMs - startMs, endMs: w.endMs - startMs }))
             entry.wordTimestampsSource = 'whisper'
 
@@ -1604,7 +1586,6 @@ export class WhisperService {
             if (tokenWords.length === textWords.length) {
               const synthetic = WhisperService.syntheticWords(text, startMs, endMs)
               for (let i = 0; i < tokenWords.length; i++) {
-                // Normalize token timestamps to relative for fair comparison
                 const driftStart = Math.abs((tokenWords[i].startMs - startMs) - synthetic[i].startMs)
                 const driftEnd = Math.abs((tokenWords[i].endMs - startMs) - synthetic[i].endMs)
                 driftDiffs.push(driftStart, driftEnd)

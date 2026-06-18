@@ -2,6 +2,8 @@ import { spawn, ChildProcess } from 'child_process'
 import { join } from 'path'
 import { tmpdir } from 'os'
 import { randomUUID } from 'crypto'
+import { toAssColor } from '../../shared/utils/color'
+import type { ExportCaptionStyle } from './ExportQueue'
 
 /**
  * FFmpegService - All FFmpeg operations via child_process.spawn
@@ -208,16 +210,10 @@ export class FFmpegService {
     clipPaths: string[]
     clipTrackIndices: number[]
     clipTransforms: Array<ClipTransformExport | null>
+    clipVolumes?: Array<{ volume: number; muted: boolean }>
     audioTracks: Array<{ path: string; startMs: number; volume: number }>
     srtPath: string | null
-    captionStyle: {
-      fontFamily: string; fontSize: number; fontWeight: number
-      fontColor: string; bgColor: string; bgOpacity: number
-      strokeColor: string; strokeWidth: number
-      x: number; y: number
-      alignment: 'left' | 'center' | 'right'
-      position: 'top' | 'center' | 'bottom'
-    } | null
+    captionStyle: ExportCaptionStyle | null
     outputWidth: number; outputHeight: number
     projectWidth: number; projectHeight: number
     codec: 'h264' | 'h265' | 'prores' | 'vp9'
@@ -225,12 +221,13 @@ export class FFmpegService {
     outputPath: string
   }): string[] {
     const {
-      clipPaths, clipTrackIndices, clipTransforms, audioTracks,
+      clipPaths, clipTrackIndices, clipTransforms, clipVolumes, audioTracks,
       srtPath, captionStyle, outputWidth, outputHeight,
       projectWidth, projectHeight, codec, qualityPreset, outputPath
     } = params
 
-    // Reserved: projectHeight for future aspect-ratio-aware marginV scaling
+    // Reserved: projectWidth/projectHeight for future aspect-ratio-aware scaling
+    void projectWidth
     void projectHeight
     // Sort clips by trackIndex ascending (track 0 at bottom, highest on top)
     const clipOrder = clipPaths.map((_, i) => i).sort((a, b) => clipTrackIndices[a] - clipTrackIndices[b])
@@ -299,20 +296,33 @@ export class FFmpegService {
 
     if (srtPath && captionStyle) {
       const escapedSrtPath = srtPath.replace(/\\/g, '/').replace(/:/g, '\\:')
-      // Scale font size proportionally: preview uses width/1080, export uses outputWidth/projectWidth
-      const refWidth = projectWidth ?? outputWidth
-      const fontSize = Math.round(captionStyle.fontSize * outputWidth / refWidth)
-      // ASS color format: &HAABBGGRR (alpha + BGR reversed from #RRGGBB)
-      const toAssColor = (hex: string, opacity?: number): string => {
-        const alpha = opacity !== undefined ? Math.round(opacity * 255).toString(16).padStart(2, '0').toUpperCase() : '00'
-        const r = hex.slice(1, 3)
-        const g = hex.slice(3, 5)
-        const b = hex.slice(5, 7)
-        return `&H${alpha}${b}${g}${r}`
-      }
+      const scale = captionStyle.scale ?? 1
+      const fontSize = Math.round(captionStyle.fontSize * (outputHeight / 1080) * scale)
       const fontColor = toAssColor(captionStyle.fontColor)
       const bgColor = toAssColor(captionStyle.bgColor, captionStyle.bgOpacity ?? 0.5)
       const strokeColor = toAssColor(captionStyle.strokeColor ?? '#000000')
+
+      // ---- Compute video content area within output frame ----
+      // The scale+pad filter letterboxes/pillarboxes the project video into the output frame.
+      // Captions must be positioned relative to the VIDEO area, not the full output frame,
+      // to match the Preview canvas where y% and x% are relative to the project canvas.
+      const srcAspect = projectWidth / projectHeight
+      const outAspect = outputWidth / outputHeight
+      let videoW: number, videoH: number, padX: number, padY: number
+      if (srcAspect > outAspect) {
+        // Source wider than output → pillarboxed (black bars top/bottom)
+        videoW = outputWidth
+        videoH = Math.round(outputWidth / srcAspect)
+        padX = 0
+        padY = Math.round((outputHeight - videoH) / 2)
+      } else {
+        // Source taller or matching → letterboxed (black bars left/right)
+        videoH = outputHeight
+        videoW = Math.round(outputHeight * srcAspect)
+        padY = 0
+        padX = Math.round((outputWidth - videoW) / 2)
+      }
+
       // Map editor alignment + position to ASS Alignment codes (1-9)
       const assAlignment: Record<string, number> = {
         'bottom-left': 1, 'bottom-center': 2, 'bottom-right': 3,
@@ -321,30 +331,71 @@ export class FFmpegService {
       }
       const alignKey = `${captionStyle.position ?? 'bottom'}-${captionStyle.alignment ?? 'center'}`
       const alignment = assAlignment[alignKey] ?? 2
-      // Compute MarginV from y% based on caption position
-      const y = captionStyle.y ?? 90
+
+      // Compute MarginV accounting for letterbox offset
+      // Preview y% = position of text center relative to project canvas height.
+      // ASS MarginV = distance from the reference edge to the text edge (not center).
+      const y = captionStyle.y ?? 75
       const position = captionStyle.position ?? 'bottom'
+      const estTextH = fontSize * 1.3
       let marginV: number
       if (position === 'top') {
-        marginV = Math.round(y / 100 * outputHeight)
+        // Top-anchored: MarginV = top_pad + y% of video height
+        marginV = Math.round(padY + (y / 100) * videoH)
       } else if (position === 'center') {
-        marginV = Math.round(((y - 50) / 100) * outputHeight)
+        // Center-anchored: ASS centers relative to full frame; offset by letterbox
+        marginV = Math.round(padY + ((y - 50) / 100) * videoH)
       } else {
-        marginV = Math.round((100 - y) / 100 * outputHeight)
+        // Bottom-anchored: MarginV = bottom_pad + distance from video bottom
+        marginV = Math.round(padY + ((100 - y) / 100) * videoH - estTextH / 2)
       }
+      marginV = Math.max(0, marginV)
+
+      // Compute horizontal margins for left/right alignment
+      const x = captionStyle.x ?? 50
+      const hAlign = captionStyle.alignment ?? 'center'
+      let marginL = 10
+      let marginR = 10
+      if (hAlign === 'left') {
+        marginL = Math.round(padX + (x / 100) * videoW)
+      } else if (hAlign === 'right') {
+        marginR = Math.round(padX + ((100 - x) / 100) * videoW)
+      }
+
       const fontWeight = (captionStyle.fontWeight ?? 500) >= 700 ? '1' : '0'
-      const outlineWidth = Math.max(1, Math.round((captionStyle.strokeWidth ?? 0) * outputWidth / refWidth))
-      const subtitlesFilter = `${videoFilter}subtitles='${escapedSrtPath}':force_style='FontName=${captionStyle.fontFamily},FontSize=${fontSize},Bold=${fontWeight},PrimaryColour=${fontColor},BackColour=${bgColor},OutlineColour=${strokeColor},Outline=${outlineWidth},Shadow=0,Alignment=${alignment},MarginV=${marginV},MarginL=10,MarginR=10'[captioned]`
+      const outlineWidth = Math.max(1, Math.round((captionStyle.strokeWidth ?? 0) * (outputHeight / 1080) * scale))
+      const subtitlesFilter = `${videoFilter}subtitles='${escapedSrtPath}':force_style='PlayResX=${outputWidth},PlayResY=${outputHeight},ScaledBorderAndShadow=yes,FontName=${captionStyle.fontFamily},FontSize=${fontSize},Bold=${fontWeight},PrimaryColour=${fontColor},BackColour=${bgColor},OutlineColour=${strokeColor},Outline=${outlineWidth},Shadow=0,Alignment=${alignment},MarginV=${marginV},MarginL=${marginL},MarginR=${marginR}'[captioned]`
       filterParts.push(subtitlesFilter)
       videoFilter = '[captioned]'
     }
 
-    // Audio mixing
+    // Audio mixing — apply per-clip volume/mute for native video audio
     if (clipPaths.length === 1 && audioTracks.length === 0) {
-      args.push('-map', '0:a?')
+      // Simple case: single clip, no external audio tracks
+      const cv = clipVolumes?.[0]
+      if (cv?.muted || (cv?.volume ?? 1) === 0) {
+        args.push('-an')
+      } else if ((cv?.volume ?? 1) !== 1) {
+        filterParts.push(`[0:a:0]volume=${cv!.volume.toFixed(2)}[aout]`)
+        args.push('-map', '[aout]')
+      } else {
+        args.push('-map', '0:a?')
+      }
     } else {
       const audioInputs: string[] = []
-      clipPaths.forEach((_, i) => audioInputs.push(`[${i}:a:0]`))
+      // Per-clip native audio: apply volume filter or skip if muted
+      clipPaths.forEach((_, i) => {
+        const cv = clipVolumes?.[i]
+        if (cv?.muted || (cv?.volume ?? 1) === 0) {
+          // Skip muted clips' audio entirely
+        } else if ((cv?.volume ?? 1) !== 1) {
+          filterParts.push(`[${i}:a:0]volume=${cv!.volume.toFixed(2)}[ac${i}]`)
+          audioInputs.push(`[ac${i}]`)
+        } else {
+          audioInputs.push(`[${i}:a:0]`)
+        }
+      })
+      // External audio tracks (SFX/music from timeline)
       audioTracks.forEach((track, i) => {
         const inputIdx = clipPaths.length + i
         filterParts.push(`[${inputIdx}:a:0]volume=${(track.volume ?? 1).toFixed(2)}[av${i}]`)
@@ -355,6 +406,9 @@ export class FFmpegService {
         args.push('-map', '[aout]')
       } else if (audioInputs.length === 1) {
         args.push('-map', '0:a?')
+      } else {
+        // All clips muted and no audio tracks
+        args.push('-an')
       }
     }
 

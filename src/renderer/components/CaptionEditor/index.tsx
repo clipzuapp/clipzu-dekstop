@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect, useRef } from 'react'
+import { useState, useCallback, useEffect, useRef, useMemo } from 'react'
 import { useCaption } from '../../store/useCaption'
 import { useTimeline } from '../../store/useTimeline'
 import { useConfirm } from '../../store/useConfirm'
@@ -89,11 +89,17 @@ function TestResultRow({ label, result }: { label: string; result?: Record<strin
 
 export function CaptionEditor(): JSX.Element {
   const entries = useTimeline((s) => s.textClips)
-  const selectedId = useTimeline((s) => s.selectedTextClipId)
+  const focusedId = useTimeline((s) => s.focusedId)
+  const textClips = useTimeline((s) => s.textClips)
   const status = useCaption((s) => s.status)
   const progress = useCaption((s) => s.progress)
   const language = useCaption((s) => s.language)
   const error = useCaption((s) => s.error)
+
+  const selectedId = useMemo(() => {
+    if (!focusedId) return null
+    return textClips.some((tc) => tc.id === focusedId) ? focusedId : null
+  }, [focusedId, textClips])
 
   const editEntry = useCaption((s) => s.editEntry)
   const deleteEntry = useCaption((s) => s.deleteEntry)
@@ -131,12 +137,15 @@ export function CaptionEditor(): JSX.Element {
   }, [status, entries.length])
 
   const handleTranscribe = useCallback(async (): Promise<void> => {
-    const clips = useTimeline.getState().clips
+    const state = useTimeline.getState()
+    const clips = state.clips
     if (clips.length === 0) {
       useToast.getState().warning('Add a video to the timeline first')
       return
     }
-    const targetId = useTimeline.getState().selectedClipId ?? clips[0].id
+    const targetId = (state.focusedId && clips.some((c) => c.id === state.focusedId))
+      ? state.focusedId
+      : clips[0].id
     await useCaption.getState().transcribeClip(targetId, language)
   }, [language])
 

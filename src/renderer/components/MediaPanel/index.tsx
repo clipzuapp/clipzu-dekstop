@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback } from 'react'
 import { useConfirm } from '../../store/useConfirm'
 import { useTimeline } from '../../store/useTimeline'
 import { useMediaLibrary, type MediaInfo } from '../../store/useMediaLibrary'
+import { useToast } from '../../store/useToast'
 import { ContextMenu } from '../ContextMenu/index'
 import { formatDuration } from '../../utils/format'
 import type { ContextMenuItem } from '../ContextMenu/index'
@@ -76,6 +77,7 @@ export function MediaPanel(): JSX.Element {
         // DO NOT call useTimeline.addClip here — library only
       } catch (err) {
         console.error('Failed to add media:', err)
+        useToast.getState().error(`Failed to add media: ${(err as Error).message}`)
       }
     }
   }

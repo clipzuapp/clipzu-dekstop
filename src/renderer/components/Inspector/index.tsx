@@ -1,11 +1,12 @@
 import { useMemo, useCallback, useState, useEffect } from 'react'
 import { useTimeline, DEFAULT_TRANSFORM, type ClipTransform } from '../../store/useTimeline'
-import { useProject } from '../../store/useProject'
+import { useProject, type AspectRatio } from '../../store/useProject'
 import { formatTime } from '../../utils/format'
 import { InspectorHeader } from '../InspectorHeader/index'
 import type { RightTabId } from '../RightRail/index'
 import { ComingSoonPanel } from '../ComingSoonPanel/index'
 import { useCaptionStyleBinding } from './useCaptionStyleBinding'
+import * as AudioEngine from '../../services/AudioEngine'
 
 /**
  * Inspector — context-sensitive property editor.
@@ -129,7 +130,7 @@ function ProjectSettings(): JSX.Element {
                 color: aspectRatio === key ? 'var(--accent)' : 'var(--text3)',
                 border: 'none', transition: 'all 0.15s'
               }}
-              onClick={() => { setAspectRatio(key as any); setResolution(val.width, val.height) }}>
+              onClick={() => { setAspectRatio(key as AspectRatio); setResolution(val.width, val.height) }}>
               {val.label}
             </button>
           ))}
@@ -176,15 +177,22 @@ function ProjectSettings(): JSX.Element {
  * Header/timing is rendered by InspectorHeader above.
  */
 function ClipBasicTab(): JSX.Element {
-  const selectedClipId = useTimeline((s) => s.selectedClipId)
+  const focusedId = useTimeline((s) => s.focusedId)
+  const clips = useTimeline((s) => s.clips)
   const setClipTransform = useTimeline((s) => s.setClipTransform)
+  const setClipVolume = useTimeline((s) => s.setClipVolume)
+  const setClipMute = useTimeline((s) => s.setClipMute)
 
   const selectedClip = useMemo(() => {
-    if (!selectedClipId) return null
-    return useTimeline.getState().clips.find((c) => c.id === selectedClipId) ?? null
-  }, [selectedClipId])
+    if (!focusedId) return null
+    return clips.find((c) => c.id === focusedId) ?? null
+  }, [focusedId, clips])
+
+  const selectedClipId = selectedClip?.id ?? null
 
   const t: ClipTransform = selectedClip?.transform ?? { ...DEFAULT_TRANSFORM }
+  const clipVolume = selectedClip?.volume ?? 1
+  const clipMuted = selectedClip?.muted ?? false
 
   const update = useCallback((partial: Partial<ClipTransform>) => {
     if (selectedClipId) setClipTransform(selectedClipId, partial)
@@ -219,6 +227,40 @@ function ClipBasicTab(): JSX.Element {
         value={Math.round(t.cropLeft * 100)} onChange={(v) => update({ cropLeft: v / 100 })} />
       <SliderRow label={`Right ${Math.round(t.cropRight * 100)}%`} min={0} max={50} step={1}
         value={Math.round(t.cropRight * 100)} onChange={(v) => update({ cropRight: v / 100 })} />
+
+      {/* Audio section — per-clip volume + mute for video clips with embedded audio */}
+      <SectionHeader title="Audio" />
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '0 12px' }}>
+        <span style={{ fontSize: '10px', color: 'var(--text3)' }}>Volume</span>
+        <span style={{ fontSize: '10px', color: 'var(--text1)', fontFamily: 'monospace' }}>
+          {clipMuted ? 'Muted' : `${Math.round(clipVolume * 100)}%`}
+        </span>
+      </div>
+      <div style={{ padding: '0 12px' }}>
+        <input
+          type="range" min={0} max={100} step={1}
+          value={Math.round(clipVolume * 100)}
+          onChange={(e) => {
+            if (selectedClipId) setClipVolume(selectedClipId, parseInt(e.target.value) / 100)
+          }}
+          style={{ width: '100%', accentColor: 'var(--accent)', height: '4px' }}
+        />
+      </div>
+      <div style={{ display: 'flex', alignItems: 'center', gap: '6px', padding: '0 12px' }}>
+        <button
+          onClick={() => {
+            if (selectedClipId) setClipMute(selectedClipId, !clipMuted)
+          }}
+          style={{
+            padding: '3px 10px', fontSize: '10px', borderRadius: '3px', cursor: 'pointer',
+            background: clipMuted ? 'rgba(239, 68, 68, 0.15)' : 'var(--bg2)',
+            color: clipMuted ? '#ef4444' : 'var(--text3)',
+            border: clipMuted ? '0.5px solid rgba(239, 68, 68, 0.3)' : '0.5px solid var(--border)',
+            fontWeight: 500
+          }}>
+          {clipMuted ? '🔇 Muted' : '🔊 Mute'}
+        </button>
+      </div>
     </div>
   )
 }
@@ -236,7 +278,7 @@ const ANIM_PRESETS: Array<'none' | 'pop' | 'fade' | 'slide-up' | 'karaoke' | 'ty
 ]
 
 function CaptionStyleTab(): JSX.Element {
-  const { effectiveStyle, applyStyleToSelected } = useCaptionStyleBinding()
+  const { effectiveStyle, applyStyleToSelected, applyStyleToAllOnLayer } = useCaptionStyleBinding()
 
   // Debounced sliders — local state for immediate feedback, debounced store write
   const [localFontSize, setLocalFontSize] = useState(effectiveStyle.fontSize)
@@ -428,6 +470,21 @@ function CaptionStyleTab(): JSX.Element {
           }}
           style={{ width: '100%', accentColor: 'var(--accent)' }} />
       </div>
+
+      {/* Apply to All on Layer */}
+      <div style={{ padding: '0 12px' }}>
+        <button
+          onClick={applyStyleToAllOnLayer}
+          style={{
+            width: '100%', padding: '6px 8px', fontSize: '10px', borderRadius: '4px', cursor: 'pointer',
+            background: 'rgba(79,127,255,0.12)', color: 'var(--accent)',
+            border: '0.5px solid rgba(79,127,255,0.3)', textTransform: 'uppercase',
+            letterSpacing: '0.04em', fontWeight: 600
+          }}
+        >
+          Apply Style to All Captions on This Layer
+        </button>
+      </div>
     </div>
   )
 }
@@ -438,6 +495,23 @@ function CaptionStyleTab(): JSX.Element {
 
 function CaptionAnimationTab(): JSX.Element {
   const { effectiveStyle, applyStyleToSelected } = useCaptionStyleBinding()
+  const setPlayhead = useTimeline((s) => s.setPlayhead)
+  const focusedId = useTimeline((s) => s.focusedId)
+  const textClips = useTimeline((s) => s.textClips)
+
+  const selectedTextClipId = useMemo(() => {
+    if (!focusedId) return null
+    return textClips.some((tc) => tc.id === focusedId) ? focusedId : null
+  }, [focusedId, textClips])
+
+  /** Apply animation and seek to caption start so the user sees the entry animation immediately */
+  const applyAndPreview = useCallback((preset: typeof effectiveStyle.animation) => {
+    applyStyleToSelected({ animation: preset })
+    if (selectedTextClipId) {
+      const clip = textClips.find((tc) => tc.id === selectedTextClipId)
+      if (clip) setPlayhead(clip.startMs)
+    }
+  }, [applyStyleToSelected, selectedTextClipId, textClips, setPlayhead])
 
   return (
     <div style={{ padding: '12px', display: 'flex', flexDirection: 'column', gap: '12px', fontSize: '11px' }}>
@@ -445,7 +519,7 @@ function CaptionAnimationTab(): JSX.Element {
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '4px', padding: '0 12px' }}>
         {ANIM_PRESETS.map((preset) => (
           <button key={preset}
-            onClick={() => applyStyleToSelected({ animation: preset })}
+            onClick={() => applyAndPreview(preset)}
             style={{
               padding: '4px 2px', fontSize: '10px', borderRadius: '3px', cursor: 'pointer',
               background: effectiveStyle.animation === preset ? 'rgba(79,127,255,0.2)' : 'var(--bg2)',
@@ -471,6 +545,13 @@ function AudioTab(): JSX.Element {
   const audioTracks = useTimeline((s) => s.audioTracks)
   const setAudioVolume = useTimeline((s) => s.setAudioVolume)
   const toggleAudioMute = useTimeline((s) => s.toggleAudioMute)
+
+  // Real-time AudioEngine gain sync — when volume/mute changes, update GainNode immediately
+  useEffect(() => {
+    for (const track of audioTracks) {
+      AudioEngine.setTrackVol(track.id, track.volume, track.muted)
+    }
+  }, [audioTracks])
 
   if (audioTracks.length === 0) {
     return (
@@ -526,13 +607,16 @@ function AudioTab(): JSX.Element {
 // ---------------------------------------------------------------------------
 
 function SpeedTab(): JSX.Element {
-  const selectedClipId = useTimeline((s) => s.selectedClipId)
+  const focusedId = useTimeline((s) => s.focusedId)
+  const clips = useTimeline((s) => s.clips)
   const setClipSpeed = useTimeline((s) => s.setClipSpeed)
 
   const selectedClip = useMemo(() => {
-    if (!selectedClipId) return null
-    return useTimeline.getState().clips.find((c) => c.id === selectedClipId) ?? null
-  }, [selectedClipId])
+    if (!focusedId) return null
+    return clips.find((c) => c.id === focusedId) ?? null
+  }, [focusedId, clips])
+
+  const selectedClipId = selectedClip?.id ?? null
 
   if (!selectedClip) {
     return (
@@ -586,6 +670,127 @@ function SpeedTab(): JSX.Element {
 }
 
 // ---------------------------------------------------------------------------
+// Audio Track Basic Tab (audio/SFX track selected, basic tab)
+// ---------------------------------------------------------------------------
+
+function AudioTrackBasicTab({ trackId }: { trackId: string }): JSX.Element {
+  const audioTracks = useTimeline((s) => s.audioTracks)
+  const setAudioVolume = useTimeline((s) => s.setAudioVolume)
+  const toggleAudioMute = useTimeline((s) => s.toggleAudioMute)
+  const setAudioFade = useTimeline((s) => s.setAudioFade)
+
+  const track = audioTracks.find((a) => a.id === trackId)
+  if (!track) {
+    return (
+      <div style={{ padding: '24px', textAlign: 'center' }}>
+        <span style={{ fontSize: '11px', color: 'var(--text3)' }}>Audio track not found</span>
+      </div>
+    )
+  }
+
+  const handleVolumeChange = (vol: number): void => {
+    setAudioVolume(trackId, vol)
+    // Real-time gain update — no playback restart needed
+    AudioEngine.setTrackVol(trackId, vol, track.muted)
+  }
+
+  const handleMuteToggle = (): void => {
+    toggleAudioMute(trackId)
+    const newMuted = !track.muted
+    AudioEngine.setTrackVol(trackId, track.volume, newMuted)
+  }
+
+  return (
+    <div style={{ padding: '12px', display: 'flex', flexDirection: 'column', gap: '14px', fontSize: '11px' }}>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+        <span style={{
+          fontSize: '12px', fontWeight: 600, color: 'var(--text1)',
+          overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: '200px'
+        }}>
+          {track.name || 'Audio Track'}
+        </span>
+        <span style={{
+          fontSize: '9px', padding: '2px 6px', borderRadius: '3px',
+          background: 'rgba(74, 222, 128, 0.15)', color: '#4ade80',
+          textTransform: 'uppercase', letterSpacing: '0.04em'
+        }}>
+          {track.role}
+        </span>
+      </div>
+
+      <SectionHeader title="Audio" />
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '0 12px' }}>
+        <span style={{ fontSize: '10px', color: 'var(--text3)' }}>Volume</span>
+        <span style={{ fontSize: '10px', color: 'var(--text1)', fontFamily: 'monospace' }}>
+          {track.muted ? 'Muted' : `${Math.round(track.volume * 100)}%`}
+        </span>
+      </div>
+      <div style={{ padding: '0 12px' }}>
+        <input
+          type="range" min={0} max={100} step={1}
+          value={Math.round(track.volume * 100)}
+          onChange={(e) => handleVolumeChange(parseInt(e.target.value) / 100)}
+          style={{ width: '100%', accentColor: 'var(--accent)', height: '4px' }}
+        />
+      </div>
+      <div style={{ display: 'flex', alignItems: 'center', gap: '6px', padding: '0 12px' }}>
+        <button
+          onClick={handleMuteToggle}
+          style={{
+            padding: '3px 10px', fontSize: '10px', borderRadius: '3px', cursor: 'pointer',
+            background: track.muted ? 'rgba(239, 68, 68, 0.15)' : 'var(--bg2)',
+            color: track.muted ? '#ef4444' : 'var(--text3)',
+            border: track.muted ? '0.5px solid rgba(239, 68, 68, 0.3)' : '0.5px solid var(--border)',
+            fontWeight: 500
+          }}>
+          {track.muted ? '🔇 Muted' : '🔊 Mute'}
+        </button>
+      </div>
+
+      <SectionHeader title="Fade" />
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '0 12px' }}>
+        <span style={{ fontSize: '10px', color: 'var(--text3)' }}>Fade In</span>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+          <input
+            type="number" min={0} max={30} step={0.1}
+            value={((track.fadeInMs ?? 0) / 1000).toFixed(1)}
+            onChange={(e) => {
+              const sec = Math.max(0, parseFloat(e.target.value) || 0)
+              setAudioFade(trackId, Math.round(sec * 1000), track.fadeOutMs ?? 0)
+            }}
+            style={{
+              width: '48px', padding: '2px 4px', fontSize: '10px', borderRadius: '3px',
+              background: 'var(--bg2)', color: 'var(--text1)', border: '0.5px solid var(--border)',
+              fontFamily: 'monospace', textAlign: 'right'
+            }}
+          />
+          <span style={{ fontSize: '9px', color: 'var(--text3)' }}>s</span>
+        </div>
+      </div>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '0 12px' }}>
+        <span style={{ fontSize: '10px', color: 'var(--text3)' }}>Fade Out</span>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+          <input
+            type="number" min={0} max={30} step={0.1}
+            value={((track.fadeOutMs ?? 0) / 1000).toFixed(1)}
+            onChange={(e) => {
+              const sec = Math.max(0, parseFloat(e.target.value) || 0)
+              setAudioFade(trackId, track.fadeInMs ?? 0, Math.round(sec * 1000))
+            }}
+            style={{
+              width: '48px', padding: '2px 4px', fontSize: '10px', borderRadius: '3px',
+              background: 'var(--bg2)', color: 'var(--text1)', border: '0.5px solid var(--border)',
+              fontFamily: 'monospace', textAlign: 'right'
+            }}
+          />
+          <span style={{ fontSize: '9px', color: 'var(--text3)' }}>s</span>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
 // Inspector shell — rightTab switches content; InspectorHeader is persistent
 // ---------------------------------------------------------------------------
 
@@ -594,18 +799,37 @@ interface InspectorProps {
 }
 
 export function Inspector({ rightTab }: InspectorProps): JSX.Element {
-  const selectedTextClipId = useTimeline((s) => s.selectedTextClipId)
-  const selectedClipId = useTimeline((s) => s.selectedClipId)
+  const focusedId = useTimeline((s) => s.focusedId)
+  const clips = useTimeline((s) => s.clips)
+  const textClips = useTimeline((s) => s.textClips)
+  const audioTracks = useTimeline((s) => s.audioTracks)
+
+  const selectedClipId = useMemo(() => {
+    if (!focusedId) return null
+    return clips.some((c) => c.id === focusedId) ? focusedId : null
+  }, [focusedId, clips])
+
+  const selectedTextClipId = useMemo(() => {
+    if (!focusedId) return null
+    return textClips.some((tc) => tc.id === focusedId) ? focusedId : null
+  }, [focusedId, textClips])
+
+  const selectedAudioTrackId = useMemo(() => {
+    if (!focusedId) return null
+    return audioTracks.some((a) => a.id === focusedId) ? focusedId : null
+  }, [focusedId, audioTracks])
 
   const hasCaption = Boolean(selectedTextClipId)
   const hasClip = Boolean(selectedClipId)
   const hasTextClip = Boolean(selectedTextClipId)
+  const hasAudioTrack = Boolean(selectedAudioTrackId)
 
   const renderTabContent = (): JSX.Element => {
     switch (rightTab) {
       case 'basic':
         if (hasCaption || hasTextClip) return <CaptionStyleTab />
         if (hasClip) return <ClipBasicTab />
+        if (hasAudioTrack) return <AudioTrackBasicTab trackId={selectedAudioTrackId!} />
         return <ProjectSettings />
 
       case 'animation':

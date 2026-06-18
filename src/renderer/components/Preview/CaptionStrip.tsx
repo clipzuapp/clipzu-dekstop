@@ -1,4 +1,4 @@
-import { useRef, useEffect, useState } from 'react'
+import { useRef, useEffect, useState, useMemo } from 'react'
 import { useCaption } from '../../store/useCaption'
 import { useTimeline } from '../../store/useTimeline'
 import { useConfirm } from '../../store/useConfirm'
@@ -18,16 +18,20 @@ const LANGUAGES = [
 ]
 
 async function handleTranscribe(language: string): Promise<void> {
-  const clips = useTimeline.getState().clips
+  const state = useTimeline.getState()
+  const clips = state.clips
   if (clips.length === 0) {
     useToast.getState().warning('Add a video clip to the timeline first.')
     return
   }
-  const targetId = useTimeline.getState().selectedClipId ?? clips[0].id
+  const targetId = (state.focusedId && clips.some((c) => c.id === state.focusedId))
+    ? state.focusedId
+    : clips[0].id
   try {
     await useCaption.getState().transcribeClip(targetId, language)
   } catch (e) {
     console.error('Transcription failed:', e)
+    useToast.getState().error(`Transcription failed: ${(e as Error).message}`)
   }
 }
 
@@ -37,9 +41,14 @@ async function handleTranscribe(language: string): Promise<void> {
  */
 export function CaptionStrip(): JSX.Element {
   const entries = useTimeline((s) => s.textClips)
+  const focusedId = useTimeline((s) => s.focusedId)
+  const textClips = useTimeline((s) => s.textClips)
   const status = useCaption((s) => s.status)
   const progress = useCaption((s) => s.progress)
-  const selectedId = useTimeline((s) => s.selectedTextClipId)
+  const selectedId = useMemo(() => {
+    if (!focusedId) return null
+    return textClips.some((tc) => tc.id === focusedId) ? focusedId : null
+  }, [focusedId, textClips])
   const selectEntry = useCaption((s) => s.selectEntry)
 
   const playheadMs = useTimeline((s) => s.playheadMs)

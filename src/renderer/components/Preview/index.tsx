@@ -1,12 +1,13 @@
-import { useRef, useEffect, useCallback, useState } from 'react'
+import { useRef, useEffect, useCallback, useMemo } from 'react'
 import { useTimeline } from '../../store/useTimeline'
-import type { TextClip } from '../../store/useTimeline'
 import { useCaption } from '../../store/useCaption'
 import { useProject } from '../../store/useProject'
 import { formatTime } from '../../utils/format'
 import { getAnimationProgress } from '../StylePanel/AnimationPresets'
 import { resolveActiveWord, buildRevealText, createActivationCache, type ActivationCache } from '../../utils/wordActivation'
 import { TransformOverlay } from './TransformOverlay'
+import * as AudioEngine from '../../services/AudioEngine'
+import type { AudioTrack } from '../../store/useTimeline'
 
 /**
  * Preview component — dynamic canvas sized from project resolution.
@@ -33,9 +34,22 @@ export function Preview(): JSX.Element {
   const setPlayhead = useTimeline((s) => s.setPlayhead)
   const setPlaying = useTimeline((s) => s.setPlaying)
   const totalDurationMs = useTimeline((s) => s.totalDurationMs)
-  const selectedClipId = useTimeline((s) => s.selectedClipId)
-  const selectedTextClipId = useTimeline((s) => s.selectedTextClipId)
+  const focusedId = useTimeline((s) => s.focusedId)
   const textClips = useTimeline((s) => s.textClips)
+  const audioTracks = useTimeline((s) => s.audioTracks)
+  /** Timeline track lanes (for mute/solo state) */
+  const trackLanes = useTimeline((s) => s.tracks)
+
+  // Derive selected clip/text IDs from unified focusedId + entity type
+  const selectedClipId = useMemo(() => {
+    if (!focusedId) return null
+    return clips.some((c) => c.id === focusedId) ? focusedId : null
+  }, [focusedId, clips])
+
+  const selectedTextClipId = useMemo(() => {
+    if (!focusedId) return null
+    return textClips.some((tc) => tc.id === focusedId) ? focusedId : null
+  }, [focusedId, textClips])
   const setClipTransform = useTimeline((s) => s.setClipTransform)
   const beginDragCapture = useTimeline((s) => s.beginDragCapture)
   const commitDrag = useTimeline((s) => s.commitDrag)
@@ -46,9 +60,6 @@ export function Preview(): JSX.Element {
   const projectResolution = useProject((s) => s.resolution)
   const masterVolume = useTimeline((s) => s.masterVolume)
 
-  // === Temporary caption debug overlay ===
-  const [debugVisible, setDebugVisible] = useState(false)
-
   // Keep refs in sync with latest state for use inside event callbacks
   const isPlayingRef = useRef(isPlaying)
   isPlayingRef.current = isPlaying
@@ -58,18 +69,53 @@ export function Preview(): JSX.Element {
   clipsRef.current = clips
   const textClipsRef = useRef(textClips)
   textClipsRef.current = textClips
+  const audioTracksRef = useRef(audioTracks)
+  audioTracksRef.current = audioTracks
+  const trackLanesRef = useRef(trackLanes)
+  trackLanesRef.current = trackLanes
 
   // ---- helpers ----
 
+  /** Ref for overlay video pool container */
+  const overlayContainerRef = useRef<HTMLDivElement>(null)
+  /** Track which clip IDs are loaded in overlay slots */
+  const overlayAssignedRef = useRef<Map<string, HTMLVideoElement>>(new Map())
+  /** Track overlay audio node IDs (clipId → overlayAudioId) */
+  const overlayAudioIdsRef = useRef<Map<string, string>>(new Map())
+  /** Throttle for audio scrub preview */
+  const lastScrubTimeRef = useRef(0)
+
   const findClipAt = useCallback(
-    (ms: number) => clipsRef.current.find((c) => ms >= c.startMs && ms < c.startMs + c.durationMs) ?? null,
+    (ms: number) => {
+      // Find exact match — prefer lowest trackIndex for multi-layer z-order
+      const exact = clipsRef.current.filter((c) => ms >= c.startMs && ms < c.startMs + c.durationMs)
+      if (exact.length > 0) {
+        exact.sort((a, b) => a.trackIndex - b.trackIndex)
+        return exact[0]
+      }
+      // Fallback: first clip starting after ms
+      return clipsRef.current.find((c) => c.startMs >= ms) ?? null
+    },
     [] // stable — reads clipsRef, never stale
   )
 
-  /** Compute clip-local time in seconds that the video element should be at (accounts for speed) */
+  /** Find ALL clips active at a timecode, sorted by trackIndex (lowest first) */
+  const findAllClipsAt = useCallback(
+    (ms: number): typeof clips => {
+      return clipsRef.current
+        .filter((c) => ms >= c.startMs && ms < c.startMs + c.durationMs)
+        .sort((a, b) => a.trackIndex - b.trackIndex)
+    },
+    [] // stable — reads clipsRef
+  )
+
+  /** Safe version: clamps to valid video range [0, clipDuration] */
   const clipTimeSec = useCallback(
-    (clip: { startMs: number; trimStart: number; speed?: number }, headMs: number): number =>
-      ((headMs - clip.startMs + clip.trimStart) / 1000) * (clip.speed ?? 1),
+    (clip: { startMs: number; trimStart: number; trimEnd: number; durationMs: number; speed?: number }, headMs: number): number => {
+      const raw = ((headMs - clip.startMs + clip.trimStart) / 1000) * (clip.speed ?? 1)
+      const maxSec = ((clip.durationMs + clip.trimStart) / 1000) * (clip.speed ?? 1)
+      return Math.max(0, Math.min(maxSec, raw))
+    },
     []
   )
 
@@ -81,12 +127,85 @@ export function Preview(): JSX.Element {
     return prefix + forward.split('/').map(encodeURIComponent).join('/')
   }, [])
 
-  // ---- effect 6: apply master volume to video element ----
+  // ---- effect 6: apply master volume × clip volume to video element ----
 
   useEffect(() => {
     const video = videoRef.current
-    if (video) video.volume = masterVolume
-  }, [masterVolume])
+    if (video) {
+      const clip = clips.find((c) => c.id === loadedClipIdRef.current)
+      // Mute the video element if the clip is muted (Inspector toggle)
+      const clipVol = (clip?.muted ?? false) ? 0 : (clip?.volume ?? 1)
+      video.volume = masterVolume * clipVol
+    }
+
+    // Sync overlay audio volumes via AudioEngine
+    const activeClips = findAllClipsAt(playheadMsRef.current)
+    const overlayClips = activeClips.slice(1)
+    for (const overlayClip of overlayClips) {
+      const audioId = overlayAudioIdsRef.current.get(overlayClip.id)
+      if (audioId) {
+        const clipVol = (overlayClip.muted ?? false) ? 0 : (overlayClip.volume ?? 1)
+        AudioEngine.updateOverlayAudioVol(audioId, clipVol * masterVolume, false)
+      }
+    }
+  }, [masterVolume, clips, findAllClipsAt])
+
+  // ---- effect 0 + 4c: preload audio buffers then start playback (TASK-A fix) ----
+  // Merged preload + play into a single async effect to fix race condition:
+  // previously, preload was fire-and-forget and playback could start before
+  // buffers were decoded, causing SFX tracks to be silently skipped.
+  // Track-level mute/solo is folded into effectiveMuted per audio track.
+
+  useEffect(() => {
+    let cancelled = false
+
+    const run = async (): Promise<void> => {
+      if (isPlaying) {
+        AudioEngine.resumeAudio()
+        // Await ALL buffer preloads before starting playback
+        const at = audioTracksRef.current
+        await Promise.all(
+          at.map((t: AudioTrack) => t.path ? AudioEngine.preloadBuffer(t.path) : Promise.resolve())
+        )
+        if (cancelled) return
+
+        // Compute track-level mute/solo for each audio track
+        const lanes = trackLanesRef.current
+        const hasSolo = lanes.some((l) => l.solo)
+        const headMs = playheadMsRef.current
+        AudioEngine.playTracks(
+          at.map((t: AudioTrack) => {
+            const parentTrack = lanes.find((l) => l.kind === 'audio' && l.index === t.trackIndex)
+            const laneMuted = parentTrack?.muted ?? false
+            const laneSolo = parentTrack?.solo ?? false
+            const effectiveMuted = t.muted || laneMuted || (hasSolo && !laneSolo)
+            return {
+              id: t.id, path: t.path, startMs: t.startMs, durationMs: t.durationMs,
+              volume: t.volume, muted: effectiveMuted, trimStart: t.trimStart,
+              fadeInMs: t.fadeInMs, fadeOutMs: t.fadeOutMs
+            }
+          }),
+          headMs,
+          masterVolume
+        )
+      } else {
+        AudioEngine.stopAll()
+      }
+    }
+
+    run()
+    return () => { cancelled = true }
+  }, [isPlaying, masterVolume, audioTracks, trackLanes])
+
+  // ---- effect: preload audio buffers eagerly for scrub preview ----
+  // Ensures buffers are decoded even before first playback so scrubbing works.
+
+  useEffect(() => {
+    if (isPlaying) return
+    for (const t of audioTracks) {
+      if (t.path) AudioEngine.preloadBuffer(t.path)
+    }
+  }, [audioTracks, isPlaying])
 
   // ---- effect 1: load video source only when the active clip changes ----
 
@@ -112,6 +231,10 @@ export function Preview(): JSX.Element {
     const onLoaded = (): void => {
       if (cancelled) return
       video.currentTime = clipTimeSec(clip, playheadMs)
+      // If we're in playing state, resume playback on the new source (Bug A fix)
+      if (isPlayingRef.current) {
+        video.play().catch(() => { /* autoplay policy */ })
+      }
     }
 
     video.preload = 'auto'
@@ -122,7 +245,7 @@ export function Preview(): JSX.Element {
       cancelled = true
       video.removeEventListener('loadedmetadata', onLoaded)
     }
-  }, [findClipAt, playheadMs, clipTimeSec, toFileUrl])
+  }, [findClipAt, playheadMs, clipTimeSec, toFileUrl, clips])
 
   // ---- effect 2: manual seek when user scrubs (NOT during playback) ----
 
@@ -147,18 +270,37 @@ export function Preview(): JSX.Element {
     if (!video) return
 
     if (isPlaying) {
-      // Seek to current playhead position via ref — avoids re-running on every setPlayhead
       const clip = findClipAt(playheadMsRef.current)
-      if (clip) {
-        video.currentTime = clipTimeSec(clip, playheadMsRef.current)
+      if (!clip) {
+        setPlaying(false)
+        return
       }
-      video.play().catch(() => {
-        /* autoplay policy may block — user interaction required */
-      })
+
+      // Auto-snap playhead to clip start if before it (BUG-01 fix)
+      let headMs = playheadMsRef.current
+      if (headMs < clip.startMs) {
+        headMs = clip.startMs
+        setPlayhead(headMs)
+      }
+
+      const seekAndPlay = (): void => {
+        video.currentTime = clipTimeSec(clip, headMs)
+        video.play().catch(() => {
+          /* autoplay policy may block — user interaction required */
+        })
+      }
+
+      if (video.readyState >= 1) {
+        // Source already loaded — seek and play immediately
+        seekAndPlay()
+      } else {
+        // Source still loading (effect 1 is setting src) — wait for metadata then play
+        video.addEventListener('loadedmetadata', seekAndPlay, { once: true })
+      }
     } else {
       video.pause()
     }
-  }, [isPlaying, findClipAt, clipTimeSec]) // playheadMs intentionally excluded
+  }, [isPlaying, findClipAt, clipTimeSec, setPlayhead, setPlaying, clips]) // playheadMs intentionally excluded; clips ensures re-init on data change
 
   // ---- effect 4: sync playhead from video during playback (throttled ~30fps) ----
 
@@ -176,18 +318,163 @@ export function Preview(): JSX.Element {
       if (now - lastUpdate < MIN_INTERVAL) return
       lastUpdate = now
 
-      const ms = video.currentTime * 1000
-      if (totalDurationMs > 0 && ms >= totalDurationMs) {
+      // Convert clip-local video time → timeline-global position (Bug A + B fix)
+      const currentClipId = loadedClipIdRef.current
+      const currentClip = currentClipId ? clipsRef.current.find(c => c.id === currentClipId) : null
+      let timelineMs: number
+      if (currentClip) {
+        // Reverse of clipTimeSec: headMs = startMs - trimStart + (videoTime * 1000) / speed
+        timelineMs = currentClip.startMs - currentClip.trimStart + (video.currentTime * 1000) / (currentClip.speed || 1)
+      } else {
+        timelineMs = video.currentTime * 1000
+      }
+
+      if (totalDurationMs > 0 && timelineMs >= totalDurationMs) {
         setPlayhead(totalDurationMs)
         setPlaying(false)
         return
       }
-      setPlayhead(ms)
+      setPlayhead(timelineMs)
+    }
+
+    // When video reaches end of source, advance to next clip or stop (Bug 2 fix)
+    const onEnded = (): void => {
+      if (!isPlayingRef.current) return
+      const currentClipId = loadedClipIdRef.current
+      const currentClip = currentClipId ? clipsRef.current.find(c => c.id === currentClipId) : null
+      if (!currentClip) { setPlaying(false); return }
+      const clipEnd = currentClip.startMs + currentClip.durationMs
+      // Find the next clip that starts at or after the current clip's end
+      const nextClip = clipsRef.current.find(c => c.startMs >= clipEnd && c.id !== currentClip.id)
+      if (nextClip) {
+        setPlayhead(nextClip.startMs)
+        // Effect 1 will load the next clip; onLoaded in effect 1 auto-plays (isPlayingRef is true)
+      } else {
+        setPlayhead(clipEnd)
+        setPlaying(false)
+      }
     }
 
     video.addEventListener('timeupdate', onTimeUpdate)
-    return () => video.removeEventListener('timeupdate', onTimeUpdate)
+    video.addEventListener('ended', onEnded)
+    return () => {
+      video.removeEventListener('timeupdate', onTimeUpdate)
+      video.removeEventListener('ended', onEnded)
+    }
   }, [totalDurationMs, setPlayhead, setPlaying])
+
+  // ---- effect 4b: video overlays for multi-layer compositing (BUG-03 fix) ----
+  // Overlay audio is routed through AudioEngine via createMediaElementSource.
+
+  useEffect(() => {
+    const container = overlayContainerRef.current
+    if (!container) return
+    const activeClips = findAllClipsAt(playheadMs)
+    const baseClip = activeClips.length > 0 ? activeClips[0] : null
+    const overlayClips = activeClips.slice(1) // higher tracks
+    const assigned = overlayAssignedRef.current
+    const audioIds = overlayAudioIdsRef.current
+
+    // Remove overlays for clips no longer active
+    for (const [clipId, vid] of assigned) {
+      if (!overlayClips.find((c) => c.id === clipId) || clipId === baseClip?.id) {
+        vid.pause()
+        // Disconnect overlay audio routing
+        const audioId = audioIds.get(clipId)
+        if (audioId) {
+          AudioEngine.disconnectOverlayAudio(audioId)
+          audioIds.delete(clipId)
+        }
+        vid.removeAttribute('src')
+        vid.load()
+        vid.style.display = 'none'
+        assigned.delete(clipId)
+      }
+    }
+
+    // Create/update overlay for each active higher-track clip
+    for (let i = 0; i < overlayClips.length; i++) {
+      const clip = overlayClips[i]
+      if (clip.id === baseClip?.id) continue
+
+      let vid = assigned.get(clip.id)
+      if (!vid) {
+        vid = document.createElement('video')
+        vid.playsInline = true
+        vid.muted = false // audio routed through AudioEngine, not native output
+        vid.volume = 1 // gain controlled by AudioEngine GainNode
+        vid.preload = 'auto'
+        vid.style.cssText = 'position:absolute;inset:0;width:100%;height:100%;object-fit:contain;pointer-events:none;'
+        vid.style.zIndex = String(10 + clip.trackIndex)
+        vid.style.display = 'none'
+        container.appendChild(vid)
+        assigned.set(clip.id, vid)
+
+        // Connect audio through AudioEngine (createMediaElementSource once per element)
+        const clipVol = (clip.muted ?? false) ? 0 : (clip.volume ?? 1)
+        const audioId = AudioEngine.connectOverlayAudio(clip.id, vid, clipVol * masterVolume, clip.muted ?? false)
+        if (audioId) audioIds.set(clip.id, audioId)
+      }
+
+      const src = toFileUrl(clip.path)
+      if (vid.src !== src) {
+        vid.src = src
+        const onLoaded = (): void => {
+          vid!.currentTime = clipTimeSec(clip, playheadMs)
+          if (isPlayingRef.current) {
+            vid!.play().catch(() => {})
+          }
+          vid!.style.display = ''
+        }
+        vid.addEventListener('loadedmetadata', onLoaded, { once: true })
+      } else {
+        if (isPlaying) {
+          vid.currentTime = clipTimeSec(clip, playheadMs)
+          vid.play().catch(() => {})
+        }
+        vid.style.display = ''
+      }
+    }
+
+    // Pause unused overlays when no active clips
+    if (activeClips.length === 0) {
+      for (const [, vid] of assigned) {
+        vid.pause()
+        vid.style.display = 'none'
+      }
+    }
+  }, [playheadMs, isPlaying, findAllClipsAt, clipTimeSec, toFileUrl, clips, masterVolume])
+
+  // ---- effect 4d: audio scrub preview when not playing ----
+  // Plays a short audio burst from each active audio track when the playhead
+  // is moved while paused, providing audible feedback during scrubbing.
+
+  useEffect(() => {
+    if (isPlayingRef.current) return
+
+    const now = performance.now()
+    if (now - lastScrubTimeRef.current < 60) return // throttle to ~16Hz
+    lastScrubTimeRef.current = now
+
+    const at = audioTracksRef.current
+    const lanes = trackLanesRef.current
+    const hasSolo = lanes.some((l) => l.solo)
+
+    AudioEngine.playScrub(
+      at.map((t: AudioTrack) => {
+        const parentTrack = lanes.find((l) => l.kind === 'audio' && l.index === t.trackIndex)
+        const laneMuted = parentTrack?.muted ?? false
+        const laneSolo = parentTrack?.solo ?? false
+        const effectiveMuted = t.muted || laneMuted || (hasSolo && !laneSolo)
+        return {
+          id: t.id, path: t.path, startMs: t.startMs, durationMs: t.durationMs,
+          volume: t.volume, muted: effectiveMuted, trimStart: t.trimStart
+        }
+      }),
+      playheadMs,
+      masterVolume
+    )
+  }, [playheadMs, masterVolume, audioTracks, trackLanes])
 
   // ---- effect 5: canvas annotation loop (captions + transform box overlay) ----
 
@@ -487,6 +774,31 @@ export function Preview(): JSX.Element {
     }
   }, [selectedClipId, setClipTransform, beginDragCapture, commitDrag])
 
+  // ---- Cleanup: dispose audio engine on unmount ----
+
+  useEffect(() => {
+    return () => {
+      AudioEngine.stopAll()
+      AudioEngine.clearScrub()
+      // Disconnect all overlay audio routing
+      for (const [, audioId] of overlayAudioIdsRef.current) {
+        AudioEngine.disconnectOverlayAudio(audioId)
+      }
+      overlayAudioIdsRef.current.clear()
+      // Clean up overlay video elements
+      const container = overlayContainerRef.current
+      if (container) {
+        while (container.firstChild) {
+          const vid = container.firstChild as HTMLVideoElement
+          vid.pause()
+          vid.removeAttribute('src')
+          container.removeChild(vid)
+        }
+      }
+      overlayAssignedRef.current.clear()
+    }
+  }, [])
+
   const togglePlay = (): void => {
     setPlaying(!isPlaying)
   }
@@ -516,16 +828,19 @@ export function Preview(): JSX.Element {
         height: ph > pw ? '100%' : 'auto'
       }}
     >
-      {/* Video element for source — transform matches canvas TransformBox SSOT */}
+      {/* Video element for base layer (lowest track) */}
       <video
         ref={videoRef}
         className="absolute inset-0 w-full h-full object-contain"
         playsInline
-        style={videoTransform ? {
+        style={{ zIndex: 0, ...(videoTransform ? {
           transform: videoTransform,
           transformOrigin: 'center'
-        } : undefined}
+        } : {}) }}
       />
+
+      {/* Overlay video pool for multi-layer compositing (higher tracks) */}
+      <div ref={overlayContainerRef} className="absolute inset-0" style={{ zIndex: 5, pointerEvents: 'none' }} />
 
       {/* Canvas overlay for captions + transform box */}
       <canvas
@@ -547,23 +862,8 @@ export function Preview(): JSX.Element {
       {/* Interactive transform overlay — above canvas, reads same store values */}
       <TransformOverlay />
 
-      {/* ===== TEMPORARY: Caption Debug Overlay ===== */}
-      {debugVisible && (
-        <CaptionDebugOverlay
-          playheadMs={playheadMs}
-          textClips={textClips}
-        />
-      )}
-
       {/* Play controls */}
-      <div className="absolute bottom-0 left-0 right-0 h-10 bg-gradient-to-t from-black/80 to-transparent flex items-center justify-between px-2 pointer-events-none">
-        <button
-          onClick={() => setDebugVisible((v) => !v)}
-          title="Toggle Caption Debug (temporary)"
-          className={`pointer-events-auto px-2 py-0.5 rounded text-[10px] font-mono transition-colors ${debugVisible ? 'bg-accent text-white' : 'bg-white/10 text-gray-400 hover:text-white'}`}
-        >
-          DBG
-        </button>
+      <div className="absolute bottom-0 left-0 right-0 h-10 bg-gradient-to-t from-black/80 to-transparent flex items-center justify-center px-2 pointer-events-none">
         <button
           onClick={togglePlay}
           className="pointer-events-auto w-8 h-8 flex items-center justify-center text-white hover:text-accent transition-colors"
@@ -633,6 +933,10 @@ interface CaptionDrawStyle {
   y: number
   /** Uniform scale multiplier (1.0 = native size). Applied on top of resolution scale. */
   scale: number
+  /** Entry-level animation preset */
+  animation: 'none' | 'pop' | 'fade' | 'slide-up' | 'karaoke' | 'typewriter'
+  /** Word-level caption display mode */
+  captionMode: 'full-phrase' | 'word-reveal' | 'karaoke' | 'single-word'
   /** Smooth word reveal fade duration in ms. 0 = instant (default). */
   revealFadeMs?: number
 }
@@ -1005,66 +1309,3 @@ function drawTransformBox(
 
 export default Preview
 
-// =============================================================================
-// TEMPORARY: Caption Debug Overlay — toggle via "DBG" button in play controls.
-// TODO: Remove before production release.
-// =============================================================================
-
-interface CaptionDebugOverlayProps {
-  playheadMs: number
-  textClips: TextClip[]
-}
-
-function CaptionDebugOverlay({ playheadMs, textClips }: CaptionDebugOverlayProps): JSX.Element | null {
-  const activeCaption = textClips.find(
-    (tc) => playheadMs >= tc.startMs && playheadMs < tc.endMs
-  )
-
-  if (!activeCaption) {
-    return (
-      <div className="absolute top-10 left-2 z-50 bg-black/85 text-[11px] font-mono text-gray-300 rounded px-2 py-1.5 select-none pointer-events-none">
-        <span className="text-gray-500">No active caption</span>
-      </div>
-    )
-  }
-
-  const elapsed = playheadMs - activeCaption.startMs
-  const words = activeCaption.words
-  const source = activeCaption.wordTimestampsSource ?? 'none'
-  const activation = words
-    ? resolveActiveWord(words, elapsed, activeCaption.wordTimestampsSource === 'synthetic')
-    : null
-  const activeWord = activation?.activeWord
-
-  return (
-    <div className="absolute top-10 left-2 z-50 bg-black/90 text-[11px] font-mono text-gray-200 rounded px-3 py-2 select-none pointer-events-none space-y-0.5 border border-white/10">
-      <div className="text-[9px] text-gray-500 uppercase tracking-wider mb-1">Caption Debug</div>
-      <div className="flex gap-2">
-        <span className="text-gray-500">Source:</span>
-        <span className={source === 'whisper' ? 'text-green-400' : source === 'synthetic' ? 'text-yellow-400' : 'text-red-400'}>
-          {source.toUpperCase()}
-        </span>
-      </div>
-      <div className="flex gap-2">
-        <span className="text-gray-500">Word Count:</span>
-        <span>{words?.length ?? 0}</span>
-      </div>
-      <div className="flex gap-2">
-        <span className="text-gray-500">Active Word:</span>
-        <span className="text-cyan-300">{activeWord ? `"${activeWord.word}"` : '—'}</span>
-      </div>
-      {activeWord && (
-        <>
-          <div className="flex gap-2">
-            <span className="text-gray-500">Active Start:</span>
-            <span>{activeWord.startMs}ms</span>
-          </div>
-          <div className="flex gap-2">
-            <span className="text-gray-500">Active End:</span>
-            <span>{activeWord.endMs}ms</span>
-          </div>
-        </>
-      )}
-    </div>
-  )
-}

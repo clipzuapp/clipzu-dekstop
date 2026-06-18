@@ -91,9 +91,9 @@ export function HotkeyManager({ onExport, onShortcuts, activeTool: _activeTool, 
 
       // Delete/Backspace: delete selected (immediate, no confirm — CapCut parity)
       if (e.key === 'Delete' || e.key === 'Backspace') {
-        const { selectedClipIds, selectedTextClipIds, selectedClipId, selectedTextClipId } = useTimeline.getState()
-        const hasClipSelection = selectedClipIds.length > 0 || selectedClipId !== null
-        const hasTextSelection = selectedTextClipIds.length > 0 || selectedTextClipId !== null
+        const state = useTimeline.getState()
+        const hasClipSelection = state.selectedIds.some((id) => state.clips.some((c) => c.id === id))
+        const hasTextSelection = state.selectedIds.some((id) => state.textClips.some((tc) => tc.id === id))
 
         if (hasClipSelection || hasTextSelection) {
           e.preventDefault()
@@ -183,6 +183,7 @@ export function HotkeyManager({ onExport, onShortcuts, activeTool: _activeTool, 
             useTimeline.getState().loadTimeline({
               clips: data.clips || [],
               audioTracks: data.audioTracks || [],
+              // entries type expanded in project.handler.ts to match TextClip — cast is structurally truthful
               textClips: (data.captions?.entries || []) as TextClip[]
             })
             useCaption.getState().loadCaptions({
@@ -194,6 +195,7 @@ export function HotkeyManager({ onExport, onShortcuts, activeTool: _activeTool, 
           })
           .catch((err: Error) => {
             console.error('Load failed:', err)
+            useToast.getState().error(`Load failed: ${err.message}`)
           })
         return
       }
@@ -232,12 +234,13 @@ export function HotkeyManager({ onExport, onShortcuts, activeTool: _activeTool, 
       // Ctrl+D: duplicate selected
       if (isMod && e.key === 'd') {
         e.preventDefault()
-        const { selectedClipIds } = useTimeline.getState()
-        if (selectedClipIds.length > 1) {
+        const state = useTimeline.getState()
+        const clipSelectionCount = state.selectedIds.filter((id) => state.clips.some((c) => c.id === id)).length
+        if (clipSelectionCount > 1) {
           useTimeline.getState().duplicateSelected()
         } else {
-          const { selectedClipId } = useTimeline.getState()
-          if (selectedClipId) useTimeline.getState().duplicateClip(selectedClipId)
+          const focusedId = state.focusedId
+          if (focusedId && state.clips.some((c) => c.id === focusedId)) useTimeline.getState().duplicateClip(focusedId)
         }
         return
       }

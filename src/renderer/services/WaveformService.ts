@@ -13,6 +13,15 @@ const cache = new Map<string, Float32Array>()
 /** Pending extractions to avoid duplicate in-flight requests */
 const pending = new Map<string, Promise<Float32Array>>()
 
+/** Singleton AudioContext shared across all waveform extractions (avoids browser cap of ~6) */
+let _sharedCtx: AudioContext | null = null
+function getSharedCtx(): AudioContext {
+  if (!_sharedCtx || _sharedCtx.state === 'closed') {
+    _sharedCtx = new AudioContext()
+  }
+  return _sharedCtx
+}
+
 /**
  * Ensure a file path is a valid file:// URL that fetch() can load.
  * Handles Windows backslashes and absolute paths.
@@ -84,9 +93,8 @@ async function doExtract(filePath: string): Promise<Float32Array> {
     const response = await fetch(url)
     if (!response.ok) throw new Error(`HTTP ${response.status}`)
     const arrayBuffer = await response.arrayBuffer()
-    const audioCtx = new AudioContext()
+    const audioCtx = getSharedCtx()
     const audioBuffer = await audioCtx.decodeAudioData(arrayBuffer)
-    await audioCtx.close()
 
     const channelData = audioBuffer.getChannelData(0)
     return computePeaks(channelData, PEAK_RESOLUTION)
@@ -116,4 +124,8 @@ export function getWaveform(filePath: string): Float32Array | null {
 export function clearWaveformCache(): void {
   cache.clear()
   pending.clear()
+  if (_sharedCtx) {
+    _sharedCtx.close().catch(() => {})
+    _sharedCtx = null
+  }
 }

@@ -2,11 +2,35 @@ import { ipcMain, dialog, BrowserWindow } from 'electron'
 import { readFile, writeFile, mkdir } from 'fs/promises'
 import { dirname, join } from 'path'
 import { existsSync } from 'fs'
-import { generateSRT } from '../../shared/utils/srt'
+import { generateSRT, generateExportSRT, type ExportSRTOptions } from '../../shared/utils/srt'
 
 /**
  * Project IPC handlers - Save/Load .ecp project files
  */
+
+/**
+ * Caption style fields persisted in .ecp project files.
+ * Must stay in sync with renderer CaptionStyle (useCaption.ts).
+ */
+interface ProjectCaptionStyle {
+  fontFamily: string
+  fontSize: number
+  fontWeight: number
+  color: string
+  strokeColor: string
+  strokeWidth: number
+  bgColor: string
+  bgOpacity: number
+  alignment: 'left' | 'center' | 'right'
+  position: 'top' | 'center' | 'bottom'
+  x: number
+  y: number
+  rotation: number
+  scale: number
+  animation: string
+  captionMode: string
+  revealFadeMs?: number
+}
 
 interface ProjectFile {
   version: string
@@ -42,23 +66,27 @@ interface ProjectFile {
     endMs: number
     trackIndex: number
     text: string
-    style?: any
+    style?: ProjectCaptionStyle
     words?: Array<{ word: string; startMs: number; endMs: number }>
     sourceId?: string
     sourceType?: 'clip' | 'audioTrack' | 'timeline' | 'import'
     transcriptionJobId?: string
   }>
   captions: {
-    entries: Array<{ id: string; startMs: number; endMs: number; text: string }>
-    style: {
-      fontFamily: string
-      fontSize: number
-      color: string
-      bgColor: string
-      bgOpacity: number
-      position: string
-      animation: string
-    }
+    entries: Array<{
+      id: string
+      text: string
+      startMs: number
+      endMs: number
+      durationMs: number
+      trackIndex: number
+      style?: ProjectCaptionStyle
+      words?: Array<{ word: string; startMs: number; endMs: number }>
+      sourceId?: string
+      sourceType?: 'clip' | 'audioTrack' | 'timeline' | 'import'
+      transcriptionJobId?: string
+    }>
+    style: ProjectCaptionStyle
     language: string
   }
   exportPreset: string
@@ -141,10 +169,19 @@ export function registerProjectHandler(getWindow: () => BrowserWindow | null): v
     }
   )
 
-  // Create temp SRT for export (burn-in captions)
+  // Create temp SRT for export (burn-in captions) — supports caption modes and animations
   ipcMain.handle(
     'project:createTempSRT',
-    async (_event, entries: Array<{ startMs: number; endMs: number; text: string }>) => {
+    async (
+      _event,
+      entries: Array<{
+        startMs: number
+        endMs: number
+        text: string
+        words?: Array<{ word: string; startMs: number; endMs: number }>
+      }>,
+      options?: ExportSRTOptions
+    ) => {
       try {
         const os = require('os')
         const path = require('path')
@@ -155,7 +192,7 @@ export function registerProjectHandler(getWindow: () => BrowserWindow | null): v
         }
 
         const srtPath = join(tmpDir, `temp_captions_${Date.now()}.srt`)
-        const srtContent = generateSRT(entries)
+        const srtContent = generateExportSRT(entries, options ?? {})
 
         await writeFile(srtPath, srtContent, 'utf-8')
         return srtPath

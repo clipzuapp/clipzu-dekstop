@@ -19,6 +19,8 @@ const electronAPI = {
         'ffmpeg:openSaveDialog',
         'ffmpeg:extractAudioFromClip',
         'ffmpeg:mixTimelineAudio',
+        'sfx:getLibrary',
+        'sfx:openFileLocation',
         'whisper:isModelAvailable',
         'whisper:transcribe',
         'whisper:transcribeFromTimeline',

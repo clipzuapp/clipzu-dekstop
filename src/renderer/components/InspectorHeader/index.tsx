@@ -23,18 +23,28 @@ function SectionHeader({ title }: { title: string }): JSX.Element {
  *   - Nothing:      hidden (ProjectSettings takes over the whole panel)
  */
 export function InspectorHeader(): JSX.Element | null {
-  const selectedClipId = useTimeline((s) => s.selectedClipId)
-  const selectedTextClipId = useTimeline((s) => s.selectedTextClipId)
-
+  const focusedId = useTimeline((s) => s.focusedId)
+  const clips = useTimeline((s) => s.clips)
   const textClips = useTimeline((s) => s.textClips)
+
+  const selectedClipId = useMemo(() => {
+    if (!focusedId) return null
+    return clips.some((c) => c.id === focusedId) ? focusedId : null
+  }, [focusedId, clips])
+
+  const selectedTextClipId = useMemo(() => {
+    if (!focusedId) return null
+    return textClips.some((tc) => tc.id === focusedId) ? focusedId : null
+  }, [focusedId, textClips])
+
   const splitEntryWithText = useCaption((s) => s.splitEntryWithText)
   const setEntryTiming = useCaption((s) => s.setEntryTiming)
   const editEntry = useCaption((s) => s.editEntry)
 
   const selectedClip = useMemo(() => {
     if (!selectedClipId) return null
-    return useTimeline.getState().clips.find((c) => c.id === selectedClipId) ?? null
-  }, [selectedClipId])
+    return clips.find((c) => c.id === selectedClipId) ?? null
+  }, [selectedClipId, clips])
 
   const selectedTextClip = useMemo(() => {
     if (!selectedTextClipId) return null

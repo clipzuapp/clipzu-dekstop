@@ -2,7 +2,7 @@ import React from 'react'
 import { useShallow } from 'zustand/react/shallow'
 import { useExport, EXPORT_PRESETS } from '../../store/useExport'
 import type { PresetKey } from '../../store/useExport'
-import { useTimeline, DEFAULT_TRANSFORM } from '../../store/useTimeline'
+import { useTimeline, DEFAULT_TRANSFORM, type TimelineState } from '../../store/useTimeline'
 import { useProject } from '../../store/useProject'
 import { useCaption } from '../../store/useCaption'
 import { useToast } from '../../store/useToast'
@@ -36,7 +36,7 @@ export function ExportDialog({ onClose }: { onClose: () => void }): JSX.Element 
     clearQueue: s.clearQueue
   })))
 
-  const { clips, audioTracks, textClips, totalDurationMs } = useTimeline(useShallow((s) => ({
+  const { clips, audioTracks, textClips, totalDurationMs } = useTimeline(useShallow((s: TimelineState) => ({
     clips: s.clips,
     audioTracks: s.audioTracks,
     textClips: s.textClips,
@@ -66,13 +66,18 @@ export function ExportDialog({ onClose }: { onClose: () => void }): JSX.Element 
       // Create temp SRT if captions exist
       let srtPath: string | null = null
       if (textClips.length > 0) {
-        srtPath = await window.electron.ipcRenderer.invoke('project:createTempSRT', textClips)
+        srtPath = await window.electron.ipcRenderer.invoke('project:createTempSRT', textClips, {
+          captionMode: captionStyle.captionMode,
+          animation: captionStyle.animation,
+          revealFadeMs: captionStyle.revealFadeMs
+        })
       }
 
       await startExport({
         clipPaths: clips.map((c) => c.path),
         clipTrackIndices: clips.map((c) => c.trackIndex),
         clipTransforms: clips.map((c) => c.transform ?? DEFAULT_TRANSFORM),
+        clipVolumes: clips.map((c) => ({ volume: c.volume ?? 1, muted: c.muted ?? false })),
         audioTracks: audioTracks
           .filter((t) => !t.muted)
           .map((t) => ({ path: t.path, startMs: t.startMs, volume: t.volume })),
@@ -90,7 +95,11 @@ export function ExportDialog({ onClose }: { onClose: () => void }): JSX.Element 
               x: captionStyle.x,
               y: captionStyle.y,
               alignment: captionStyle.alignment,
-              position: captionStyle.position
+              position: captionStyle.position,
+              scale: captionStyle.scale ?? 1,
+              captionMode: captionStyle.captionMode,
+              animation: captionStyle.animation,
+              revealFadeMs: captionStyle.revealFadeMs
             }
           : null,
         outputPath,

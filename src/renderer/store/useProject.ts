@@ -1,7 +1,7 @@
 import { create } from 'zustand'
 import { immer } from 'zustand/middleware/immer'
 
-type AspectRatio = '16:9' | '9:16' | '1:1' | '4:5' | '4:3' | 'custom'
+export type AspectRatio = '16:9' | '9:16' | '1:1' | '4:5' | '4:3' | 'custom'
 
 /** Snapshot of timeline + caption state for undo/redo */
 interface UndoSnapshot {
