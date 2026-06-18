@@ -53,16 +53,25 @@ export async function resumeAudio(): Promise<void> {
   }
 }
 
-/** Pre-decode an audio file into the buffer cache. Idempotent. */
+/** Pre-decode an audio file into the buffer cache. Idempotent.
+ *  Uses Electron IPC for local file:// paths (fetch to file:// is blocked
+ *  in Electron renderer) and fetch for http:// / https:// URLs. */
 export async function preloadBuffer(path: string): Promise<void> {
   if (_buffers.has(path)) return
   if (_preloading.has(path)) return
   _preloading.add(path)
   try {
     const url = toFileUrl(path)
-    const res = await fetch(url)
-    if (!res.ok) throw new Error(`HTTP ${res.status}`)
-    const ab = await res.arrayBuffer()
+    let ab: ArrayBuffer
+    if (url.startsWith('file://')) {
+      // Electron renderer: fetch to file:// is blocked.
+      // Read via IPC (main process fs.readFile).
+      ab = await window.electron.ipcRenderer.invoke('file:readBuffer', path)
+    } else {
+      const res = await fetch(url)
+      if (!res.ok) throw new Error(`HTTP ${res.status}`)
+      ab = await res.arrayBuffer()
+    }
     const ctx = getCtx()
     const buf = await ctx.decodeAudioData(ab)
     _buffers.set(path, buf)

@@ -1,7 +1,7 @@
-import { ipcMain, dialog, app } from 'electron'
+import { ipcMain, app } from 'electron'
 import { join } from 'path'
 import { readdirSync, statSync, existsSync } from 'fs'
-import type { BrowserWindow } from 'electron'
+import { readFile } from 'fs/promises'
 import { FFmpegService } from '../services/FFmpegService'
 
 /**
@@ -37,7 +37,7 @@ function getFFmpegService(): FFmpegService {
   return ffmpegService
 }
 
-export function registerSFXHandler(getWindow: () => BrowserWindow | null): void {
+export function registerSFXHandler(): void {
   ipcMain.handle('sfx:getLibrary', async (): Promise<SFXFile[]> => {
     try {
       const sfxDir = app.isPackaged
@@ -98,5 +98,12 @@ export function registerSFXHandler(getWindow: () => BrowserWindow | null): void 
     } catch (error) {
       console.error('[SFX] Failed to open file location:', error)
     }
+  })
+
+  /** Generic file read IPC — used by AudioEngine to read local audio files
+   *  since fetch() to file:// is blocked in Electron renderer. */
+  ipcMain.handle('file:readBuffer', async (_event, filePath: string): Promise<ArrayBuffer> => {
+    const buffer = await readFile(filePath)
+    return buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + buffer.byteLength)
   })
 }

@@ -21,6 +21,7 @@ const electronAPI = {
         'ffmpeg:mixTimelineAudio',
         'sfx:getLibrary',
         'sfx:openFileLocation',
+        'file:readBuffer',
         'whisper:isModelAvailable',
         'whisper:transcribe',
         'whisper:transcribeFromTimeline',

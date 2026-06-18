@@ -89,6 +89,34 @@ export function HotkeyManager({ onExport, onShortcuts, activeTool: _activeTool, 
         return
       }
 
+      // M: toggle mute on focused audio track
+      if (e.key === 'm' && !isMod) {
+        e.preventDefault()
+        const state = useTimeline.getState()
+        const focusedId = state.focusedId
+        if (focusedId && state.audioTracks.some((a) => a.id === focusedId)) {
+          state.toggleAudioMute(focusedId)
+        }
+        return
+      }
+
+      // Shift+S: toggle solo on focused audio track's parent lane (plain s = split)
+      if (e.key === 'S' && !isMod && e.shiftKey) {
+        e.preventDefault()
+        const state = useTimeline.getState()
+        const focusedId = state.focusedId
+        if (focusedId) {
+          const audioTrack = state.audioTracks.find((a) => a.id === focusedId)
+          if (audioTrack) {
+            const parentTrack = state.tracks.find(
+              (t) => t.kind === 'audio' && t.index === audioTrack.trackIndex
+            )
+            if (parentTrack) state.toggleSoloTrack(parentTrack.id)
+          }
+        }
+        return
+      }
+
       // Delete/Backspace: delete selected (immediate, no confirm — CapCut parity)
       if (e.key === 'Delete' || e.key === 'Backspace') {
         const state = useTimeline.getState()

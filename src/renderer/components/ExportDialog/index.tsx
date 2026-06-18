@@ -2,7 +2,7 @@ import React from 'react'
 import { useShallow } from 'zustand/react/shallow'
 import { useExport, EXPORT_PRESETS } from '../../store/useExport'
 import type { PresetKey } from '../../store/useExport'
-import { useTimeline, DEFAULT_TRANSFORM, type TimelineState } from '../../store/useTimeline'
+import { useTimeline, DEFAULT_TRANSFORM, computeEffectiveMuted, type TimelineState } from '../../store/useTimeline'
 import { useProject } from '../../store/useProject'
 import { useCaption } from '../../store/useCaption'
 import { useToast } from '../../store/useToast'
@@ -36,11 +36,12 @@ export function ExportDialog({ onClose }: { onClose: () => void }): JSX.Element 
     clearQueue: s.clearQueue
   })))
 
-  const { clips, audioTracks, textClips, totalDurationMs } = useTimeline(useShallow((s: TimelineState) => ({
+  const { clips, audioTracks, textClips, totalDurationMs, tracks } = useTimeline(useShallow((s: TimelineState) => ({
     clips: s.clips,
     audioTracks: s.audioTracks,
     textClips: s.textClips,
-    totalDurationMs: s.totalDurationMs
+    totalDurationMs: s.totalDurationMs,
+    tracks: s.tracks
   })))
 
   const projectResolution = useProject((s) => s.resolution)
@@ -79,7 +80,7 @@ export function ExportDialog({ onClose }: { onClose: () => void }): JSX.Element 
         clipTransforms: clips.map((c) => c.transform ?? DEFAULT_TRANSFORM),
         clipVolumes: clips.map((c) => ({ volume: c.volume ?? 1, muted: c.muted ?? false })),
         audioTracks: audioTracks
-          .filter((t) => !t.muted)
+          .filter((t) => !computeEffectiveMuted(t.muted, t.trackIndex, tracks))
           .map((t) => ({ path: t.path, startMs: t.startMs, volume: t.volume })),
         srtPath,
         captionStyle: textClips.length > 0

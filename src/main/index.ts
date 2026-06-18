@@ -165,7 +165,7 @@ app.whenReady().then(() => {
   registerWhisperHandler(getWindow, whisper, ffmpeg)
   registerExportHandler(exportQueue)
   registerProjectHandler(getWindow)
-  registerSFXHandler(getWindow)
+  registerSFXHandler()
 
   // Push startup validation result to renderer after it loads
   const validation = validateStartupDeps(ffmpegPath, ffprobePath, modelPath)

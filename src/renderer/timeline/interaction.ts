@@ -203,12 +203,16 @@ export function buildLaneLayout(
     })
   }
 
-  // Audio lanes
-  const audioTrackCount = Math.max(
-    audioTracks.length > 0 ? audioTracks.length : 1,
+  // Audio lanes — counted by max trackIndex (+1) across all audio tracks
+  // and explicit audio Track entries, NOT the raw array length.
+  // Multiple audio clips can share the same lane, like video clips do.
+  const maxAudioIndex = audioTracks.reduce((m, t) => Math.max(m, t.trackIndex), 0)
+  const audioLaneCount = Math.max(
+    maxAudioIndex + 1,
+    audioTracks.length > 0 ? 1 : 0,
     tracks.filter((t) => t.kind === 'audio').length
   )
-  for (let i = 0; i < audioTrackCount; i++) {
+  for (let i = 0; i < audioLaneCount; i++) {
     lanes.push({
       y: RULER_H + lanes.length * (TRACK_LANE_H + LANE_GAP),
       trackKind: 'audio',
@@ -294,20 +298,21 @@ export function hitTest(
     }
 
     if (lane.trackKind === 'audio') {
-      const track = audioTracks[lane.trackIndex]
-      if (track) {
+      // Reverse-iterate audio tracks on this lane so topmost gets priority
+      const laneTracks = audioTracks.filter((t) => t.trackIndex === lane.trackIndex)
+      for (let ti = laneTracks.length - 1; ti >= 0; ti--) {
+        const track = laneTracks[ti]
         const ax = track.startMs * ppm
         const aw = Math.max(track.durationMs * ppm, 40)
-        if (canvasX >= ax && canvasX <= ax + aw) {
-          const hw = getHandleWidth(aw)
-          if (canvasX - ax < hw) {
-            return { kind: 'audio-left-handle', id: track.id }
-          }
-          if (ax + aw - canvasX < hw) {
-            return { kind: 'audio-right-handle', id: track.id }
-          }
-          return { kind: 'audio-body', id: track.id }
+        if (canvasX < ax || canvasX > ax + aw) continue
+        const hw = getHandleWidth(aw)
+        if (canvasX - ax < hw) {
+          return { kind: 'audio-left-handle', id: track.id }
         }
+        if (ax + aw - canvasX < hw) {
+          return { kind: 'audio-right-handle', id: track.id }
+        }
+        return { kind: 'audio-body', id: track.id }
       }
     }
 
@@ -503,10 +508,9 @@ export function findClipsInBox(
     }
   }
 
-  // Audio tracks
-  for (let ai = 0; ai < audioTracks.length; ai++) {
-    const track = audioTracks[ai]
-    const laneIdx = lanes.findIndex((l) => l.trackKind === 'audio' && l.trackIndex === ai)
+  // Audio tracks — match by track.trackIndex, not array position
+  for (const track of audioTracks) {
+    const laneIdx = lanes.findIndex((l) => l.trackKind === 'audio' && l.trackIndex === track.trackIndex)
     if (laneIdx < 0) continue
     const lane = lanes[laneIdx]
     const ax = track.startMs * ppm

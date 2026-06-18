@@ -160,6 +160,22 @@ export interface AudioTrack {
   fadeOutMs?: number
 }
 
+/**
+ * Compute whether an audio track is effectively muted given track-level
+ * mute/solo state. SSOT — used by Preview, Export, Timeline waveform.
+ */
+export function computeEffectiveMuted(
+  trackMuted: boolean,
+  trackIndex: number,
+  tracks: Track[]
+): boolean {
+  const hasSolo = tracks.some((l) => l.solo)
+  const parentTrack = tracks.find((l) => l.kind === 'audio' && l.index === trackIndex)
+  const laneMuted = parentTrack?.muted ?? false
+  const laneSolo = parentTrack?.solo ?? false
+  return trackMuted || laneMuted || (hasSolo && !laneSolo)
+}
+
 export interface TextClip {
   id: string
   startMs: number
@@ -661,7 +677,7 @@ export const useTimeline = create<TimelineState & TimelineActions>()(
       set((state) => {
         if (track.trimStart === undefined) track.trimStart = 0
         if (track.trimEnd === undefined) track.trimEnd = 0
-        if (track.trackIndex === undefined) track.trackIndex = state.audioTracks.length
+        if (track.trackIndex === undefined) track.trackIndex = 0
         if (track.fadeInMs === undefined) track.fadeInMs = 0
         if (track.fadeOutMs === undefined) track.fadeOutMs = 0
         state.audioTracks.push(track)

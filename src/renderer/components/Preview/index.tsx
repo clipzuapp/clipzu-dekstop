@@ -7,7 +7,7 @@ import { getAnimationProgress } from '../StylePanel/AnimationPresets'
 import { resolveActiveWord, buildRevealText, createActivationCache, type ActivationCache } from '../../utils/wordActivation'
 import { TransformOverlay } from './TransformOverlay'
 import * as AudioEngine from '../../services/AudioEngine'
-import type { AudioTrack } from '../../store/useTimeline'
+import { type AudioTrack, computeEffectiveMuted } from '../../store/useTimeline'
 
 /**
  * Preview component — dynamic canvas sized from project resolution.
@@ -171,20 +171,13 @@ export function Preview(): JSX.Element {
 
         // Compute track-level mute/solo for each audio track
         const lanes = trackLanesRef.current
-        const hasSolo = lanes.some((l) => l.solo)
         const headMs = playheadMsRef.current
         AudioEngine.playTracks(
-          at.map((t: AudioTrack) => {
-            const parentTrack = lanes.find((l) => l.kind === 'audio' && l.index === t.trackIndex)
-            const laneMuted = parentTrack?.muted ?? false
-            const laneSolo = parentTrack?.solo ?? false
-            const effectiveMuted = t.muted || laneMuted || (hasSolo && !laneSolo)
-            return {
-              id: t.id, path: t.path, startMs: t.startMs, durationMs: t.durationMs,
-              volume: t.volume, muted: effectiveMuted, trimStart: t.trimStart,
-              fadeInMs: t.fadeInMs, fadeOutMs: t.fadeOutMs
-            }
-          }),
+          at.map((t: AudioTrack) => ({
+            id: t.id, path: t.path, startMs: t.startMs, durationMs: t.durationMs,
+            volume: t.volume, muted: computeEffectiveMuted(t.muted, t.trackIndex, lanes), trimStart: t.trimStart,
+            fadeInMs: t.fadeInMs, fadeOutMs: t.fadeOutMs
+          })),
           headMs,
           masterVolume
         )
@@ -458,19 +451,12 @@ export function Preview(): JSX.Element {
 
     const at = audioTracksRef.current
     const lanes = trackLanesRef.current
-    const hasSolo = lanes.some((l) => l.solo)
 
     AudioEngine.playScrub(
-      at.map((t: AudioTrack) => {
-        const parentTrack = lanes.find((l) => l.kind === 'audio' && l.index === t.trackIndex)
-        const laneMuted = parentTrack?.muted ?? false
-        const laneSolo = parentTrack?.solo ?? false
-        const effectiveMuted = t.muted || laneMuted || (hasSolo && !laneSolo)
-        return {
-          id: t.id, path: t.path, startMs: t.startMs, durationMs: t.durationMs,
-          volume: t.volume, muted: effectiveMuted, trimStart: t.trimStart
-        }
-      }),
+      at.map((t: AudioTrack) => ({
+        id: t.id, path: t.path, startMs: t.startMs, durationMs: t.durationMs,
+        volume: t.volume, muted: computeEffectiveMuted(t.muted, t.trackIndex, lanes), trimStart: t.trimStart
+      })),
       playheadMs,
       masterVolume
     )

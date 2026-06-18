@@ -1,6 +1,6 @@
 ﻿import React, { useRef, useEffect, useState, useCallback } from 'react'
 import { useShallow } from 'zustand/react/shallow'
-import { useTimeline, getClipboard, getStyleClipboard, type TimelineState } from '../../store/useTimeline'
+import { useTimeline, getClipboard, getStyleClipboard, computeEffectiveMuted, type TimelineState } from '../../store/useTimeline'
 import { useCaption } from '../../store/useCaption'
 import { useConfirm } from '../../store/useConfirm'
 import { ContextMenu, type ContextMenuItem } from '../ContextMenu/index'
@@ -70,13 +70,14 @@ export function Timeline({ activeTool = 'select' }: TimelineProps): JSX.Element 
   )
   const videoTrackIndices = Array.from({ length: videoTrackCount }, (_, i) => i)
 
-  const audioTrackCount = Math.max(
-    audioTracks.length > 0 ? audioTracks.length : 1,
+  const audioLaneCount = Math.max(
+    audioTracks.reduce((m, t) => Math.max(m, t.trackIndex), 0) + 1,
+    audioTracks.length > 0 ? 1 : 0,
     tracks.filter((t) => t.kind === 'audio').length
   )
 
   const captionLaneCount = textClips.length > 0 ? 1 : 0
-  const totalLanes = videoTrackIndices.length + audioTrackCount + captionLaneCount
+  const totalLanes = videoTrackIndices.length + audioLaneCount + captionLaneCount
   const totalH = LAYOUT.RULER_H + totalLanes * (LAYOUT.TRACK_LANE_H + LAYOUT.LANE_GAP)
 
   // ---- Canvas rendering (RAF-throttled) ----
@@ -125,18 +126,22 @@ export function Timeline({ activeTool = 'select' }: TimelineProps): JSX.Element 
         }
       })
 
-      // Audio tracks
-      for (let ai = 0; ai < audioTrackCount; ai++) {
-        const audioLaneY = LAYOUT.RULER_H + (videoTrackIndices.length + ai) * (LAYOUT.TRACK_LANE_H + LAYOUT.LANE_GAP)
-        const track = audioTracks[ai]
-        if (track) {
-          drawAudioTrack(ctx, track, LAYOUT.LANE_LABEL_W, audioLaneY, PIXELS_PER_MS, w, selectedIdSet)
+      // Audio tracks — grouped by trackIndex (multiple clips can share a lane)
+      const sortedAudioIndices = [...new Set<number>(audioTracks.map((t) => t.trackIndex))].sort((a, b) => a - b)
+      for (let li = 0; li < audioLaneCount; li++) {
+        const laneIdx = li < sortedAudioIndices.length ? sortedAudioIndices[li] : li
+        const audioLaneY = LAYOUT.RULER_H + (videoTrackIndices.length + li) * (LAYOUT.TRACK_LANE_H + LAYOUT.LANE_GAP)
+        const laneTracks = audioTracks.filter((t) => t.trackIndex === laneIdx)
+        for (const track of laneTracks) {
+          if (track.startMs + track.durationMs < viewStartMs || track.startMs > viewEndMs) continue
+          const effMuted = computeEffectiveMuted(track.muted, track.trackIndex, tracks)
+          drawAudioTrack(ctx, track, LAYOUT.LANE_LABEL_W, audioLaneY, PIXELS_PER_MS, w, selectedIdSet, effMuted)
         }
       }
 
       // Caption blocks
       if (textClips.length > 0) {
-        const captionLaneY = LAYOUT.RULER_H + (videoTrackIndices.length + audioTrackCount) * (LAYOUT.TRACK_LANE_H + LAYOUT.LANE_GAP)
+        const captionLaneY = LAYOUT.RULER_H + (videoTrackIndices.length + audioLaneCount) * (LAYOUT.TRACK_LANE_H + LAYOUT.LANE_GAP)
         for (const entry of textClips) {
           if (entry.endMs < viewStartMs || entry.startMs > viewEndMs) continue
           const bx = LAYOUT.LANE_LABEL_W + entry.startMs * PIXELS_PER_MS
@@ -265,12 +270,16 @@ export function Timeline({ activeTool = 'select' }: TimelineProps): JSX.Element 
           const ts = Date.now()
           const rand = Math.random().toString(36).slice(2, 6)
 
+          // Calculate which audio lane the drop landed on
+          const dropY = e.clientY - rect.top - LAYOUT.RULER_H
+          const audioLaneIdx = Math.max(0, Math.floor((dropY - videoTrackIndices.length * (LAYOUT.TRACK_LANE_H + LAYOUT.LANE_GAP)) / (LAYOUT.TRACK_LANE_H + LAYOUT.LANE_GAP)))
+
           if (data.isAudio) {
             useTimeline.getState().addAudioTrack({
               id: `audio_${ts}_${rand}`, path: data.path, startMs: Math.round(dropMs),
               durationMs: data.durationMs ?? 0, volume: 1, muted: false,
               name: data.name ?? 'Audio', role: data.isSfx ? 'sfx' : 'music',
-              trimStart: 0, trimEnd: 0, trackIndex: 0
+              trimStart: 0, trimEnd: 0, trackIndex: audioLaneIdx
             })
           } else {
             useTimeline.getState().addClip({
@@ -303,7 +312,7 @@ export function Timeline({ activeTool = 'select' }: TimelineProps): JSX.Element 
       const t = tracks.find((tr) => tr.index === ti && tr.kind === 'video')
       return { kind: 'video' as const, index: ti, trackId: t?.id ?? `track_v${ti}`, name: t?.name ?? `Video ${ti + 1}` }
     }),
-    ...Array.from({ length: audioTrackCount }, (_, i) => {
+    ...Array.from({ length: audioLaneCount }, (_, i) => {
       const t = tracks.find((tr) => tr.kind === 'audio' && tr.index === i)
       return { kind: 'audio' as const, index: i, trackId: t?.id ?? `audio_track_${i}`, name: t?.name ?? `Audio ${i + 1}` }
     })
@@ -369,6 +378,39 @@ export function Timeline({ activeTool = 'select' }: TimelineProps): JSX.Element 
                 variant: 'danger', confirmLabel: 'Delete'
               }).then((c) => { if (c) useCaption.getState().deleteEntry(clickedCaption.id) })
             }}
+          ]
+        })
+        return
+      }
+    }
+
+    // Audio track hit
+    if (hit.kind === 'audio-body' || hit.kind === 'audio-left-handle' || hit.kind === 'audio-right-handle') {
+      const clickedAudio = audioTracks.find((a) => a.id === hit.id)
+      if (clickedAudio) {
+        selectClip(clickedAudio.id)
+        setCtxMenu({
+          x: e.clientX, y: e.clientY,
+          items: [
+            { label: 'Cut', shortcut: 'Ctrl+X', onClick: () => { st.cutSelection() } },
+            { label: 'Copy', shortcut: 'Ctrl+C', onClick: () => { st.copySelection() } },
+            { label: 'Paste', shortcut: 'Ctrl+V', onClick: () => st.pasteAtPlayhead(), disabled: !getClipboard() },
+            { divider: true },
+            { label: 'Delete', shortcut: 'Del', danger: true, onClick: () => {
+              useTimeline.getState().removeAudioTrack(clickedAudio.id)
+            }},
+            { divider: true },
+            { label: 'Set as Music', onClick: () => {
+              useTimeline.setState((s) => { const t = s.audioTracks.find((a2) => a2.id === clickedAudio.id); if (t) t.role = 'music' })
+            }},
+            { label: 'Set as SFX', onClick: () => {
+              useTimeline.setState((s) => { const t = s.audioTracks.find((a2) => a2.id === clickedAudio.id); if (t) t.role = 'sfx' })
+            }},
+            { label: 'Set as Voice', onClick: () => {
+              useTimeline.setState((s) => { const t = s.audioTracks.find((a2) => a2.id === clickedAudio.id); if (t) t.role = 'voice' })
+            }},
+            { divider: true },
+            { label: 'Properties', onClick: () => selectClip(clickedAudio.id) }
           ]
         })
         return
@@ -657,7 +699,8 @@ function drawClip(
 function drawAudioTrack(
   ctx: CanvasRenderingContext2D,
   track: { id: string; path: string; startMs: number; durationMs: number; volume: number; muted: boolean; name?: string },
-  offsetX: number, trackY: number, ppm: number, maxW: number, selectedIdSet: Set<string>
+  offsetX: number, trackY: number, ppm: number, maxW: number, selectedIdSet: Set<string>,
+  effectiveMuted: boolean
 ): void {
   const x = offsetX + track.startMs * ppm
   const w = Math.max(track.durationMs * ppm, 40)
@@ -670,10 +713,10 @@ function drawAudioTrack(
   const isSel = selectedIdSet.has(track.id)
 
   ctx.save()
-  ctx.fillStyle = track.muted ? '#151a16' : isSel ? '#2a3a50' : '#141e28'
+  ctx.fillStyle = effectiveMuted ? '#151a16' : isSel ? '#2a3a50' : '#141e28'
   roundRect(ctx, x, y, clipW, h, r)
   ctx.fill()
-  ctx.strokeStyle = isSel ? '#534AB7' : track.muted ? '#1e2820' : '#1e3040'
+  ctx.strokeStyle = isSel ? '#534AB7' : effectiveMuted ? '#1e2820' : '#1e3040'
   ctx.lineWidth = isSel ? 2 : 1
   roundRect(ctx, x, y, clipW, h, r)
   ctx.stroke()
@@ -683,13 +726,13 @@ function drawAudioTrack(
   if (waveform && waveform.length > 0) {
     const peakCount = waveform.length
     const barW = Math.max(1, clipW / peakCount)
-    ctx.fillStyle = track.muted ? '#2a3028' : '#2a4560'
+    ctx.fillStyle = effectiveMuted ? '#2a3028' : '#2a4560'
     for (let i = 0; i < peakCount; i++) {
       const barH = waveform[i] * volH * 0.75 + 1
       ctx.fillRect(x + i * (clipW / peakCount), y + h / 2 - barH / 2, Math.max(barW, 0.6), barH)
     }
   } else {
-    ctx.fillStyle = track.muted ? '#2a3028' : '#2a4560'
+    ctx.fillStyle = effectiveMuted ? '#2a3028' : '#2a4560'
     const barCount = Math.floor(clipW / 3)
     for (let i = 0; i < barCount; i++) {
       const seed = Math.sin(i * 12.9898 + track.id.charCodeAt(0)) * 43758.5453
