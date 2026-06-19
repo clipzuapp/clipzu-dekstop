@@ -1,0 +1,906 @@
+# CAPCRAFT EFFECTS, ANIMATIONS & PRESET SYSTEM
+
+## Production-Grade Architecture Blueprint
+
+### Version 1.0
+
+---
+
+# GOALS
+
+Build a production-grade Effects, Animation, Preset, Keyframe, and Transition system that:
+
+* Does not contaminate Timeline architecture
+* Does not create future technical debt
+* Does not require future rewrites
+* Supports desktop, web, and mobile
+* Supports future preset marketplace
+* Supports AI-generated effects
+* Supports export rendering
+* Supports realtime preview
+* Supports third-party preset packs
+* Supports future plugin architecture
+
+This blueprint assumes the Timeline Engine already exists and remains responsible only for:
+
+```text
+Timeline Placement
+Timeline Selection
+Timeline Interaction
+Timeline State
+Track Management
+Playback State
+```
+
+Timeline must NOT own:
+
+```text
+Effects
+Animations
+Transitions
+Keyframes
+Rendering Logic
+Preset Logic
+```
+
+---
+
+# CORE ARCHITECTURE
+
+## Design Philosophy
+
+CapCraft should follow:
+
+```text
+Asset
+↓
+Timeline Entity
+↓
+Modifier Stack
+↓
+Keyframe Engine
+↓
+Renderer
+↓
+Exporter
+```
+
+Never:
+
+```text
+VideoClip.effect
+VideoClip.animation
+
+TextClip.effect
+TextClip.animation
+
+Caption.effect
+Caption.animation
+```
+
+This architecture creates long-term technical debt.
+
+Instead:
+
+```text
+Timeline Entity
+↓
+Modifier Stack
+↓
+Generic Processing
+```
+
+Everything becomes a modifier.
+
+---
+
+# SYSTEM OVERVIEW
+
+## New Subsystem
+
+```text
+src/renderer/effects/
+```
+
+Structure:
+
+```text
+effects/
+│
+├── core/
+│   ├── EffectEngine.ts
+│   ├── EffectRegistry.ts
+│   ├── ModifierEngine.ts
+│   ├── PresetRegistry.ts
+│   ├── KeyframeEngine.ts
+│   ├── TransitionEngine.ts
+│   └── RenderPipeline.ts
+│
+├── types/
+│   ├── Modifier.ts
+│   ├── Preset.ts
+│   ├── Keyframe.ts
+│   ├── Animation.ts
+│   ├── Effect.ts
+│   └── Transition.ts
+│
+├── modifiers/
+│   ├── effects/
+│   ├── animations/
+│   └── transitions/
+│
+├── presets/
+│
+├── renderer/
+│
+└── export/
+```
+
+---
+
+# SINGLE SOURCE OF TRUTH
+
+Every timeline entity owns a modifier stack.
+
+```typescript
+interface TimelineEntity {
+  id: string
+
+  startMs: number
+  endMs: number
+
+  modifiers: Modifier[]
+}
+```
+
+Applicable to:
+
+```text
+Video Clips
+Audio Clips
+Text Clips
+Captions
+Images
+Future Shapes
+Future Stickers
+Future Generative Assets
+```
+
+No exceptions.
+
+---
+
+# MODIFIER SYSTEM
+
+## Universal Modifier Model
+
+```typescript
+interface Modifier {
+  id: string
+
+  type:
+    | "effect"
+    | "animation"
+    | "transition"
+
+  presetId: string
+
+  enabled: boolean
+
+  parameters: Record<string, unknown>
+
+  keyframes: KeyframeTrack[]
+}
+```
+
+Modifier is the only attachment system.
+
+---
+
+# WHY THIS MATTERS
+
+Future:
+
+```text
+Fade In
+```
+
+can behave as:
+
+```text
+Animation
+Transition
+Effect
+```
+
+depending on context.
+
+CapCraft remains flexible.
+
+---
+
+# EFFECT SYSTEM
+
+## Examples
+
+```text
+Blur
+Glow
+Shake
+Chromatic Aberration
+RGB Split
+Zoom
+Brightness
+Contrast
+Exposure
+Vignette
+Film Grain
+Motion Blur
+Lens Distortion
+```
+
+Each effect is self-contained.
+
+```typescript
+interface EffectDefinition {
+  id: string
+
+  category: string
+
+  displayName: string
+
+  parameters: EffectParameter[]
+
+  process(): void
+}
+```
+
+---
+
+# ANIMATION SYSTEM
+
+Animations are predefined keyframe generators.
+
+Example:
+
+```text
+Pop In
+Fade In
+Slide Up
+Bounce
+Scale In
+Typewriter
+Karaoke
+Elastic
+Whip
+```
+
+Animation generates:
+
+```text
+Keyframes
+```
+
+Animation is not rendering.
+
+Animation is data generation.
+
+---
+
+# TRANSITION SYSTEM
+
+Transition is a modifier between entities.
+
+```typescript
+interface TransitionModifier {
+  id: string
+
+  transitionId: string
+
+  durationMs: number
+
+  parameters: Record<string, unknown>
+}
+```
+
+Examples:
+
+```text
+Fade
+Cross Dissolve
+Whip
+Slide
+Zoom
+Push
+Blur
+Light Leak
+Film Burn
+```
+
+---
+
+# KEYFRAME ENGINE
+
+## Critical Requirement
+
+Build this now.
+
+Do not postpone.
+
+Do not fake it.
+
+Do not hardcode animation values.
+
+---
+
+## Keyframe Model
+
+```typescript
+interface Keyframe {
+  time: number
+
+  value:
+    | number
+    | string
+    | boolean
+
+  easing: EasingType
+}
+```
+
+---
+
+## Keyframe Track
+
+```typescript
+interface KeyframeTrack {
+  property: string
+
+  frames: Keyframe[]
+}
+```
+
+---
+
+## Supported Properties
+
+Version 1:
+
+```text
+Opacity
+Scale
+Rotation
+PositionX
+PositionY
+```
+
+Version 2:
+
+```text
+Blur
+Brightness
+Contrast
+Exposure
+Saturation
+```
+
+Version 3:
+
+```text
+Glow
+Shadow
+Outline
+RGB Split
+Camera Zoom
+```
+
+---
+
+# EASING ENGINE
+
+Supported:
+
+```text
+Linear
+EaseIn
+EaseOut
+EaseInOut
+
+EaseOutBack
+EaseOutExpo
+EaseOutElastic
+EaseOutBounce
+```
+
+All animations consume easing engine.
+
+Single implementation only.
+
+---
+
+# PRESET SYSTEM
+
+## File Format
+
+Do not use:
+
+```text
+Binary
+SQLite
+Custom Encodings
+```
+
+Use JSON.
+
+Human-readable.
+
+Git-friendly.
+
+Future marketplace compatible.
+
+---
+
+# Extension
+
+```text
+.ccpreset
+```
+
+---
+
+# Effect Preset Example
+
+```json
+{
+  "version": 1,
+  "type": "effect",
+
+  "name": "Epic Zoom",
+
+  "author": "CapCraft",
+
+  "category": "camera",
+
+  "parameters": {
+    "zoom": 1.25,
+    "duration": 300,
+    "easing": "easeOutExpo"
+  }
+}
+```
+
+---
+
+# Animation Preset Example
+
+```json
+{
+  "version": 1,
+
+  "type": "animation",
+
+  "name": "Pop In",
+
+  "duration": 300,
+
+  "keyframes": [
+    {
+      "time": 0,
+      "scale": 0.8,
+      "opacity": 0
+    },
+    {
+      "time": 300,
+      "scale": 1,
+      "opacity": 1
+    }
+  ]
+}
+```
+
+---
+
+# PRESET REGISTRY
+
+Registry pattern.
+
+```typescript
+PresetRegistry.register()
+PresetRegistry.unregister()
+PresetRegistry.get()
+PresetRegistry.search()
+```
+
+---
+
+# EFFECT REGISTRY
+
+Registry pattern.
+
+```typescript
+EffectRegistry.register()
+EffectRegistry.unregister()
+EffectRegistry.get()
+EffectRegistry.search()
+```
+
+No switch statements.
+
+No giant condition chains.
+
+No hardcoded effect maps.
+
+---
+
+# RENDER PIPELINE
+
+## Current
+
+```text
+Video
+↓
+Canvas
+```
+
+---
+
+## Target
+
+```text
+Source
+↓
+Modifier Stack
+↓
+Keyframe Engine
+↓
+Effect Engine
+↓
+Renderer
+↓
+Canvas
+```
+
+---
+
+# REALTIME PREVIEW
+
+Realtime preview must never mutate project data.
+
+Preview Pipeline:
+
+```text
+Project State
+↓
+Modifier Evaluation
+↓
+Frame Render
+↓
+Canvas
+```
+
+Read-only.
+
+---
+
+# EXPORT PIPELINE
+
+Exporter never reads UI state.
+
+Exporter never reads Inspector state.
+
+Exporter never reads React state.
+
+Exporter reads:
+
+```text
+Project
+↓
+Timeline
+↓
+Modifier Stack
+↓
+Render Graph
+↓
+FFmpeg Filter Graph
+↓
+Output
+```
+
+Single source of truth.
+
+---
+
+# FFMPEG COMPATIBILITY LAYER
+
+Each modifier must support:
+
+```typescript
+toCanvas()
+toFFmpeg()
+```
+
+Example:
+
+```typescript
+BlurEffect
+```
+
+Preview:
+
+```text
+Canvas Blur
+```
+
+Export:
+
+```text
+ffmpeg boxblur
+```
+
+Same modifier.
+
+Different execution backend.
+
+---
+
+# PROJECT SAVE FORMAT
+
+Inside .ecp
+
+```json
+{
+  "clips": [
+    {
+      "id": "clip1",
+
+      "modifiers": [
+        {
+          "presetId": "pop-in"
+        },
+        {
+          "presetId": "zoom"
+        }
+      ]
+    }
+  ]
+}
+```
+
+No duplicated storage.
+
+No UI-derived state.
+
+No generated cache stored.
+
+---
+
+# MARKETPLACE READINESS
+
+Future:
+
+```text
+Import Preset
+Export Preset
+Sell Preset
+Share Preset
+Download Preset Packs
+```
+
+All supported via:
+
+```text
+.ccpreset
+```
+
+without changing architecture.
+
+---
+
+# AI READINESS
+
+Future AI generation outputs:
+
+```json
+{
+  "preset": "viral-zoom",
+
+  "parameters": {
+    "zoom": 1.35,
+    "duration": 240
+  }
+}
+```
+
+AI generates data.
+
+Engine executes data.
+
+No AI-specific architecture required.
+
+---
+
+# OOP PRINCIPLES
+
+Required:
+
+```text
+Open/Closed Principle
+Single Responsibility Principle
+Dependency Inversion
+Composition over Inheritance
+```
+
+Avoid:
+
+```text
+God Classes
+Monolithic Renderers
+Effect Switch Statements
+Animation Hardcoding
+Timeline Coupling
+```
+
+---
+
+# IMPLEMENTATION ROADMAP
+
+## Phase 1
+
+Foundation
+
+```text
+Modifier Model
+Effect Registry
+Preset Registry
+Project Serialization
+```
+
+---
+
+## Phase 2
+
+Keyframe Engine
+
+```text
+Opacity
+Scale
+Position
+Rotation
+```
+
+---
+
+## Phase 3
+
+Animation Presets
+
+```text
+Fade
+Pop
+Slide
+Bounce
+Typewriter
+Karaoke
+```
+
+---
+
+## Phase 4
+
+Video Effects
+
+```text
+Blur
+Glow
+Zoom
+Shake
+RGB Split
+Film Grain
+```
+
+---
+
+## Phase 5
+
+Transitions
+
+```text
+Fade
+Slide
+Push
+Whip
+Zoom
+```
+
+---
+
+## Phase 6
+
+Export Integration
+
+```text
+Modifier → FFmpeg Graph
+```
+
+---
+
+## Phase 7
+
+Marketplace Support
+
+```text
+Preset Import
+Preset Export
+Preset Packs
+```
+
+---
+
+# NON-NEGOTIABLE RULES
+
+No modifier logic inside Timeline.
+
+No animation logic inside TextClip.
+
+No effect logic inside VideoClip.
+
+No transition logic inside Timeline.
+
+No renderer logic inside Inspector.
+
+No export logic inside UI.
+
+No duplicated effect definitions.
+
+No duplicated preset definitions.
+
+No hardcoded animation paths.
+
+No hidden fallback behavior.
+
+No compatibility layers.
+
+No future rewrites.
+
+---
+
+# FINAL TARGET
+
+CapCraft architecture after implementation:
+
+```text
+Timeline Engine
+├── Placement
+├── Selection
+├── Tracks
+└── Playback
+
+Modifier Engine
+├── Effects
+├── Animations
+├── Transitions
+└── Presets
+
+Keyframe Engine
+├── Curves
+├── Easing
+└── Evaluation
+
+Render Engine
+├── Preview
+├── Canvas
+└── Composition
+
+Export Engine
+├── Render Graph
+├── FFmpeg Translation
+└── Encoding
+```
+
+Each subsystem owns one responsibility.
+
+Each subsystem has one source of truth.
+
+Each subsystem can evolve independently.
+
+This architecture scales from simple caption animations to thousands of effects, preset packs, AI-generated motion templates, and future marketplace distribution without requiring a structural rewrite.

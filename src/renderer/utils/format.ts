@@ -23,3 +23,21 @@ export function formatDuration(ms: number): string {
   const seconds = totalSec % 60
   return `${minutes}:${seconds.toString().padStart(2, '0')}`
 }
+
+/**
+ * Format milliseconds to HH:MM:SS:FF (frame-accurate timecode for PlaybackControls).
+ * Uses project fps to compute the frame component.
+ */
+export function formatTimecode(ms: number, fps: number): string {
+  const totalFrames = Math.max(0, Math.round((ms / 1000) * fps))
+  const ff = totalFrames % fps
+  const totalSec = Math.floor(totalFrames / fps)
+  const ss = totalSec % 60
+  const totalMin = Math.floor(totalSec / 60)
+  const mm = totalMin % 60
+  const hh = Math.floor(totalMin / 60)
+  return (
+    `${hh.toString().padStart(2, '0')}:${mm.toString().padStart(2, '0')}` +
+    `:${ss.toString().padStart(2, '0')}:${ff.toString().padStart(2, '0')}`
+  )
+}

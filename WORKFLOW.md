@@ -94,17 +94,27 @@ window.electron.ipcRenderer.invoke('whisper:transcribeFromTimeline', params)
   ↓
 main/ipc/whisper.handler.ts → WhisperService.transcribe()
   ↓
-WhisperService spawns whisper-cli.exe directly (child_process.spawn)
+WhisperService resolves model path (fallback chain: q8_0 → base → small-q8_0 → small)
+  ↓
+For video files: Streaming pipeline (FFmpeg stdout → whisper stdin)
+  - FFmpegService spawns ffmpeg → 16kHz mono WAV to pipe
+  - whisper-cli reads from stdin, outputs to temp SRT + JSON files
+  - On failure: automatic fallback to file-based transcription
+  ↓
+For audio files: File-based transcription
+  - whisper-cli reads audio file directly
   ↓
 Progress events: win.webContents.send('whisper:progress', percent)
   ↓
 Renderer listens: window.electron.ipcRenderer.on('whisper:progress', handler)
   ↓
-whisper-cli outputs SRT to stdout
+WhisperService reads temp SRT file + JSON file (word-level tokens)
   ↓
-WhisperService parses SRT → CaptionEntry[]
+parseSRTOutput() merges JSON tokens with SRT entries
+  - If JSON tokens available: use Whisper timestamps
+  - If missing: synthetic fallback (character-count proportional)
   ↓
-Returns: { entries, language }
+Returns: { entries, language, telemetry }
   ↓
 useCaption store: converts entries to TextClips on timeline
   ↓
@@ -116,8 +126,14 @@ Silence detection: detectAndStoreSilences() → Timeline markers
 - `renderer/components/CaptionEditor/index.tsx`
 - `renderer/store/useCaption.ts`
 - `main/ipc/whisper.handler.ts`
-- `main/services/WhisperService.ts`
+- `main/services/WhisperService.ts` (streaming + file-based + fallback chain)
 - `shared/utils/srt.ts` (parseSRT function)
+
+**Key Implementation Details:**
+- **Streaming Pipeline**: FFmpeg decodes video to WAV on stdout, piped to whisper-cli stdin (no temp WAV files)
+- **Model Fallback Chain**: `ggml-base-q8_0.bin` → `ggml-base.bin` → `ggml-small-q8_0.bin` → `ggml-small.bin`
+- **Word Timestamps**: JSON output (`-ojf` flag) provides token-level timing, merged with SRT entries
+- **Persistent Cache**: `whisper-cache.json` skips validation when model+binary unchanged across launches
 
 ---
 
@@ -250,6 +266,9 @@ Examples:
 | `ffmpeg:openSaveDialog` | `defaultName: string` | `string \| null` | `ffmpeg.handler.ts` |
 | `ffmpeg:extractAudioFromClip` | `clipPath: string` | `string` (WAV path) | `ffmpeg.handler.ts` |
 | `ffmpeg:mixTimelineAudio` | `paths: string[]` | `string` (mixed WAV path) | `ffmpeg.handler.ts` |
+| `sfx:getLibrary` | none | `SFXFile[]` | `sfx.handler.ts` |
+| `sfx:openFileLocation` | `sfxId: string` | `{ success: boolean }` | `sfx.handler.ts` |
+| `file:readBuffer` | `filePath: string` | `Buffer` (as Uint8Array) | `ffmpeg.handler.ts` |
 | `whisper:isModelAvailable` | none | `boolean` | `whisper.handler.ts` |
 | `whisper:transcribe` | `{ audioPath, language?, wordTimestamps? }` | `{ entries, language }` | `whisper.handler.ts` |
 | `whisper:transcribeFromTimeline` | `{ type, clipPath?, mixPaths?, mixSources?, trimStartMs?, trimEndMs?, sourceDurationMs?, language }` | `{ entries, language }` | `whisper.handler.ts` |
@@ -398,7 +417,7 @@ interface ModelCompatibilityInfo {
 - **Key State**:
   - `status: 'idle' | 'transcribing' | 'done' | 'error'`
   - `progress: number` — Transcription progress (0-100)
-  - `activeStyle: CaptionStyle` — Font, color, position, animation, alignment
+  - `activeStyle: CaptionStyle` — Font, color, position, animation, alignment, captionMode
   - `selectedId: string | null`
   - `language: string` — Transcription language
   - `error: string | null`
@@ -412,12 +431,36 @@ interface ModelCompatibilityInfo {
   - `editEntry(id, text)`, `deleteEntry(id)`, `duplicateEntry(id)`, `setEntryTiming(id, start, end)`
   - `splitEntry(id, splitAtMs)`, `splitEntryWithText(id, firstText, secondText, splitAtMs)`
   - `mergeEntries(id1, id2)`
-  - `applyStyle(style)`, `importSRT(content)`
+  - `applyStyle(style)` — Apply partial style updates
+  - `importSRT(content)` — Batch import SRT file
   - `updateCaptionPosition(id, position)`
   - `reformatForShorts()` — Auto-split long captions for vertical video
   - `detectAndStoreSilences(gapThresholdMs?)` — Find gaps between entries
   - `loadCaptions(data)` — Load captions from project file
   - `clearCaptions()` — Clear all captions
+
+- **CaptionStyle Properties**:
+  ```typescript
+  interface CaptionStyle {
+    fontFamily: string
+    fontSize: number
+    fontWeight: number
+    color: string
+    strokeColor: string
+    strokeWidth: number
+    bgColor: string
+    bgOpacity: number
+    alignment: 'left' | 'center' | 'right'
+    position: 'top' | 'center' | 'bottom'
+    x: number
+    y: number
+    rotation: number
+    scale: number
+    animation: 'none' | 'pop' | 'fade' | 'slide-up' | 'karaoke' | 'typewriter'
+    captionMode: 'full-phrase' | 'word-reveal' | 'karaoke' | 'single-word'
+    revealFadeMs?: number
+  }
+  ```
 
 #### `useExport`
 - **Domain**: Export configuration, job queue
@@ -917,10 +960,13 @@ ipcMain.handle('whisper:transcribe', async (_, audioPath: string) => {
 
 - **Problem**: Whisper blocks main thread
 - **Solution**:
-  - Run whisper-cli in `worker_threads`
-  - Stream progress via IPC events
-  - Cancel support (`whisper:cancel`)
-  - Model fallback chain (q5_1 → small → base)
+  - Direct `child_process.spawn` (no worker_threads needed — spawn is already non-blocking)
+  - Streaming pipeline for video: FFmpeg stdout → whisper stdin (eliminates temp WAV files)
+  - Automatic fallback to file-based transcription on streaming failure
+  - Model fallback chain with persistent validation cache
+  - Progress events streamed via IPC
+  - Cancel support (`whisper:cancel`) kills both FFmpeg and whisper-cli processes
+  - Session-level model resolve cache prevents redundant validation
 
 ### Export Queue
 
@@ -954,13 +1000,18 @@ npm rebuild better-sqlite3 --runtime=electron --target=30.0.0 --disturl=https://
 
 ### 3. Whisper Model Compatibility
 
-**Problem**: `q5_1` model crashes with certain whisper-cli builds
-**Solution**: Fallback chain in `WhisperService.resolveModelPath()`
-1. Try `ggml-small-q5_1.bin`
-2. Fallback to `ggml-small.bin`
-3. Fallback to `ggml-base.bin`
+**Problem**: Certain model/whisper-cli combinations crash (e.g., q5_1 kernel bug in v1.8.6)
+**Solution**: Multi-layer fallback chain in `WhisperService.resolveModelPathAsync()`
+1. Try `ggml-base-q8_0.bin` (fast, ~110MB)
+2. Fallback to `ggml-base.bin` (unquantized, ~142MB)
+3. Fallback to `ggml-small-q8_0.bin` (higher accuracy, ~370MB)
+4. Fallback to `ggml-small.bin` (highest quality, ~466MB)
 
-**Enhancement**: Persistent cache (`whisper-cache.json`) skips validation when model+binary unchanged
+**Enhancements**: 
+- Persistent cache (`whisper-cache.json`) skips validation when model+binary unchanged
+- In-memory validation cache prevents re-spawning for models that already crashed in session
+- GGML header smoke test (instant file read) at startup before async validation
+- Async validation uses `spawn` (not `spawnSync`) to avoid blocking main thread
 
 ### 4. Zustand Circular Dependencies
 
@@ -981,9 +1032,11 @@ const { useTimeline } = await import('./useTimeline')
 
 **Problem**: Unclear when to use TextClip vs CaptionEntry
 **Solution**:
-- **CaptionEntry**: Raw SRT data from Whisper (id, startMs, endMs, text, words)
+- **CaptionEntry**: Raw SRT data from Whisper (id, startMs, endMs, text, words, wordTimestampsSource)
 - **TextClip**: Timeline representation with styling and track position (includes CaptionEntry fields + trackIndex, style, durationMs)
 - Transcription converts CaptionEntry[] → TextClip[] on timeline
+- **Word Timestamps**: Two sources — 'whisper' (from JSON tokens) or 'synthetic' (character-count proportional fallback)
+- **SSOT**: `shared/utils/srt.ts` handles all SRT parsing/generation (pure functions, no side effects)
 
 ---
 
@@ -1114,14 +1167,15 @@ useTimeline.subscribe((state) => {
 
 ## Related Files
 
-- `README.md` — Project overview, setup, build instructions
+- `README.md` — Project overview, setup, build instructions, minimum requirements
 - `blueprint.txt` — Original project requirements
 - `electron.vite.config.ts` — Build configuration
 - `electron-builder.yml` — Packaging configuration
 - `package.json` — Dependencies, scripts
+- `start.bat` — Windows development launcher with dependency checks
 
 ---
 
-**Last Updated**: June 15, 2026
-**Version**: 1.1.0
-**Changes**: Updated to reflect TextClip architecture, direct Whisper spawn, persistent validation cache, and new stores (useMediaLibrary, useConfirm, useToast)
+**Last Updated**: June 19, 2026
+**Version**: 1.2.0
+**Changes**: Updated to reflect streaming transcription pipeline, model fallback chain, SFX integration, deferred undo infrastructure, CaptionStyle enhancements (captionMode, revealFadeMs), and current IPC channels

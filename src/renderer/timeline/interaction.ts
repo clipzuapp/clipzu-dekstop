@@ -25,6 +25,8 @@ export interface DraggingMode {
   startClientY: number
   originPositions: Map<string, { startMs: number; trackIndex: number }>
   isAudio: boolean
+  /** Current snap target during drag (null = no snap). Drawn as visual indicator. */
+  snappedTo: SnapEdge | null
 }
 
 export interface TrimmingMode {
@@ -144,12 +146,18 @@ export type HitTarget =
   | { kind: 'clip-body'; id: string; trackIndex: number }
   | { kind: 'clip-left-handle'; id: string; trackIndex: number }
   | { kind: 'clip-right-handle'; id: string; trackIndex: number }
+  | { kind: 'clip-fade-in'; id: string; trackIndex: number }
+  | { kind: 'clip-fade-out'; id: string; trackIndex: number }
   | { kind: 'caption-body'; id: string }
   | { kind: 'caption-left-handle'; id: string }
   | { kind: 'caption-right-handle'; id: string }
+  | { kind: 'caption-fade-in'; id: string }
+  | { kind: 'caption-fade-out'; id: string }
   | { kind: 'audio-body'; id: string }
   | { kind: 'audio-left-handle'; id: string }
   | { kind: 'audio-right-handle'; id: string }
+  | { kind: 'audio-fade-in'; id: string }
+  | { kind: 'audio-fade-out'; id: string }
   | { kind: 'playhead' }
   | { kind: 'ruler' }
   | { kind: 'empty' }
@@ -167,6 +175,8 @@ const HANDLE_FRACTION = 0.12
 const MAX_HANDLE_PX = 14
 /** Playhead scrub zone in px */
 const PLAYHEAD_ZONE_PX = 10
+/** Minimum fade handle hit zone in px — ensures thin fades remain grabbable */
+const FADE_HANDLE_HIT_PX = 8
 
 /** Compute adaptive handle width based on clip pixel width */
 export function getHandleWidth(clipWidthPx: number): number {
@@ -286,6 +296,16 @@ export function hitTest(
         const clipW = Math.max(clip.durationMs * ppm, 4)
         if (canvasX < clipX || canvasX > clipX + clipW) continue
 
+        // Fade handles take priority over trim handles when fade > 0
+        const fadeInPx = (clip.fadeInMs ?? 0) * ppm
+        if (fadeInPx > 0 && Math.abs(canvasX - (clipX + fadeInPx)) < Math.max(FADE_HANDLE_HIT_PX, fadeInPx * 0.3)) {
+          return { kind: 'clip-fade-in', id: clip.id, trackIndex: clip.trackIndex }
+        }
+        const fadeOutPx = (clip.fadeOutMs ?? 0) * ppm
+        if (fadeOutPx > 0 && Math.abs(canvasX - (clipX + clipW - fadeOutPx)) < Math.max(FADE_HANDLE_HIT_PX, fadeOutPx * 0.3)) {
+          return { kind: 'clip-fade-out', id: clip.id, trackIndex: clip.trackIndex }
+        }
+
         const hw = getHandleWidth(clipW)
         if (canvasX - clipX < hw) {
           return { kind: 'clip-left-handle', id: clip.id, trackIndex: clip.trackIndex }
@@ -305,6 +325,17 @@ export function hitTest(
         const ax = track.startMs * ppm
         const aw = Math.max(track.durationMs * ppm, 40)
         if (canvasX < ax || canvasX > ax + aw) continue
+
+        // Fade handles take priority over trim handles when fade > 0
+        const fadeInPx = (track.fadeInMs ?? 0) * ppm
+        if (fadeInPx > 0 && Math.abs(canvasX - (ax + fadeInPx)) < Math.max(FADE_HANDLE_HIT_PX, fadeInPx * 0.3)) {
+          return { kind: 'audio-fade-in', id: track.id }
+        }
+        const fadeOutPx = (track.fadeOutMs ?? 0) * ppm
+        if (fadeOutPx > 0 && Math.abs(canvasX - (ax + aw - fadeOutPx)) < Math.max(FADE_HANDLE_HIT_PX, fadeOutPx * 0.3)) {
+          return { kind: 'audio-fade-out', id: track.id }
+        }
+
         const hw = getHandleWidth(aw)
         if (canvasX - ax < hw) {
           return { kind: 'audio-left-handle', id: track.id }
@@ -322,6 +353,16 @@ export function hitTest(
         const ex = entry.startMs * ppm
         const ew = Math.max((entry.endMs - entry.startMs) * ppm, 4)
         if (canvasX < ex || canvasX > ex + ew) continue
+
+        // Fade handles take priority over trim handles when fade > 0
+        const fadeInPx = (entry.fadeInMs ?? 0) * ppm
+        if (fadeInPx > 0 && Math.abs(canvasX - (ex + fadeInPx)) < Math.max(FADE_HANDLE_HIT_PX, fadeInPx * 0.3)) {
+          return { kind: 'caption-fade-in', id: entry.id }
+        }
+        const fadeOutPx = (entry.fadeOutMs ?? 0) * ppm
+        if (fadeOutPx > 0 && Math.abs(canvasX - (ex + ew - fadeOutPx)) < Math.max(FADE_HANDLE_HIT_PX, fadeOutPx * 0.3)) {
+          return { kind: 'caption-fade-out', id: entry.id }
+        }
 
         const hw = getHandleWidth(ew)
         if (canvasX - ex < hw) {
@@ -350,10 +391,16 @@ export function getCursorForHit(hit: HitTarget, activeTool: string): string {
     case 'clip-left-handle':
     case 'caption-left-handle':
     case 'audio-left-handle':
+    case 'clip-fade-in':
+    case 'caption-fade-in':
+    case 'audio-fade-in':
       return 'w-resize'
     case 'clip-right-handle':
     case 'caption-right-handle':
     case 'audio-right-handle':
+    case 'clip-fade-out':
+    case 'caption-fade-out':
+    case 'audio-fade-out':
       return 'e-resize'
     case 'clip-body':
     case 'caption-body':

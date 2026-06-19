@@ -153,10 +153,12 @@ async function _runTranscription(
 
     return result
   } catch (err) {
+    const errMsg = (err as Error).message || 'Unknown transcription error'
     set((state: any) => {
       state.status = 'error'
-      state.error = (err as Error).message
+      state.error = errMsg
     })
+    useToast.getState().error(`Transcription failed: ${errMsg}`)
     return null
   } finally {
     if (whisperProgressCleanup) {

@@ -3,6 +3,15 @@ import { immer } from 'zustand/middleware/immer'
 
 export type AspectRatio = '16:9' | '9:16' | '1:1' | '4:5' | '4:3' | 'custom'
 
+/** Resolution presets keyed by aspect ratio. [width, height] */
+export const RESOLUTION_PRESETS: Record<Exclude<AspectRatio, 'custom'>, [number, number]> = {
+  '16:9': [1920, 1080],
+  '9:16': [1080, 1920],
+  '1:1':  [1080, 1080],
+  '4:5':  [1080, 1350],
+  '4:3':  [1440, 1080],
+}
+
 /** Snapshot of timeline + caption state for undo/redo */
 interface UndoSnapshot {
   clips: import('./useTimeline').Clip[]
@@ -76,6 +85,12 @@ export const useProject = create<ProjectState & ProjectActions>()(
     setAspectRatio: (ratio) =>
       set((state) => {
         state.aspectRatio = ratio
+        // Auto-set resolution from preset (skip for 'custom')
+        if (ratio !== 'custom') {
+          const [w, h] = RESOLUTION_PRESETS[ratio]
+          state.resolution.width = w
+          state.resolution.height = h
+        }
         state.isDirty = true
       }),
 

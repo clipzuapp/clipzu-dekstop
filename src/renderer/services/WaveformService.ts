@@ -2,16 +2,24 @@
  * WaveformService — Extracts peak amplitude data from audio files for
  * timeline waveform rendering. Uses Web Audio API decodeAudioData.
  *
- * Caches results in memory by file path. Idempotent — calling extract()
- * multiple times for the same path returns the cached data.
+ * Stores dual peaks (positive max + negative min per window) at high
+ * base resolution (2048 points) so the renderer can produce a filled
+ * waveform silhouette that stays crisp at any zoom level.
+ *
+ * Caches results in memory by file path. Idempotent.
  */
 
-const PEAK_RESOLUTION = 512 // number of peak samples per track
+const PEAK_RESOLUTION = 2048
 
-const cache = new Map<string, Float32Array>()
+export interface WaveformPeaks {
+  /** Positive envelope — max amplitude in each window [0…1] */
+  max: Float32Array
+  /** Negative envelope — min amplitude in each window [-1…0] */
+  min: Float32Array
+}
 
-/** Pending extractions to avoid duplicate in-flight requests */
-const pending = new Map<string, Promise<Float32Array>>()
+const cache = new Map<string, WaveformPeaks>()
+const pending = new Map<string, Promise<WaveformPeaks>>()
 
 /** Singleton AudioContext shared across all waveform extractions (avoids browser cap of ~6) */
 let _sharedCtx: AudioContext | null = null
@@ -23,51 +31,50 @@ function getSharedCtx(): AudioContext {
 }
 
 /**
- * Ensure a file path is a valid file:// URL that fetch() can load.
- * Handles Windows backslashes and absolute paths.
+ * Ensure a file path is a valid file:// URL. Handles Windows backslashes.
  */
 function toFileUrl(filePath: string): string {
   if (filePath.startsWith('file://')) return filePath
-  // Normalize slashes and encode for URL
   const normalized = filePath.replace(/\\/g, '/')
   if (normalized.startsWith('/')) return `file://${normalized}`
   return `file:///${normalized}`
 }
 
 /**
- * Compute peak samples from raw PCM float data.
- * Divides the audio into numPeaks windows and takes the max absolute
- * amplitude in each window.
+ * Compute dual peak samples from raw PCM float data.
+ * Each window produces { max: highest positive, min: lowest negative }.
  */
-function computePeaks(channelData: Float32Array, numPeaks: number): Float32Array {
-  const peaks = new Float32Array(numPeaks)
+function computeDualPeaks(channelData: Float32Array, numPeaks: number): WaveformPeaks {
+  const maxPeaks = new Float32Array(numPeaks)
+  const minPeaks = new Float32Array(numPeaks)
   const samplesPerPeak = Math.max(1, Math.floor(channelData.length / numPeaks))
 
   for (let i = 0; i < numPeaks; i++) {
     let max = 0
+    let min = 0
     const start = i * samplesPerPeak
     const end = Math.min(start + samplesPerPeak, channelData.length)
     for (let j = start; j < end; j++) {
-      const abs = Math.abs(channelData[j])
-      if (abs > max) max = abs
+      const v = channelData[j]
+      if (v > max) max = v
+      if (v < min) min = v
     }
-    peaks[i] = max
+    maxPeaks[i] = max
+    minPeaks[i] = min
   }
 
-  return peaks
+  return { max: maxPeaks, min: minPeaks }
 }
 
 /**
- * Extract waveform peak data for an audio file.
- * Returns a Float32Array of length PEAK_RESOLUTION with values in [0, 1].
+ * Extract waveform dual-peak data for an audio file.
+ * Returns { max, min } Float32Arrays of length PEAK_RESOLUTION.
  * Results are cached — subsequent calls return instantly.
  */
-export async function extractWaveform(filePath: string): Promise<Float32Array> {
-  // Check cache
+export async function extractWaveform(filePath: string): Promise<WaveformPeaks> {
   const cached = cache.get(filePath)
   if (cached) return cached
 
-  // Check in-flight
   const inFlight = pending.get(filePath)
   if (inFlight) return inFlight
 
@@ -81,46 +88,45 @@ export async function extractWaveform(filePath: string): Promise<Float32Array> {
     return peaks
   } catch (err) {
     pending.delete(filePath)
-    // Cache failure silently — draw will fall back to synthetic bars
     console.warn('Waveform extraction failed for', filePath, err)
-    return new Float32Array(PEAK_RESOLUTION)
+    const empty = new Float32Array(PEAK_RESOLUTION)
+    return { max: empty, min: empty }
   }
 }
 
-async function doExtract(filePath: string): Promise<Float32Array> {
+async function doExtract(filePath: string): Promise<WaveformPeaks> {
   try {
     const url = toFileUrl(filePath)
-    const response = await fetch(url)
-    if (!response.ok) throw new Error(`HTTP ${response.status}`)
-    const arrayBuffer = await response.arrayBuffer()
+    // Local files read via IPC (file:// fetch blocked in Electron renderer)
+    let ab: ArrayBuffer
+    if (url.startsWith('file://')) {
+      ab = await window.electron.ipcRenderer.invoke('file:readBuffer', filePath)
+    } else {
+      const response = await fetch(url)
+      if (!response.ok) throw new Error(`HTTP ${response.status}`)
+      ab = await response.arrayBuffer()
+    }
     const audioCtx = getSharedCtx()
-    const audioBuffer = await audioCtx.decodeAudioData(arrayBuffer)
-
+    const audioBuffer = await audioCtx.decodeAudioData(ab)
     const channelData = audioBuffer.getChannelData(0)
-    return computePeaks(channelData, PEAK_RESOLUTION)
+    return computeDualPeaks(channelData, PEAK_RESOLUTION)
   } catch (_err) {
-    // Return empty — renderer will draw synthetic bars as fallback
-    return new Float32Array(PEAK_RESOLUTION)
+    const empty = new Float32Array(PEAK_RESOLUTION)
+    return { max: empty, min: empty }
   }
 }
 
-/**
- * Check if waveform data is cached for a given file path.
- */
+/** Check if waveform data is cached for a given file path. */
 export function hasWaveform(filePath: string): boolean {
   return cache.has(filePath)
 }
 
-/**
- * Get cached waveform data. Returns null if not cached.
- */
-export function getWaveform(filePath: string): Float32Array | null {
+/** Get cached waveform dual-peak data. Returns null if not cached. */
+export function getWaveform(filePath: string): WaveformPeaks | null {
   return cache.get(filePath) ?? null
 }
 
-/**
- * Clear waveform cache (e.g., when project is closed).
- */
+/** Clear waveform cache (e.g., when project is closed). */
 export function clearWaveformCache(): void {
   cache.clear()
   pending.clear()

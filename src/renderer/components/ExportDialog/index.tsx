@@ -1,4 +1,3 @@
-import React from 'react'
 import { useShallow } from 'zustand/react/shallow'
 import { useExport, EXPORT_PRESETS } from '../../store/useExport'
 import type { PresetKey } from '../../store/useExport'
@@ -11,7 +10,7 @@ import { formatDuration } from '../../utils/format'
 /**
  * ExportDialog - Modal for export configuration and queue management
  */
-export function ExportDialog({ onClose }: { onClose: () => void }): JSX.Element {
+export function ExportDialog({ onClose, show = true }: { onClose: () => void; show?: boolean }): JSX.Element {
   const {
     preset, setPreset,
     upscaleEnabled, setUpscaleEnabled,
@@ -45,10 +44,10 @@ export function ExportDialog({ onClose }: { onClose: () => void }): JSX.Element 
   })))
 
   const projectResolution = useProject((s) => s.resolution)
-
   const captionStyle = useCaption((s) => s.activeStyle)
 
-  const [isExporting, setIsExporting] = React.useState(false)
+  // Use store-level isExporting — single source of truth
+  const isExporting = useExport((s) => s.isExporting)
 
   const handleExport = async (): Promise<void> => {
     if (clips.length === 0) {
@@ -62,9 +61,8 @@ export function ExportDialog({ onClose }: { onClose: () => void }): JSX.Element 
     )
     if (!outputPath) return
 
-    setIsExporting(true)
     try {
-      // Create temp SRT if captions exist
+      // Create temp SRT if captions exist (before starting video export)
       let srtPath: string | null = null
       if (textClips.length > 0) {
         srtPath = await window.electron.ipcRenderer.invoke('project:createTempSRT', textClips, {
@@ -74,6 +72,7 @@ export function ExportDialog({ onClose }: { onClose: () => void }): JSX.Element 
         })
       }
 
+      // Start video export (async in main process — returns job immediately)
       await startExport({
         clipPaths: clips.map((c) => c.path),
         clipTrackIndices: clips.map((c) => c.trackIndex),
@@ -109,47 +108,57 @@ export function ExportDialog({ onClose }: { onClose: () => void }): JSX.Element 
         projectHeight: projectResolution.height
       })
 
-      // Also export SRT sidecar
+      // Export SRT sidecar (non-blocking — don't show error since video may still succeed)
       if (textClips.length > 0) {
-        await window.electron.ipcRenderer.invoke(
+        window.electron.ipcRenderer.invoke(
           'project:exportSRT',
           textClips,
           outputPath
-        )
+        ).catch((err) => {
+          console.warn('SRT export failed (video export unaffected):', err)
+        })
       }
 
-      useToast.getState().success('Export complete')
+      useToast.getState().info('Export started — encoding in progress')
     } catch (err) {
       console.error('Export failed:', err)
       useToast.getState().error(`Export failed: ${(err as Error).message}`)
-    } finally {
-      setIsExporting(false)
     }
   }
 
   return (
-    <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50">
-      <div className="bg-editor-panel border border-editor-border rounded-xl shadow-modal w-[520px] max-h-[80vh] overflow-y-auto">
+    <div className={`export-drawer${show ? ' open' : ''}`} style={{ zIndex: 100 }}>
+      <div className="flex flex-col h-full">
         {/* Header */}
-        <div className="flex items-center justify-between p-4 border-b border-editor-border">
+        <div className="flex items-center justify-between p-4 border-b border-editor-border shrink-0">
           <h2 className="text-lg font-semibold">Export</h2>
-          <button className="text-gray-500 hover:text-gray-300" onClick={onClose}>
+          <button className="text-gray-500 hover:text-gray-300 text-lg leading-none" onClick={onClose}>
             &times;
           </button>
         </div>
 
         {/* Body */}
-        <div className="p-4 space-y-4">
+        <div className="p-4 space-y-4 overflow-y-auto flex-1">
           {/* Preset Picker */}
           <div className="space-y-1">
             <label className="text-[10px] text-gray-500 uppercase tracking-wider">Preset</label>
             <select
               value={preset}
               onChange={(e) => setPreset(e.target.value as PresetKey)}
-              className="input w-full"
+              style={{
+                width: '100%',
+                background: 'var(--bg2)',
+                color: 'var(--text1)',
+                border: '0.5px solid var(--border)',
+                borderRadius: '4px',
+                padding: '5px 8px',
+                fontSize: '13px',
+                outline: 'none',
+                cursor: 'pointer'
+              }}
             >
               {Object.entries(EXPORT_PRESETS).map(([key, val]) => (
-                <option key={key} value={key}>
+                <option key={key} value={key} style={{ background: '#1e1e24', color: '#e0e0e0' }}>
                   {val.label}
                 </option>
               ))}

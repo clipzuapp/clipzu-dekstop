@@ -1,6 +1,7 @@
-import { useCallback, useMemo } from 'react'
+import { useCallback } from 'react'
 import { useTimeline } from '../../store/useTimeline'
 import { useCaption, type CaptionStyle } from '../../store/useCaption'
+import { useSelectedEntity } from '../../store/useSelectedEntity'
 
 /**
  * Shared binding between the Inspector UI and the caption style store.
@@ -16,14 +17,10 @@ export function useCaptionStyleBinding(): {
 } {
   const activeStyle = useCaption((s) => s.activeStyle)
   const applyStyle = useCaption((s) => s.applyStyle)
-  const focusedId = useTimeline((s) => s.focusedId)
   const textClips = useTimeline((s) => s.textClips)
   const updateTextClipLive = useTimeline((s) => s.updateTextClipLive)
 
-  const selectedTextClipId = useMemo(() => {
-    if (!focusedId) return null
-    return textClips.some((tc) => tc.id === focusedId) ? focusedId : null
-  }, [focusedId, textClips])
+  const { selectedTextClipId } = useSelectedEntity()
 
   const selectedTextClip = selectedTextClipId
     ? textClips.find((tc) => tc.id === selectedTextClipId) ?? null

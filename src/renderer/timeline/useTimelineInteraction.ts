@@ -44,6 +44,9 @@ export function useTimelineInteraction(
   const selectTextClipRange = useTimeline((s) => s.selectTextClipRange)
   const splitClipAtPlayhead = useTimeline((s) => s.splitClipAtPlayhead)
   const selectBox = useTimeline((s) => s.selectBox)
+  const setClipFade = useTimeline((s) => s.setClipFade)
+  const setAudioFade = useTimeline((s) => s.setAudioFade)
+  const setTextFade = useTimeline((s) => s.setTextFade)
 
   // ---- Refs for current state (avoid stale closures) ----
   const stateRef = useRef({
@@ -168,6 +171,86 @@ export function useTimelineInteraction(
       state.tracks.find((t) => t.index === trackIndex)?.locked ?? false
 
     switch (hit.kind) {
+      // ---- Fade handle adjustment (clips, audio, captions) ----
+      case 'clip-fade-in':
+      case 'clip-fade-out':
+      case 'audio-fade-in':
+      case 'audio-fade-out':
+      case 'caption-fade-in':
+      case 'caption-fade-out': {
+        if (hit.kind.startsWith('clip-') && isLocked((hit as { trackIndex: number }).trackIndex)) return
+        beginDragCapture()
+        const isFadeIn = hit.kind.includes('-in')
+        let origFadeMs: number
+        let maxFadeMs: number
+
+        if (hit.kind.startsWith('clip-')) {
+          const clip = state.clips.find((c) => c.id === hit.id)
+          if (!clip) return
+          selectClip(hit.id)
+          origFadeMs = isFadeIn ? (clip.fadeInMs ?? 0) : (clip.fadeOutMs ?? 0)
+          maxFadeMs = Math.floor(clip.durationMs / 2)
+        } else if (hit.kind.startsWith('audio-')) {
+          const track = state.audioTracks.find((a) => a.id === hit.id)
+          if (!track) return
+          selectClip(hit.id)
+          origFadeMs = isFadeIn ? (track.fadeInMs ?? 0) : (track.fadeOutMs ?? 0)
+          maxFadeMs = Math.floor(track.durationMs / 2)
+        } else {
+          const tc = state.textClips.find((t) => t.id === hit.id)
+          if (!tc) return
+          selectTextClip(hit.id)
+          origFadeMs = isFadeIn ? (tc.fadeInMs ?? 0) : (tc.fadeOutMs ?? 0)
+          maxFadeMs = Math.floor(tc.durationMs / 2)
+        }
+
+        machine.transition(
+          { mode: 'dragging', clipIds: [hit.id], startClientX: e.clientX, startClientY: e.clientY, originPositions: new Map(), isAudio: false, snappedTo: null },
+          (signal) => {
+            window.addEventListener('mousemove', (ev) => {
+              const dm = machine.as('dragging')
+              if (!dm) return
+              const dx = ev.clientX - dm.startClientX
+              const deltaMs = dx / ppm
+              const newFadeMs = Math.max(0, Math.min(maxFadeMs, Math.round(
+                isFadeIn ? origFadeMs + deltaMs : origFadeMs - deltaMs
+              )))
+              if (hit.kind.startsWith('clip-')) {
+                const clip = useTimeline.getState().clips.find((c) => c.id === hit.id)
+                if (clip) {
+                  setClipFade(hit.id,
+                    isFadeIn ? newFadeMs : (clip.fadeInMs ?? 0),
+                    isFadeIn ? (clip.fadeOutMs ?? 0) : newFadeMs
+                  )
+                }
+              } else if (hit.kind.startsWith('audio-')) {
+                const track = useTimeline.getState().audioTracks.find((a) => a.id === hit.id)
+                if (track) {
+                  setAudioFade(hit.id,
+                    isFadeIn ? newFadeMs : (track.fadeInMs ?? 0),
+                    isFadeIn ? (track.fadeOutMs ?? 0) : newFadeMs
+                  )
+                }
+              } else {
+                const tc = useTimeline.getState().textClips.find((t) => t.id === hit.id)
+                if (tc) {
+                  setTextFade(hit.id,
+                    isFadeIn ? newFadeMs : (tc.fadeInMs ?? 0),
+                    isFadeIn ? (tc.fadeOutMs ?? 0) : newFadeMs
+                  )
+                }
+              }
+            }, { signal })
+            window.addEventListener('mouseup', () => {
+              commitDrag()
+              machine.exit()
+            }, { signal })
+          },
+          () => { commitDrag() }
+        )
+        return
+      }
+
       case 'clip-left-handle':
       case 'clip-right-handle': {
         if (isLocked(hit.trackIndex)) return
@@ -238,7 +321,7 @@ export function useTimelineInteraction(
         }
 
         machine.transition(
-          { mode: 'dragging', clipIds: [...origins.keys()], startClientX: e.clientX, startClientY: e.clientY, originPositions: origins, isAudio: false },
+          { mode: 'dragging', clipIds: [...origins.keys()], startClientX: e.clientX, startClientY: e.clientY, originPositions: origins, isAudio: false, snappedTo: null },
           (signal) => {
             window.addEventListener('mousemove', (ev) => {
               const dm = machine.as('dragging')
@@ -250,7 +333,9 @@ export function useTimelineInteraction(
               const origin = dm.originPositions.get(dm.clipIds[0])
               if (!origin) return
               const rawMs = origin.startMs + (dx - (dm.startClientX - canvasRect.left - LAYOUT.LANE_LABEL_W)) / ppm
-              const snappedMs = doSnap(rawMs, new Set(dm.clipIds))
+              const snapResult = snapToEdges(rawMs, computeSnapEdges(useTimeline.getState().clips, useTimeline.getState().audioTracks, useTimeline.getState().textClips, useTimeline.getState().markers, useTimeline.getState().playheadMs), new Set(dm.clipIds), stateRef.current.ppm)
+              const snappedMs = snapResult.snappedMs
+              dm.snappedTo = snapResult.snappedTo
               const deltaMs = snappedMs - origin.startMs
               const newTrackIndex = Math.max(0, Math.floor(dy / (LAYOUT.TRACK_LANE_H + LAYOUT.LANE_GAP)))
               const trackDelta = newTrackIndex - origin.trackIndex
@@ -372,7 +457,7 @@ export function useTimelineInteraction(
         }
 
         machine.transition(
-          { mode: 'dragging', clipIds: [...origins.keys()], startClientX: e.clientX, startClientY: e.clientY, originPositions: origins, isAudio: false },
+          { mode: 'dragging', clipIds: [...origins.keys()], startClientX: e.clientX, startClientY: e.clientY, originPositions: origins, isAudio: false, snappedTo: null },
           (signal) => {
             window.addEventListener('mousemove', (ev) => {
               const dm = machine.as('dragging')
@@ -415,7 +500,7 @@ export function useTimelineInteraction(
           startClientX: e.clientX,
           origTrimStart: track.startMs,
           origTrimEnd: track.startMs + track.durationMs,
-          sourceDurationMs: track.durationMs
+          sourceDurationMs: track.sourceDurationMs
         }
         machine.transition(mode, (signal) => {
           window.addEventListener('mousemove', (ev) => {
@@ -424,7 +509,9 @@ export function useTimelineInteraction(
             const dx = ev.clientX - tm.startClientX
             const deltaMs = dx / ppm
             if (tm.mode === 'trimming-left') {
-              const newStart = Math.max(0, tm.origTrimStart + deltaMs)
+              // Clamp: startMs >= 0, durationMs <= sourceDurationMs, min 100ms
+              const maxLeftShift = tm.origTrimEnd - tm.sourceDurationMs
+              const newStart = Math.max(0, maxLeftShift, tm.origTrimStart + deltaMs)
               if (newStart < tm.origTrimEnd - 100) {
                 useTimeline.setState((st) => {
                   const a = st.audioTracks.find((at) => at.id === tm.clipId)
@@ -435,7 +522,9 @@ export function useTimelineInteraction(
                 })
               }
             } else {
-              const newEnd = Math.max(tm.origTrimStart + 100, tm.origTrimEnd + deltaMs)
+              // Clamp: durationMs <= sourceDurationMs, min 100ms
+              const maxRightExtend = tm.origTrimStart + tm.sourceDurationMs
+              const newEnd = Math.min(maxRightExtend, Math.max(tm.origTrimStart + 100, tm.origTrimEnd + deltaMs))
               useTimeline.setState((st) => {
                 const a = st.audioTracks.find((at) => at.id === tm.clipId)
                 if (a) { a.durationMs = newEnd - a.startMs }
@@ -464,10 +553,10 @@ export function useTimelineInteraction(
         }
         beginDragCapture()
         const origins = new Map<string, { startMs: number; trackIndex: number }>()
-        origins.set(hit.id, { startMs: track.startMs, trackIndex: 0 })
+        origins.set(hit.id, { startMs: track.startMs, trackIndex: track.trackIndex })
 
         machine.transition(
-          { mode: 'dragging', clipIds: [hit.id], startClientX: e.clientX, startClientY: e.clientY, originPositions: origins, isAudio: true },
+          { mode: 'dragging', clipIds: [hit.id], startClientX: e.clientX, startClientY: e.clientY, originPositions: origins, isAudio: true, snappedTo: null },
           (signal) => {
             window.addEventListener('mousemove', (ev) => {
               const dm = machine.as('dragging')
@@ -547,7 +636,8 @@ export function useTimelineInteraction(
     selectClip, selectTextClip, deselectAll,
     toggleClipSelection, selectClipRange,
     toggleTextClipSelection, selectTextClipRange,
-    splitClipAtPlayhead, selectBox, doSnap
+    splitClipAtPlayhead, selectBox, doSnap,
+    setClipFade, setAudioFade, setTextFade
   ])
 
   // ---- Global cleanup: Escape, blur, unmount, tool switch ----

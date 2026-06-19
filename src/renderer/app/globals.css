@@ -107,27 +107,4 @@
   background: #3a3a44;
 }
 
-/* Custom utility classes */
-.panel {
-  @apply bg-editor-panel border border-editor-border rounded-lg;
-}
-
-.btn {
-  @apply px-3 py-1.5 rounded text-sm font-medium transition-colors duration-150;
-}
-
-.btn-primary {
-  @apply bg-accent hover:bg-accent-hover text-white;
-}
-
-.btn-secondary {
-  @apply bg-editor-surface hover:bg-editor-hover text-gray-300 border border-editor-border;
-}
-
-.btn-danger {
-  @apply bg-danger hover:bg-danger-hover text-white;
-}
-
-.input {
-  @apply bg-editor-surface border border-editor-border rounded px-3 py-1.5 text-sm text-gray-200 focus:outline-none focus:border-accent;
-}
+/* Custom utility classes — canonical definitions are in editor.css */

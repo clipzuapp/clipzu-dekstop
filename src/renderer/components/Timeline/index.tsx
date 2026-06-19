@@ -1,6 +1,6 @@
 ﻿import React, { useRef, useEffect, useState, useCallback } from 'react'
 import { useShallow } from 'zustand/react/shallow'
-import { useTimeline, getClipboard, getStyleClipboard, computeEffectiveMuted, type TimelineState } from '../../store/useTimeline'
+import { useTimeline, getClipboard, getStyleClipboard, computeEffectiveMuted, getInPoint, getOutPoint, type TimelineState, type Clip, type AudioTrack } from '../../store/useTimeline'
 import { useCaption } from '../../store/useCaption'
 import { useConfirm } from '../../store/useConfirm'
 import { ContextMenu, type ContextMenuItem } from '../ContextMenu/index'
@@ -8,6 +8,7 @@ import { formatTime } from '../../utils/format'
 import { getWaveform, extractWaveform } from '../../services/WaveformService'
 import { useTimelineInteraction } from '../../timeline/useTimelineInteraction'
 import { LAYOUT, hitTest, buildLaneLayout, computeBoxRect } from '../../timeline/interaction'
+import { VolumeX, Headphones, Lock, EyeOff, Trash2 } from 'lucide-react'
 
 // ---------------------------------------------------------------------------
 // Types
@@ -159,9 +160,12 @@ export function Timeline({ activeTool = 'select' }: TimelineProps): JSX.Element 
           roundRect(ctx, bx, by, bw, bh, 3)
           ctx.stroke()
 
+          // Fade edge triangles
+          drawFadeEdges(ctx, bx, by, bw, bh, entry.fadeInMs ?? 0, entry.fadeOutMs ?? 0, PIXELS_PER_MS, isCapSel)
+
           if (bw > 24) {
             ctx.fillStyle = '#e0d0ff'
-            ctx.font = '9px Inter, system-ui, sans-serif'
+            ctx.font = '11px Inter, system-ui, sans-serif'
             ctx.save()
             ctx.beginPath()
             ctx.rect(bx + 4, by, bw - 8, bh)
@@ -217,6 +221,19 @@ export function Timeline({ activeTool = 'select' }: TimelineProps): JSX.Element 
         ctx.setLineDash([])
         ctx.restore()
       }
+
+      // Snap-line visual indicator during drag
+      const dm = machine.as('dragging')
+      if (dm && dm.snappedTo) {
+        const sx = LAYOUT.LANE_LABEL_W + dm.snappedTo.timeMs * PIXELS_PER_MS
+        ctx.save()
+        ctx.strokeStyle = 'rgba(83, 74, 183, 0.7)'
+        ctx.lineWidth = 1.5
+        ctx.setLineDash([3, 3])
+        ctx.beginPath(); ctx.moveTo(sx, 0); ctx.lineTo(sx, h); ctx.stroke()
+        ctx.setLineDash([])
+        ctx.restore()
+      }
     })
 
     return () => {
@@ -237,6 +254,17 @@ export function Timeline({ activeTool = 'select' }: TimelineProps): JSX.Element 
     }
   }, [playheadMs, PIXELS_PER_MS, isPlaying])
 
+  // ---- Auto-scroll to keep playhead in view on keyboard seek (when paused) ----
+
+  useEffect(() => {
+    const container = containerRef.current
+    if (!container || isPlaying) return
+    const px = LAYOUT.LANE_LABEL_W + playheadMs * PIXELS_PER_MS
+    if (px < container.scrollLeft || px > container.scrollLeft + container.clientWidth) {
+      container.scrollLeft = px - container.clientWidth / 2
+    }
+  }, [playheadMs, PIXELS_PER_MS, isPlaying])
+
   // ---- Trigger waveform extraction ----
 
   useEffect(() => {
@@ -248,7 +276,8 @@ export function Timeline({ activeTool = 'select' }: TimelineProps): JSX.Element 
   // ---- HTML5 drop target ----
 
   const handleDragOver = useCallback((e: React.DragEvent) => {
-    if (e.dataTransfer.types.includes('application/capcraft-media')) {
+    if (e.dataTransfer.types.includes('application/capcraft-media') ||
+        e.dataTransfer.types.includes('application/capcraft-media-batch')) {
       e.preventDefault()
       e.dataTransfer.dropEffect = e.dataTransfer.effectAllowed === 'copy' ? 'copy' : 'move'
     }
@@ -257,52 +286,121 @@ export function Timeline({ activeTool = 'select' }: TimelineProps): JSX.Element 
   const handleDrop = useCallback(
     (e: React.DragEvent) => {
       e.preventDefault()
-      const raw = e.dataTransfer.getData('application/capcraft-media')
-      if (!raw) return
-      try {
-        const data = JSON.parse(raw)
-        const canvas = canvasRef.current
-        if (!canvas) return
-        const rect = canvas.getBoundingClientRect()
-        const dropMs = Math.max(0, (e.clientX - rect.left - LAYOUT.LANE_LABEL_W) / PIXELS_PER_MS)
+      const canvas = canvasRef.current
+      if (!canvas) return
+      const rect = canvas.getBoundingClientRect()
+      const dropMs = Math.max(0, (e.clientX - rect.left - LAYOUT.LANE_LABEL_W) / PIXELS_PER_MS)
 
-        if (data.path) {
-          const ts = Date.now()
-          const rand = Math.random().toString(36).slice(2, 6)
+      // Calculate audio lane index from drop Y position
+      const dropY = e.clientY - rect.top - LAYOUT.RULER_H
+      const audioLaneIdx = Math.max(0, Math.floor(
+        (dropY - videoTrackIndices.length * (LAYOUT.TRACK_LANE_H + LAYOUT.LANE_GAP)) /
+        (LAYOUT.TRACK_LANE_H + LAYOUT.LANE_GAP)
+      ))
+      const ts = Date.now()
 
-          // Calculate which audio lane the drop landed on
-          const dropY = e.clientY - rect.top - LAYOUT.RULER_H
-          const audioLaneIdx = Math.max(0, Math.floor((dropY - videoTrackIndices.length * (LAYOUT.TRACK_LANE_H + LAYOUT.LANE_GAP)) / (LAYOUT.TRACK_LANE_H + LAYOUT.LANE_GAP)))
+      // ---- Unified batch path: multi-select from MediaPanel OR single-item ----
+      // Both MediaPanel and AudioPanel set 'application/capcraft-media'.
+      // MediaPanel also sets 'application/capcraft-media-batch'.
+      // We prioritize batch to prevent dual-path execution (duplication bug).
+      let items: Array<{
+        path: string; durationMs: number; width: number; height: number
+        hasAudio: boolean; name: string; isAudio: boolean; isSfx?: boolean
+      }> | null = null
 
-          if (data.isAudio) {
-            useTimeline.getState().addAudioTrack({
-              id: `audio_${ts}_${rand}`, path: data.path, startMs: Math.round(dropMs),
-              durationMs: data.durationMs ?? 0, volume: 1, muted: false,
-              name: data.name ?? 'Audio', role: data.isSfx ? 'sfx' : 'music',
-              trimStart: 0, trimEnd: 0, trackIndex: audioLaneIdx
-            })
-          } else {
-            useTimeline.getState().addClip({
-              id: `clip_${ts}_${rand}`, path: data.path, startMs: Math.round(dropMs),
-              sourceDurationMs: data.durationMs ?? 0, durationMs: data.durationMs ?? 0,
-              trackIndex: 0, trimStart: 0, trimEnd: 0,
-              name: data.name ?? 'Clip', speed: 1.0
-            })
+      const batchRaw = e.dataTransfer.getData('application/capcraft-media-batch')
+      if (batchRaw) {
+        try {
+          const parsed = JSON.parse(batchRaw)
+          if (Array.isArray(parsed) && parsed.length > 0) {
+            items = parsed
           }
+        } catch {
+          // Batch parse failed — return immediately to prevent fall-through duplication
           return
         }
+      }
 
-        const { id, kind } = data as { id: string; kind: 'clip' | 'audio' }
-        if (kind === 'clip') {
-          const clip = clips.find((c) => c.id === id)
-          if (clip) moveClip(id, Math.round(dropMs))
-        } else if (kind === 'audio') {
-          const track = audioTracks.find((a) => a.id === id)
-          if (track) moveAudioTrack(id, Math.max(0, dropMs))
+      if (!items) {
+        const raw = e.dataTransfer.getData('application/capcraft-media')
+        if (!raw) return
+        try {
+          const data = JSON.parse(raw)
+
+          // Internal timeline drag (repositioning existing clip/audio)
+          if (data.id && data.kind) {
+            if (data.kind === 'clip') {
+              const clip = clips.find((c: Clip) => c.id === data.id)
+              if (clip) moveClip(data.id, Math.round(dropMs))
+            } else if (data.kind === 'audio') {
+              const track = audioTracks.find((a: AudioTrack) => a.id === data.id)
+              if (track) moveAudioTrack(data.id, Math.max(0, dropMs))
+            }
+            return
+          }
+
+          // Single-item external import (AudioPanel SFX or single MediaPanel item)
+          if (data.path) {
+            items = [{
+              path: data.path, durationMs: data.durationMs ?? 0,
+              width: data.width ?? 0, height: data.height ?? 0,
+              hasAudio: data.hasAudio ?? false, name: data.name ?? 'Media',
+              isAudio: data.isAudio ?? false, isSfx: data.isSfx ?? false
+            }]
+          }
+        } catch { return }
+      }
+
+      if (!items || items.length === 0) return
+
+      // Build batch arrays and add via unified addMediaBatch
+      const batchClips: Array<{
+        id: string; path: string; startMs: number; sourceDurationMs: number; durationMs: number
+        trackIndex: number; trimStart: number; trimEnd: number; name?: string
+        speed: number; volume: number; muted: boolean
+      }> = []
+      const batchAudio: Array<{
+        id: string; path: string; startMs: number; sourceDurationMs: number; durationMs: number
+        volume: number; muted: boolean; name?: string; role: 'voice' | 'music' | 'sfx' | 'ambient'
+        trimStart: number; trimEnd: number; trackIndex: number
+      }> = []
+
+      items.forEach((item, i) => {
+        const itemDropMs = Math.round(dropMs + i * 200)
+        const rand = Math.random().toString(36).slice(2, 6)
+        if (item.isAudio) {
+          batchAudio.push({
+            id: `audio_${ts}_${i}_${rand}`,
+            path: item.path,
+            startMs: itemDropMs,
+            sourceDurationMs: item.durationMs ?? 0,
+            durationMs: item.durationMs ?? 0,
+            volume: 1, muted: false,
+            name: item.name ?? 'Audio',
+            role: item.isSfx ? 'sfx' : 'music',
+            trimStart: 0, trimEnd: 0,
+            trackIndex: audioLaneIdx
+          })
+        } else {
+          batchClips.push({
+            id: `clip_${ts}_${i}_${rand}`,
+            path: item.path,
+            startMs: itemDropMs,
+            sourceDurationMs: item.durationMs ?? 0,
+            durationMs: item.durationMs ?? 0,
+            trackIndex: 0, trimStart: 0, trimEnd: 0,
+            name: item.name ?? 'Clip',
+            speed: 1.0, volume: 1, muted: false
+          })
         }
-      } catch { /* invalid data */ }
+      })
+
+      useTimeline.getState().addMediaBatch(batchClips, batchAudio)
+      // Auto-select the first newly added item
+      const firstId = batchClips[0]?.id ?? batchAudio[0]?.id
+      if (firstId) useTimeline.getState().selectClip(firstId)
     },
-    [clips, audioTracks, PIXELS_PER_MS, moveClip, moveAudioTrack]
+    [clips, audioTracks, tracks, PIXELS_PER_MS, moveClip, moveAudioTrack]
   )
 
   // ---- Build DOM track headers ----
@@ -320,6 +418,39 @@ export function Timeline({ activeTool = 'select' }: TimelineProps): JSX.Element 
   if (textClips.length > 0) {
     allLanes.push({ kind: 'caption', index: 0, trackId: 'caption_track', name: 'Captions' })
   }
+
+  // ---- Double-click handler (rename clip/audio) ----
+
+  const handleDoubleClick = useCallback((e: React.MouseEvent) => {
+    const canvas = canvasRef.current
+    if (!canvas) return
+    const rect = canvas.getBoundingClientRect()
+    const x = e.clientX - rect.left - LAYOUT.LANE_LABEL_W
+    const st = useTimeline.getState()
+    const ppm = 0.1 * st.zoom
+    const lanes = buildLaneLayout(st.tracks, st.clips, st.audioTracks, st.textClips)
+    const hit = hitTest(x, e.clientY - rect.top, ppm, st.playheadMs, lanes, st.clips, st.audioTracks, st.textClips)
+
+    if (hit.kind === 'clip-body' || hit.kind === 'audio-body') {
+      const entity = hit.kind === 'clip-body'
+        ? st.clips.find((c) => c.id === hit.id)
+        : st.audioTracks.find((a) => a.id === hit.id)
+      if (entity) {
+        const newName = window.prompt('Rename:', entity.name || '')
+        if (newName?.trim()) {
+          useTimeline.setState((s) => {
+            if (hit.kind === 'clip-body') {
+              const c = s.clips.find((cc) => cc.id === hit.id)
+              if (c) c.name = newName.trim()
+            } else {
+              const a = s.audioTracks.find((aa) => aa.id === hit.id)
+              if (a) a.name = newName.trim()
+            }
+          })
+        }
+      }
+    }
+  }, [])
 
   // ---- Context menu helper (uses same hit test engine as interactions) ----
 
@@ -462,9 +593,9 @@ export function Timeline({ activeTool = 'select' }: TimelineProps): JSX.Element 
       {/* Toolbar */}
       <div className="flex items-center justify-between px-2 py-0.5 bg-editor-panel border-b border-editor-border shrink-0">
         <div className="flex gap-1">
-          <button className="text-[10px] text-gray-500 hover:text-gray-300 px-1.5 py-0.5 rounded hover:bg-editor-surface"
+          <button className="text-[12px] text-gray-500 hover:text-gray-300 px-1.5 py-0.5 rounded hover:bg-editor-surface"
             onClick={() => addTrack('video')}>+ Video</button>
-          <button className="text-[10px] text-gray-500 hover:text-gray-300 px-1.5 py-0.5 rounded hover:bg-editor-surface"
+          <button className="text-[12px] text-gray-500 hover:text-gray-300 px-1.5 py-0.5 rounded hover:bg-editor-surface"
             onClick={() => addTrack('audio')}>+ Audio</button>
         </div>
         <div className="flex items-center gap-1">
@@ -472,7 +603,7 @@ export function Timeline({ activeTool = 'select' }: TimelineProps): JSX.Element 
             onClick={() => setZoom(Math.max(0.1, zoom - 0.2))}>
             <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor"><rect x="2" y="7" width="12" height="2" /></svg>
           </button>
-          <span className="text-[10px] text-gray-500 w-8 text-center tabular-nums">{(zoom * 100).toFixed(0)}%</span>
+          <span className="text-[12px] text-gray-500 w-8 text-center tabular-nums">{(zoom * 100).toFixed(0)}%</span>
           <button className="w-6 h-6 flex items-center justify-center text-gray-500 hover:text-gray-300 text-xs rounded bg-editor-surface"
             onClick={() => setZoom(Math.min(10, zoom + 0.2))}>
             <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor">
@@ -524,21 +655,21 @@ export function Timeline({ activeTool = 'select' }: TimelineProps): JSX.Element 
                   })
                 }}
               >
-                <span className="text-[10px] text-gray-500 truncate flex-1" title={lane.name}>{lane.name}</span>
+                <span className="text-[12px] text-gray-500 truncate flex-1" title={lane.name}>{lane.name}</span>
                 {track && (
                   <div className="flex gap-0.5">
                     <TrackButton active={!!track.muted} activeColor="text-yellow-400" title="Mute"
-                      onClick={() => toggleMuteTrack(track.id)}>M</TrackButton>
+                      onClick={() => toggleMuteTrack(track.id)}><VolumeX size={12} /></TrackButton>
                     <TrackButton active={!!track.solo} activeColor="text-green-400" title="Solo"
-                      onClick={() => toggleSoloTrack(track.id)}>S</TrackButton>
+                      onClick={() => toggleSoloTrack(track.id)}><Headphones size={12} /></TrackButton>
                     <TrackButton active={!!track.locked} activeColor="text-red-400" title="Lock"
-                      onClick={() => toggleLockTrack(track.id)}>L</TrackButton>
+                      onClick={() => toggleLockTrack(track.id)}><Lock size={12} /></TrackButton>
                     <TrackButton active={!!track.hidden} activeColor="text-gray-300" title="Hide"
-                      onClick={() => toggleHideTrack(track.id)}>H</TrackButton>
-                    <button className="w-4 h-4 flex items-center justify-center text-[9px] rounded text-gray-700 hover:text-red-400 opacity-0 group-hover:opacity-100 transition-opacity"
+                      onClick={() => toggleHideTrack(track.id)}><EyeOff size={12} /></TrackButton>
+                    <button className="w-4 h-4 flex items-center justify-center text-[11px] rounded text-gray-700 hover:text-red-400 opacity-0 group-hover:opacity-100 transition-opacity"
                       title="Delete track" onClick={() => {
                         useConfirm.getState().show({ title: 'Delete Track', message: `Delete track "${track.name}" and all clips on it? This cannot be undone.`, variant: 'danger', confirmLabel: 'Delete' }).then((c) => { if (c) deleteTrack(track.id) })
-                      }}>Ã—</button>
+                      }}><Trash2 size={11} /></button>
                   </div>
                 )}
               </div>
@@ -555,10 +686,11 @@ export function Timeline({ activeTool = 'select' }: TimelineProps): JSX.Element 
             onMouseMove={handleMouseMove}
             onWheel={handleWheel}
             onContextMenu={showContextMenu}
+            onDoubleClick={handleDoubleClick}
           />
 
           {/* Time display */}
-          <div className="absolute bottom-1 right-2 text-[10px] text-gray-500 tabular-nums pointer-events-none">
+          <div className="absolute bottom-1 right-2 text-[12px] text-gray-500 tabular-nums pointer-events-none">
             {formatTime(playheadMs)} / {formatTime(totalDurationMs)}
           </div>
         </div>
@@ -578,7 +710,7 @@ const TrackButton = React.memo(function TrackButton({ active, activeColor, title
   active: boolean; activeColor: string; title: string; onClick: () => void; children: React.ReactNode
 }): JSX.Element {
   return (
-    <button className={`w-4 h-4 flex items-center justify-center text-[9px] rounded transition-colors ${active ? activeColor : 'text-gray-700 hover:text-gray-400'}`}
+    <button className={`w-4 h-4 flex items-center justify-center text-[11px] rounded transition-colors ${active ? activeColor : 'text-gray-700 hover:text-gray-400'}`}
       title={title} onClick={onClick}>{children}</button>
   )
 })
@@ -595,7 +727,7 @@ function drawRuler(
   ctx.fillRect(offsetX, 0, w - offsetX, h)
   ctx.strokeStyle = '#222'
   ctx.fillStyle = '#555'
-  ctx.font = '9px Inter, system-ui, sans-serif'
+  ctx.font = '11px Inter, system-ui, sans-serif'
   ctx.lineWidth = 1
 
   // Dynamic interval — target ~80-120px between major ticks (like proper video editors)
@@ -656,12 +788,87 @@ function drawRuler(
     ctx.rotate(Math.PI / 4)
     ctx.fillRect(-4, -4, 8, 8)
     ctx.restore()
-    if (m.label) { ctx.fillStyle = m.color || '#FFD700'; ctx.font = '8px Inter, system-ui, sans-serif'; ctx.fillText(m.label, x + 6, h - 4) }
+    if (m.label) { ctx.fillStyle = m.color || '#FFD700'; ctx.font = '10px Inter, system-ui, sans-serif'; ctx.fillText(m.label, x + 6, h - 4) }
+  }
+
+  // In/Out region highlight
+  const inMs = getInPoint()
+  const outMs = getOutPoint()
+  if (inMs !== null && outMs !== null && inMs < outMs) {
+    const ix = offsetX + inMs * ppm
+    const ox = offsetX + outMs * ppm
+    if (ox > offsetX && ix < w) {
+      ctx.fillStyle = 'rgba(83, 74, 183, 0.08)'
+      ctx.fillRect(Math.max(offsetX, ix), 0, Math.min(w, ox) - Math.max(offsetX, ix), h)
+    }
+  }
+}
+
+function drawFadeEdges(
+  ctx: CanvasRenderingContext2D,
+  x: number, y: number, w: number, h: number,
+  fadeInMs: number, fadeOutMs: number,
+  ppm: number,
+  selected: boolean = false
+): void {
+  const handleColor = selected ? 'rgba(255,255,255,0.7)' : 'rgba(255,255,255,0.25)'
+  const dotRadius = selected ? 3.5 : 2.5
+  const lineW = selected ? 1.5 : 1
+
+  if (fadeInMs > 0) {
+    const fiw = Math.min(w * 0.4, fadeInMs * ppm)
+    if (fiw > 1) {
+      ctx.fillStyle = 'rgba(0,0,0,0.35)'
+      ctx.beginPath()
+      ctx.moveTo(x, y)
+      ctx.lineTo(x + fiw, y)
+      ctx.lineTo(x, y + h)
+      ctx.closePath()
+      ctx.fill()
+
+      // Handle indicator: vertical line + dot at inner edge
+      const hx = x + fiw
+      ctx.strokeStyle = handleColor
+      ctx.lineWidth = lineW
+      ctx.beginPath()
+      ctx.moveTo(hx, y + 2)
+      ctx.lineTo(hx, y + h - 2)
+      ctx.stroke()
+      ctx.fillStyle = handleColor
+      ctx.beginPath()
+      ctx.arc(hx, y + h / 2, dotRadius, 0, Math.PI * 2)
+      ctx.fill()
+    }
+  }
+  if (fadeOutMs > 0) {
+    const fow = Math.min(w * 0.4, fadeOutMs * ppm)
+    if (fow > 1) {
+      ctx.fillStyle = 'rgba(0,0,0,0.35)'
+      ctx.beginPath()
+      ctx.moveTo(x + w, y)
+      ctx.lineTo(x + w - fow, y)
+      ctx.lineTo(x + w, y + h)
+      ctx.closePath()
+      ctx.fill()
+
+      // Handle indicator: vertical line + dot at inner edge
+      const hx = x + w - fow
+      ctx.strokeStyle = handleColor
+      ctx.lineWidth = lineW
+      ctx.beginPath()
+      ctx.moveTo(hx, y + 2)
+      ctx.lineTo(hx, y + h - 2)
+      ctx.stroke()
+      ctx.fillStyle = handleColor
+      ctx.beginPath()
+      ctx.arc(hx, y + h / 2, dotRadius, 0, Math.PI * 2)
+      ctx.fill()
+    }
   }
 }
 
 function drawClip(
-  ctx: CanvasRenderingContext2D, clip: { id: string; startMs: number; durationMs: number; name?: string },
+  ctx: CanvasRenderingContext2D, clip: { id: string; startMs: number; durationMs: number; name?: string; fadeInMs?: number; fadeOutMs?: number },
   offsetX: number, trackY: number, ppm: number, isSelected: boolean
 ): void {
   const x = offsetX + clip.startMs * ppm
@@ -679,12 +886,15 @@ function drawClip(
   roundRect(ctx, x, y, w, h, r)
   ctx.stroke()
 
+  // Fade edge triangles
+  drawFadeEdges(ctx, x, y, w, h, clip.fadeInMs ?? 0, clip.fadeOutMs ?? 0, ppm, isSelected)
+
   if (w > 20) {
     ctx.fillStyle = 'rgba(255,255,255,0.04)'
     for (let i = 0; i < Math.floor(w / 6); i++) ctx.fillRect(x + i * 6, y + 4, 3, h - 8)
   }
   if (w > 30) {
-    ctx.fillStyle = '#ddd'; ctx.font = '10px Inter, system-ui, sans-serif'
+    ctx.fillStyle = '#ddd'; ctx.font = '12px Inter, system-ui, sans-serif'
     ctx.fillText(clip.name || 'Clip', x + 6, y + h / 2 + 4)
   }
   if (isSelected && w > 12) {
@@ -698,7 +908,7 @@ function drawClip(
 
 function drawAudioTrack(
   ctx: CanvasRenderingContext2D,
-  track: { id: string; path: string; startMs: number; durationMs: number; volume: number; muted: boolean; name?: string },
+  track: { id: string; path: string; startMs: number; durationMs: number; volume: number; muted: boolean; name?: string; role?: string; fadeInMs?: number; fadeOutMs?: number },
   offsetX: number, trackY: number, ppm: number, maxW: number, selectedIdSet: Set<string>,
   effectiveMuted: boolean
 ): void {
@@ -712,39 +922,68 @@ function drawAudioTrack(
 
   const isSel = selectedIdSet.has(track.id)
 
+  // Role-based color coding
+  const roleColors: Record<string, { bg: string; stroke: string; wave: string }> = {
+    sfx:    { bg: '#261a10', stroke: '#3a2818', wave: '#5a3a20' },
+    voice:  { bg: '#1a2614', stroke: '#283a1e', wave: '#3a5a2a' },
+    ambient:{ bg: '#221428', stroke: '#3a1e3a', wave: '#4a2a5a' },
+    music:  { bg: '#141e28', stroke: '#1e3040', wave: '#2a4560' }
+  }
+  const rc = roleColors[track.role || 'music']
+
   ctx.save()
-  ctx.fillStyle = effectiveMuted ? '#151a16' : isSel ? '#2a3a50' : '#141e28'
+  ctx.fillStyle = effectiveMuted ? '#151a16' : isSel ? '#2a3a50' : rc.bg
   roundRect(ctx, x, y, clipW, h, r)
   ctx.fill()
-  ctx.strokeStyle = isSel ? '#534AB7' : effectiveMuted ? '#1e2820' : '#1e3040'
+  ctx.strokeStyle = isSel ? '#534AB7' : effectiveMuted ? '#1e2820' : rc.stroke
   ctx.lineWidth = isSel ? 2 : 1
   roundRect(ctx, x, y, clipW, h, r)
   ctx.stroke()
 
+  // Filled waveform silhouette — dual-peak envelope scaled to clip width
   const waveform = getWaveform(track.path)
-  const volH = h * track.volume
-  if (waveform && waveform.length > 0) {
-    const peakCount = waveform.length
-    const barW = Math.max(1, clipW / peakCount)
-    ctx.fillStyle = effectiveMuted ? '#2a3028' : '#2a4560'
+  const halfH = h / 2
+  const centerY = y + halfH
+  const volH = halfH * track.volume
+  if (waveform && waveform.max && waveform.max.length > 0) {
+    const peakCount = waveform.max.length
+    const pxPerPeak = clipW / peakCount
+    ctx.fillStyle = effectiveMuted ? '#2a3028' : rc.wave
+    ctx.beginPath()
+    // Top envelope (left to right)
+    ctx.moveTo(x, centerY)
     for (let i = 0; i < peakCount; i++) {
-      const barH = waveform[i] * volH * 0.75 + 1
-      ctx.fillRect(x + i * (clipW / peakCount), y + h / 2 - barH / 2, Math.max(barW, 0.6), barH)
+      const px = x + i * pxPerPeak
+      const peakY = centerY - waveform.max[i] * volH
+      ctx.lineTo(px, peakY)
     }
+    // Bottom envelope (right to left, completing the filled shape)
+    for (let i = peakCount - 1; i >= 0; i--) {
+      const px = x + i * pxPerPeak
+      const troughY = centerY - waveform.min[i] * volH
+      ctx.lineTo(px, troughY)
+    }
+    ctx.closePath()
+    ctx.fill()
   } else {
-    ctx.fillStyle = effectiveMuted ? '#2a3028' : '#2a4560'
+    // Fallback: synthetic bars when waveform data is unavailable
+    ctx.fillStyle = effectiveMuted ? '#2a3028' : rc.wave
     const barCount = Math.floor(clipW / 3)
     for (let i = 0; i < barCount; i++) {
       const seed = Math.sin(i * 12.9898 + track.id.charCodeAt(0)) * 43758.5453
       const barH = Math.abs(seed % 1) * volH * 0.7 + 2
-      ctx.fillRect(x + i * 3, y + h / 2 - barH / 2, 2, barH)
+      ctx.fillRect(x + i * 3, centerY - barH / 2, 2, barH)
     }
   }
 
   if (clipW > 40) {
-    ctx.fillStyle = '#aaa'; ctx.font = '10px Inter, system-ui, sans-serif'
+    ctx.fillStyle = '#aaa'; ctx.font = '12px Inter, system-ui, sans-serif'
     ctx.fillText(track.name || 'Audio', x + 4, y + h / 2 + 4)
   }
+
+  // Fade edge triangles
+  drawFadeEdges(ctx, x, y, clipW, h, track.fadeInMs ?? 0, track.fadeOutMs ?? 0, ppm, selectedIdSet.has(track.id))
+
   ctx.restore()
 }
 

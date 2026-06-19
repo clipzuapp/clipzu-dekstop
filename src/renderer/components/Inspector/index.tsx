@@ -7,6 +7,9 @@ import type { RightTabId } from '../RightRail/index'
 import { ComingSoonPanel } from '../ComingSoonPanel/index'
 import { useCaptionStyleBinding } from './useCaptionStyleBinding'
 import * as AudioEngine from '../../services/AudioEngine'
+import { linearToDb, dbToLinear, formatDb } from '../../utils/audio'
+import { useSelectedEntity } from '../../store/useSelectedEntity'
+import { AlignLeft, AlignCenter, AlignRight, Volume2, VolumeX } from 'lucide-react'
 
 /**
  * Inspector — context-sensitive property editor.
@@ -32,7 +35,7 @@ function debounce<T extends (...args: any[]) => void>(fn: T, ms: number): T {
 function SectionHeader({ title }: { title: string }): JSX.Element {
   return (
     <div style={{
-      fontSize: '10px', color: 'var(--text3)', textTransform: 'uppercase',
+      fontSize: '12px', color: 'var(--text3)', textTransform: 'uppercase',
       letterSpacing: '0.06em', padding: '10px 12px 4px'
     }}>
       {title}
@@ -45,7 +48,7 @@ function SliderRow({ label, min, max, step, value, onChange }: {
 }): JSX.Element {
   return (
     <div style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '0 12px' }}>
-      <span style={{ width: '80px', fontSize: '10px', color: 'var(--text3)', flexShrink: 0, fontFamily: 'monospace' }}>
+      <span style={{ width: '90px', fontSize: '12px', color: 'var(--text3)', flexShrink: 0, fontFamily: 'monospace' }}>
         {label}
       </span>
       <input
@@ -64,7 +67,7 @@ function SwatchRow({ label, value, onChange }: {
 }): JSX.Element {
   return (
     <div style={{ padding: '0 12px' }}>
-      <div style={{ fontSize: '10px', color: 'var(--text3)', marginBottom: '4px' }}>{label}</div>
+      <div style={{ fontSize: '12px', color: 'var(--text3)', marginBottom: '4px' }}>{label}</div>
       <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
         {SWATCHES.map((c) => (
           <button
@@ -82,7 +85,7 @@ function SwatchRow({ label, value, onChange }: {
           type="text" value={value}
           onChange={(e) => onChange(e.target.value)}
           style={{
-            flex: 1, fontSize: '10px', background: 'var(--bg2)', color: 'var(--text2)',
+            flex: 1, fontSize: '12px', background: 'var(--bg2)', color: 'var(--text2)',
             border: '0.5px solid var(--border)', borderRadius: '3px', padding: '2px 4px',
             fontFamily: 'monospace', minWidth: 0
           }}
@@ -114,18 +117,18 @@ function ProjectSettings(): JSX.Element {
   const totalDurationMs = useTimeline((s) => s.totalDurationMs)
 
   return (
-    <div style={{ padding: '12px', display: 'flex', flexDirection: 'column', gap: '16px', fontSize: '11px' }}>
-      <h3 style={{ fontSize: '13px', fontWeight: 600, color: 'var(--text1)', margin: 0 }}>Project Settings</h3>
+    <div style={{ padding: '12px', display: 'flex', flexDirection: 'column', gap: '16px', fontSize: '13px' }}>
+      <h3 style={{ fontSize: '15px', fontWeight: 600, color: 'var(--text1)', margin: 0 }}>Project Settings</h3>
 
       <section>
-        <div style={{ fontSize: '10px', color: 'var(--text3)', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: '4px' }}>
+        <div style={{ fontSize: '12px', color: 'var(--text3)', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: '4px' }}>
           Aspect Ratio
         </div>
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: '4px' }}>
           {Object.entries(ASPECT_PRESETS).map(([key, val]) => (
             <button key={key}
               style={{
-                padding: '3px 8px', fontSize: '10px', borderRadius: '3px', cursor: 'pointer',
+                padding: '3px 8px', fontSize: '12px', borderRadius: '3px', cursor: 'pointer',
                 background: aspectRatio === key ? 'rgba(79,127,255,0.18)' : 'var(--bg2)',
                 color: aspectRatio === key ? 'var(--accent)' : 'var(--text3)',
                 border: 'none', transition: 'all 0.15s'
@@ -138,17 +141,17 @@ function ProjectSettings(): JSX.Element {
       </section>
 
       <section>
-        <div style={{ fontSize: '10px', color: 'var(--text3)', marginBottom: '2px' }}>Resolution</div>
+        <div style={{ fontSize: '12px', color: 'var(--text3)', marginBottom: '2px' }}>Resolution</div>
         <div style={{ color: 'var(--text2)' }}>{resolution.width} × {resolution.height}</div>
       </section>
 
       <section>
-        <div style={{ fontSize: '10px', color: 'var(--text3)', marginBottom: '4px' }}>FPS</div>
+        <div style={{ fontSize: '12px', color: 'var(--text3)', marginBottom: '4px' }}>FPS</div>
         <div style={{ display: 'flex', gap: '4px' }}>
           {([24, 30, 60] as const).map((f) => (
             <button key={f}
               style={{
-                flex: 1, padding: '4px', fontSize: '11px', borderRadius: '3px', cursor: 'pointer',
+                flex: 1, padding: '4px', fontSize: '13px', borderRadius: '3px', cursor: 'pointer',
                 background: fps === f ? 'var(--accent)' : 'var(--bg2)',
                 color: fps === f ? '#fff' : 'var(--text3)',
                 border: 'none', transition: 'all 0.15s'
@@ -161,7 +164,7 @@ function ProjectSettings(): JSX.Element {
       </section>
 
       <section>
-        <div style={{ fontSize: '10px', color: 'var(--text3)', marginBottom: '2px' }}>Duration</div>
+        <div style={{ fontSize: '12px', color: 'var(--text3)', marginBottom: '2px' }}>Duration</div>
         <div style={{ color: 'var(--text2)', fontFamily: 'monospace' }}>{formatTime(totalDurationMs)}</div>
       </section>
     </div>
@@ -182,6 +185,7 @@ function ClipBasicTab(): JSX.Element {
   const setClipTransform = useTimeline((s) => s.setClipTransform)
   const setClipVolume = useTimeline((s) => s.setClipVolume)
   const setClipMute = useTimeline((s) => s.setClipMute)
+  const setClipFade = useTimeline((s) => s.setClipFade)
 
   const selectedClip = useMemo(() => {
     if (!focusedId) return null
@@ -193,6 +197,7 @@ function ClipBasicTab(): JSX.Element {
   const t: ClipTransform = selectedClip?.transform ?? { ...DEFAULT_TRANSFORM }
   const clipVolume = selectedClip?.volume ?? 1
   const clipMuted = selectedClip?.muted ?? false
+  const clipDb = linearToDb(clipVolume)
 
   const update = useCallback((partial: Partial<ClipTransform>) => {
     if (selectedClipId) setClipTransform(selectedClipId, partial)
@@ -203,9 +208,9 @@ function ClipBasicTab(): JSX.Element {
   }
 
   return (
-    <div style={{ padding: '12px', display: 'flex', flexDirection: 'column', gap: '14px', fontSize: '11px', overflowY: 'auto' }}>
+    <div style={{ padding: '12px', display: 'flex', flexDirection: 'column', gap: '14px', fontSize: '13px', overflowY: 'auto' }}>
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-        <button style={{ fontSize: '10px', color: 'var(--text3)', background: 'none', border: 'none', cursor: 'pointer' }}
+        <button style={{ fontSize: '12px', color: 'var(--text3)', background: 'none', border: 'none', cursor: 'pointer' }}
           onClick={resetTransform}>Reset</button>
       </div>
 
@@ -231,19 +236,31 @@ function ClipBasicTab(): JSX.Element {
       {/* Audio section — per-clip volume + mute for video clips with embedded audio */}
       <SectionHeader title="Audio" />
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '0 12px' }}>
-        <span style={{ fontSize: '10px', color: 'var(--text3)' }}>Volume</span>
-        <span style={{ fontSize: '10px', color: 'var(--text1)', fontFamily: 'monospace' }}>
-          {clipMuted ? 'Muted' : `${Math.round(clipVolume * 100)}%`}
+        <span style={{ fontSize: '12px', color: 'var(--text3)' }}>Volume</span>
+        <span style={{ fontSize: '12px', color: 'var(--text1)', fontFamily: 'monospace' }}>
+          {clipMuted ? 'Muted' : formatDb(clipDb)}
         </span>
       </div>
-      <div style={{ padding: '0 12px' }}>
+      <div style={{ padding: '0 12px', display: 'flex', alignItems: 'center', gap: '6px' }}>
         <input
-          type="range" min={0} max={100} step={1}
-          value={Math.round(clipVolume * 100)}
+          type="range" min={-30} max={6} step={0.5}
+          value={clipDb}
           onChange={(e) => {
-            if (selectedClipId) setClipVolume(selectedClipId, parseInt(e.target.value) / 100)
+            if (selectedClipId) setClipVolume(selectedClipId, dbToLinear(parseFloat(e.target.value)))
           }}
-          style={{ width: '100%', accentColor: 'var(--accent)', height: '4px' }}
+          style={{ flex: 1, accentColor: 'var(--accent)', height: '4px' }}
+        />
+        <input
+          type="number" min={-30} max={6} step={0.5}
+          value={clipDb}
+          onChange={(e) => {
+            if (selectedClipId) setClipVolume(selectedClipId, dbToLinear(Math.max(-30, Math.min(6, parseFloat(e.target.value) || -30))))
+          }}
+          style={{
+            width: '52px', padding: '1px 3px', fontSize: '12px', borderRadius: '3px',
+            background: 'var(--bg2)', color: 'var(--text1)', border: '0.5px solid var(--border)',
+            fontFamily: 'monospace', textAlign: 'right'
+          }}
         />
       </div>
       <div style={{ display: 'flex', alignItems: 'center', gap: '6px', padding: '0 12px' }}>
@@ -252,14 +269,58 @@ function ClipBasicTab(): JSX.Element {
             if (selectedClipId) setClipMute(selectedClipId, !clipMuted)
           }}
           style={{
-            padding: '3px 10px', fontSize: '10px', borderRadius: '3px', cursor: 'pointer',
+            padding: '3px 10px', fontSize: '12px', borderRadius: '3px', cursor: 'pointer',
             background: clipMuted ? 'rgba(239, 68, 68, 0.15)' : 'var(--bg2)',
             color: clipMuted ? '#ef4444' : 'var(--text3)',
             border: clipMuted ? '0.5px solid rgba(239, 68, 68, 0.3)' : '0.5px solid var(--border)',
             fontWeight: 500
           }}>
-          {clipMuted ? '🔇 Muted' : '🔊 Mute'}
+          {clipMuted ? <><VolumeX size={12} /> Muted</> : <><Volume2 size={12} /> Mute</>}
         </button>
+      </div>
+
+      <SectionHeader title="Fade" />
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '0 12px' }}>
+        <span style={{ fontSize: '12px', color: 'var(--text3)' }}>Fade In</span>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+          <input
+            type="number" min={0} max={30} step={0.1}
+            value={((selectedClip?.fadeInMs ?? 0) / 1000).toFixed(1)}
+            onChange={(e) => {
+              if (selectedClipId) {
+                const sec = Math.max(0, parseFloat(e.target.value) || 0)
+                setClipFade(selectedClipId, Math.round(sec * 1000), selectedClip?.fadeOutMs ?? 0)
+              }
+            }}
+            style={{
+              width: '48px', padding: '2px 4px', fontSize: '12px', borderRadius: '3px',
+              background: 'var(--bg2)', color: 'var(--text1)', border: '0.5px solid var(--border)',
+              fontFamily: 'monospace', textAlign: 'right'
+            }}
+          />
+          <span style={{ fontSize: '11px', color: 'var(--text3)' }}>s</span>
+        </div>
+      </div>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '0 12px' }}>
+        <span style={{ fontSize: '12px', color: 'var(--text3)' }}>Fade Out</span>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+          <input
+            type="number" min={0} max={30} step={0.1}
+            value={((selectedClip?.fadeOutMs ?? 0) / 1000).toFixed(1)}
+            onChange={(e) => {
+              if (selectedClipId) {
+                const sec = Math.max(0, parseFloat(e.target.value) || 0)
+                setClipFade(selectedClipId, selectedClip?.fadeInMs ?? 0, Math.round(sec * 1000))
+              }
+            }}
+            style={{
+              width: '48px', padding: '2px 4px', fontSize: '12px', borderRadius: '3px',
+              background: 'var(--bg2)', color: 'var(--text1)', border: '0.5px solid var(--border)',
+              fontFamily: 'monospace', textAlign: 'right'
+            }}
+          />
+          <span style={{ fontSize: '11px', color: 'var(--text3)' }}>s</span>
+        </div>
       </div>
     </div>
   )
@@ -304,16 +365,16 @@ function CaptionStyleTab(): JSX.Element {
   const debouncedY = useMemo(() => debounce((v: number) => applyStyleToSelected({ y: v }), 50), [applyStyleToSelected])
 
   return (
-    <div style={{ padding: '12px', display: 'flex', flexDirection: 'column', gap: '12px', fontSize: '11px' }}>
+    <div style={{ padding: '12px', display: 'flex', flexDirection: 'column', gap: '12px', fontSize: '13px' }}>
       {/* Font */}
       <SectionHeader title="Style" />
 
       <div style={{ padding: '0 12px' }}>
-        <div style={{ fontSize: '10px', color: 'var(--text3)', marginBottom: '4px' }}>Font Family</div>
+        <div style={{ fontSize: '12px', color: 'var(--text3)', marginBottom: '4px' }}>Font Family</div>
         <select value={effectiveStyle.fontFamily}
           onChange={(e) => applyStyleToSelected({ fontFamily: e.target.value })}
           style={{
-            width: '100%', fontSize: '11px', background: 'var(--bg2)', color: 'var(--text2)',
+            width: '100%', fontSize: '13px', background: 'var(--bg2)', color: 'var(--text2)',
             border: '0.5px solid var(--border)', borderRadius: '3px', padding: '4px'
           }}>
           {FONT_OPTIONS.map((f) => <option key={f} value={f}>{f}</option>)}
@@ -322,8 +383,8 @@ function CaptionStyleTab(): JSX.Element {
 
       <div style={{ padding: '0 12px' }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '2px' }}>
-          <span style={{ fontSize: '10px', color: 'var(--text3)' }}>Font Size</span>
-          <span style={{ fontSize: '10px', color: 'var(--text1)', fontFamily: 'monospace' }}>{localFontSize}px</span>
+          <span style={{ fontSize: '12px', color: 'var(--text3)' }}>Font Size</span>
+          <span style={{ fontSize: '12px', color: 'var(--text1)', fontFamily: 'monospace' }}>{localFontSize}px</span>
         </div>
         <input type="range" min={12} max={120} value={localFontSize}
           onInput={(e) => {
@@ -336,8 +397,8 @@ function CaptionStyleTab(): JSX.Element {
 
       <div style={{ padding: '0 12px' }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '2px' }}>
-          <span style={{ fontSize: '10px', color: 'var(--text3)' }}>Font Weight</span>
-          <span style={{ fontSize: '10px', color: 'var(--text1)', fontFamily: 'monospace' }}>{localFontWeight}</span>
+          <span style={{ fontSize: '12px', color: 'var(--text3)' }}>Font Weight</span>
+          <span style={{ fontSize: '12px', color: 'var(--text1)', fontFamily: 'monospace' }}>{localFontWeight}</span>
         </div>
         <input type="range" min={300} max={900} step={100} value={localFontWeight}
           onInput={(e) => {
@@ -354,8 +415,8 @@ function CaptionStyleTab(): JSX.Element {
 
       <div style={{ padding: '0 12px' }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '2px' }}>
-          <span style={{ fontSize: '10px', color: 'var(--text3)' }}>Stroke Width</span>
-          <span style={{ fontSize: '10px', color: 'var(--text1)', fontFamily: 'monospace' }}>{localStrokeWidth}px</span>
+          <span style={{ fontSize: '12px', color: 'var(--text3)' }}>Stroke Width</span>
+          <span style={{ fontSize: '12px', color: 'var(--text1)', fontFamily: 'monospace' }}>{localStrokeWidth}px</span>
         </div>
         <input type="range" min={0} max={10} step={0.5} value={localStrokeWidth}
           onInput={(e) => {
@@ -368,18 +429,18 @@ function CaptionStyleTab(): JSX.Element {
 
       {/* Alignment */}
       <div style={{ padding: '0 12px' }}>
-        <div style={{ fontSize: '10px', color: 'var(--text3)', marginBottom: '4px' }}>Alignment</div>
+        <div style={{ fontSize: '12px', color: 'var(--text3)', marginBottom: '4px' }}>Alignment</div>
         <div style={{ display: 'flex', gap: '4px' }}>
           {(['left', 'center', 'right'] as const).map((a) => (
             <button key={a}
               onClick={() => applyStyleToSelected({ alignment: a })}
               style={{
-                flex: 1, padding: '4px', fontSize: '11px', borderRadius: '3px', cursor: 'pointer',
+                flex: 1, padding: '4px', fontSize: '13px', borderRadius: '3px', cursor: 'pointer',
                 background: effectiveStyle.alignment === a ? 'rgba(79,127,255,0.2)' : 'var(--bg2)',
                 color: effectiveStyle.alignment === a ? 'var(--accent)' : 'var(--text3)',
                 border: effectiveStyle.alignment === a ? '0.5px solid rgba(79,127,255,0.4)' : '0.5px solid var(--border)',
               }}>
-              {a === 'left' ? '⟵' : a === 'right' ? '⟶' : '⎯'}
+              {a === 'left' ? <AlignLeft size={14} /> : a === 'right' ? <AlignRight size={14} /> : <AlignCenter size={14} />}
             </button>
           ))}
         </div>
@@ -389,8 +450,8 @@ function CaptionStyleTab(): JSX.Element {
       <SectionHeader title="Background" />
       <div style={{ padding: '0 12px' }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '2px' }}>
-          <span style={{ fontSize: '10px', color: 'var(--text3)' }}>BG Opacity</span>
-          <span style={{ fontSize: '10px', color: 'var(--text1)', fontFamily: 'monospace' }}>{localBgOpacity}%</span>
+          <span style={{ fontSize: '12px', color: 'var(--text3)' }}>BG Opacity</span>
+          <span style={{ fontSize: '12px', color: 'var(--text1)', fontFamily: 'monospace' }}>{localBgOpacity}%</span>
         </div>
         <input type="range" min={0} max={100} value={localBgOpacity}
           onInput={(e) => {
@@ -409,7 +470,7 @@ function CaptionStyleTab(): JSX.Element {
             <button key={mode}
               onClick={() => applyStyleToSelected({ captionMode: mode })}
               style={{
-                padding: '4px 2px', fontSize: '10px', borderRadius: '3px', cursor: 'pointer',
+                padding: '4px 2px', fontSize: '12px', borderRadius: '3px', cursor: 'pointer',
                 background: effectiveStyle.captionMode === mode ? 'rgba(79,127,255,0.2)' : 'var(--bg2)',
                 color: effectiveStyle.captionMode === mode ? 'var(--accent)' : 'var(--text3)',
                 border: effectiveStyle.captionMode === mode
@@ -429,13 +490,13 @@ function CaptionStyleTab(): JSX.Element {
           <SectionHeader title="Reveal Fade" />
           <div style={{ padding: '0 12px' }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '2px' }}>
-              <span style={{ fontSize: '10px', color: 'var(--text3)' }}>Fade Duration</span>
-              <span style={{ fontSize: '10px', color: 'var(--text1)', fontFamily: 'monospace' }}>{effectiveStyle.revealFadeMs ?? 0}ms</span>
+              <span style={{ fontSize: '12px', color: 'var(--text3)' }}>Fade Duration</span>
+              <span style={{ fontSize: '12px', color: 'var(--text1)', fontFamily: 'monospace' }}>{effectiveStyle.revealFadeMs ?? 0}ms</span>
             </div>
             <input type="range" min={0} max={200} step={10} value={effectiveStyle.revealFadeMs ?? 0}
               onChange={(e) => applyStyleToSelected({ revealFadeMs: parseInt(e.target.value) })}
               style={{ width: '100%', accentColor: 'var(--accent)' }} />
-            <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '9px', color: 'var(--text3)', marginTop: '2px' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '11px', color: 'var(--text3)', marginTop: '2px' }}>
               <span>Instant</span><span>Smooth</span>
             </div>
           </div>
@@ -446,8 +507,8 @@ function CaptionStyleTab(): JSX.Element {
       <SectionHeader title="Position" />
       <div style={{ padding: '0 12px' }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '2px' }}>
-          <span style={{ fontSize: '10px', color: 'var(--text3)' }}>X</span>
-          <span style={{ fontSize: '10px', color: 'var(--text1)', fontFamily: 'monospace' }}>{localX}%</span>
+          <span style={{ fontSize: '12px', color: 'var(--text3)' }}>X</span>
+          <span style={{ fontSize: '12px', color: 'var(--text1)', fontFamily: 'monospace' }}>{localX}%</span>
         </div>
         <input type="range" min={0} max={100} value={localX}
           onInput={(e) => {
@@ -459,8 +520,8 @@ function CaptionStyleTab(): JSX.Element {
       </div>
       <div style={{ padding: '0 12px' }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '2px' }}>
-          <span style={{ fontSize: '10px', color: 'var(--text3)' }}>Y</span>
-          <span style={{ fontSize: '10px', color: 'var(--text1)', fontFamily: 'monospace' }}>{localY}%</span>
+          <span style={{ fontSize: '12px', color: 'var(--text3)' }}>Y</span>
+          <span style={{ fontSize: '12px', color: 'var(--text1)', fontFamily: 'monospace' }}>{localY}%</span>
         </div>
         <input type="range" min={0} max={100} value={localY}
           onInput={(e) => {
@@ -476,7 +537,7 @@ function CaptionStyleTab(): JSX.Element {
         <button
           onClick={applyStyleToAllOnLayer}
           style={{
-            width: '100%', padding: '6px 8px', fontSize: '10px', borderRadius: '4px', cursor: 'pointer',
+            width: '100%', padding: '6px 8px', fontSize: '12px', borderRadius: '4px', cursor: 'pointer',
             background: 'rgba(79,127,255,0.12)', color: 'var(--accent)',
             border: '0.5px solid rgba(79,127,255,0.3)', textTransform: 'uppercase',
             letterSpacing: '0.04em', fontWeight: 600
@@ -514,14 +575,14 @@ function CaptionAnimationTab(): JSX.Element {
   }, [applyStyleToSelected, selectedTextClipId, textClips, setPlayhead])
 
   return (
-    <div style={{ padding: '12px', display: 'flex', flexDirection: 'column', gap: '12px', fontSize: '11px' }}>
+    <div style={{ padding: '12px', display: 'flex', flexDirection: 'column', gap: '12px', fontSize: '13px' }}>
       <SectionHeader title="Animation" />
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '4px', padding: '0 12px' }}>
         {ANIM_PRESETS.map((preset) => (
           <button key={preset}
             onClick={() => applyAndPreview(preset)}
             style={{
-              padding: '4px 2px', fontSize: '10px', borderRadius: '3px', cursor: 'pointer',
+              padding: '4px 2px', fontSize: '12px', borderRadius: '3px', cursor: 'pointer',
               background: effectiveStyle.animation === preset ? 'rgba(79,127,255,0.2)' : 'var(--bg2)',
               color: effectiveStyle.animation === preset ? 'var(--accent)' : 'var(--text3)',
               border: effectiveStyle.animation === preset
@@ -556,20 +617,22 @@ function AudioTab(): JSX.Element {
   if (audioTracks.length === 0) {
     return (
       <div style={{ padding: '24px', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '12px' }}>
-        <span style={{ fontSize: '11px', color: 'var(--text3)' }}>No audio tracks</span>
-        <span style={{ fontSize: '10px', color: 'var(--text3)', opacity: 0.6 }}>Import audio in the Media panel</span>
+        <span style={{ fontSize: '13px', color: 'var(--text3)' }}>No audio tracks</span>
+        <span style={{ fontSize: '12px', color: 'var(--text3)', opacity: 0.6 }}>Import audio in the Media panel</span>
       </div>
     )
   }
 
   return (
-    <div style={{ padding: '12px', display: 'flex', flexDirection: 'column', gap: '10px', fontSize: '11px' }}>
+    <div style={{ padding: '12px', display: 'flex', flexDirection: 'column', gap: '10px', fontSize: '13px' }}>
       <SectionHeader title="Audio Tracks" />
-      {audioTracks.map((track) => (
-        <div key={track.id} style={{ padding: '0 12px', display: 'flex', flexDirection: 'column', gap: '6px' }}>
+      {audioTracks.map((track) => {
+        const trackDb = linearToDb(track.volume)
+        return (
+          <div key={track.id} style={{ padding: '0 12px', display: 'flex', flexDirection: 'column', gap: '6px' }}>
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
             <span style={{
-              fontSize: '10px', color: 'var(--text2)', overflow: 'hidden',
+              fontSize: '12px', color: 'var(--text2)', overflow: 'hidden',
               textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: '140px'
             }}>
               {track.name || 'Audio Track'}
@@ -577,27 +640,38 @@ function AudioTab(): JSX.Element {
             <button
               onClick={() => toggleAudioMute(track.id)}
               style={{
-                padding: '2px 6px', fontSize: '9px', borderRadius: '3px', cursor: 'pointer',
+                padding: '2px 6px', fontSize: '11px', borderRadius: '3px', cursor: 'pointer',
                 background: track.muted ? 'rgba(239, 68, 68, 0.15)' : 'var(--bg2)',
                 color: track.muted ? '#ef4444' : 'var(--text3)',
                 border: track.muted ? '0.5px solid rgba(239, 68, 68, 0.3)' : '0.5px solid var(--border)',
               }}>
-              {track.muted ? 'Muted' : 'M'}
+              {track.muted ? <><VolumeX size={12} /> Muted</> : <><Volume2 size={12} /> M</>}
             </button>
           </div>
           <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-            <span style={{ fontSize: '10px', color: 'var(--text3)', width: '36px', fontFamily: 'monospace' }}>
-              {Math.round(track.volume * 100)}%
+            <span style={{ fontSize: '12px', color: 'var(--text3)', width: '48px', fontFamily: 'monospace' }}>
+              {formatDb(trackDb)}
             </span>
             <input
-              type="range" min={0} max={100} step={1}
-              value={Math.round(track.volume * 100)}
-              onChange={(e) => setAudioVolume(track.id, parseInt(e.target.value) / 100)}
+              type="range" min={-30} max={6} step={0.5}
+              value={trackDb}
+              onChange={(e) => setAudioVolume(track.id, dbToLinear(parseFloat(e.target.value)))}
               style={{ flex: 1, accentColor: 'var(--accent)', height: '4px' }}
+            />
+            <input
+              type="number" min={-30} max={6} step={0.5}
+              value={trackDb}
+              onChange={(e) => setAudioVolume(track.id, dbToLinear(Math.max(-30, Math.min(6, parseFloat(e.target.value) || -30))))}
+              style={{
+                width: '52px', padding: '1px 3px', fontSize: '12px', borderRadius: '3px',
+                background: 'var(--bg2)', color: 'var(--text1)', border: '0.5px solid var(--border)',
+                fontFamily: 'monospace', textAlign: 'right'
+              }}
             />
           </div>
         </div>
-      ))}
+        )
+      })}
     </div>
   )
 }
@@ -621,7 +695,7 @@ function SpeedTab(): JSX.Element {
   if (!selectedClip) {
     return (
       <div style={{ padding: '24px', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '8px' }}>
-        <span style={{ fontSize: '11px', color: 'var(--text3)' }}>Select a clip to adjust speed</span>
+        <span style={{ fontSize: '13px', color: 'var(--text3)' }}>Select a clip to adjust speed</span>
       </div>
     )
   }
@@ -629,12 +703,12 @@ function SpeedTab(): JSX.Element {
   const speed = selectedClip.speed ?? 1.0
 
   return (
-    <div style={{ padding: '12px', display: 'flex', flexDirection: 'column', gap: '14px', fontSize: '11px' }}>
+    <div style={{ padding: '12px', display: 'flex', flexDirection: 'column', gap: '14px', fontSize: '13px' }}>
       <SectionHeader title="Clip Speed" />
 
       <div style={{ padding: '0 12px', display: 'flex', flexDirection: 'column', gap: '8px' }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline' }}>
-          <span style={{ fontSize: '10px', color: 'var(--text3)' }}>Speed</span>
+          <span style={{ fontSize: '12px', color: 'var(--text3)' }}>Speed</span>
           <span style={{ fontSize: '13px', fontWeight: 600, color: 'var(--text1)', fontFamily: 'monospace' }}>
             {speed.toFixed(2)}×
           </span>
@@ -645,7 +719,7 @@ function SpeedTab(): JSX.Element {
           onChange={(e) => setClipSpeed(selectedClipId!, parseInt(e.target.value) / 100)}
           style={{ width: '100%', accentColor: 'var(--accent)', height: '4px' }}
         />
-        <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '9px', color: 'var(--text3)' }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '11px', color: 'var(--text3)' }}>
           <span>0.25×</span><span>1.0×</span><span>2.0×</span><span>4.0×</span>
         </div>
       </div>
@@ -655,7 +729,7 @@ function SpeedTab(): JSX.Element {
           <button key={preset}
             onClick={() => setClipSpeed(selectedClipId!, preset)}
             style={{
-              flex: 1, padding: '4px', fontSize: '10px', borderRadius: '3px', cursor: 'pointer',
+              flex: 1, padding: '4px', fontSize: '12px', borderRadius: '3px', cursor: 'pointer',
               background: speed === preset ? 'rgba(79,127,255,0.2)' : 'var(--bg2)',
               color: speed === preset ? 'var(--accent)' : 'var(--text3)',
               border: speed === preset ? '0.5px solid rgba(79,127,255,0.4)' : '0.5px solid var(--border)',
@@ -683,10 +757,12 @@ function AudioTrackBasicTab({ trackId }: { trackId: string }): JSX.Element {
   if (!track) {
     return (
       <div style={{ padding: '24px', textAlign: 'center' }}>
-        <span style={{ fontSize: '11px', color: 'var(--text3)' }}>Audio track not found</span>
+        <span style={{ fontSize: '13px', color: 'var(--text3)' }}>Audio track not found</span>
       </div>
     )
   }
+
+  const trackDb = linearToDb(track.volume)
 
   const handleVolumeChange = (vol: number): void => {
     setAudioVolume(trackId, vol)
@@ -701,16 +777,16 @@ function AudioTrackBasicTab({ trackId }: { trackId: string }): JSX.Element {
   }
 
   return (
-    <div style={{ padding: '12px', display: 'flex', flexDirection: 'column', gap: '14px', fontSize: '11px' }}>
+    <div style={{ padding: '12px', display: 'flex', flexDirection: 'column', gap: '14px', fontSize: '13px' }}>
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
         <span style={{
-          fontSize: '12px', fontWeight: 600, color: 'var(--text1)',
+          fontSize: '14px', fontWeight: 600, color: 'var(--text1)',
           overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: '200px'
         }}>
           {track.name || 'Audio Track'}
         </span>
         <span style={{
-          fontSize: '9px', padding: '2px 6px', borderRadius: '3px',
+          fontSize: '11px', padding: '2px 6px', borderRadius: '3px',
           background: 'rgba(74, 222, 128, 0.15)', color: '#4ade80',
           textTransform: 'uppercase', letterSpacing: '0.04em'
         }}>
@@ -720,36 +796,46 @@ function AudioTrackBasicTab({ trackId }: { trackId: string }): JSX.Element {
 
       <SectionHeader title="Audio" />
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '0 12px' }}>
-        <span style={{ fontSize: '10px', color: 'var(--text3)' }}>Volume</span>
-        <span style={{ fontSize: '10px', color: 'var(--text1)', fontFamily: 'monospace' }}>
-          {track.muted ? 'Muted' : `${Math.round(track.volume * 100)}%`}
+        <span style={{ fontSize: '12px', color: 'var(--text3)' }}>Volume</span>
+        <span style={{ fontSize: '12px', color: 'var(--text1)', fontFamily: 'monospace' }}>
+          {track.muted ? 'Muted' : formatDb(trackDb)}
         </span>
       </div>
-      <div style={{ padding: '0 12px' }}>
+      <div style={{ padding: '0 12px', display: 'flex', alignItems: 'center', gap: '6px' }}>
         <input
-          type="range" min={0} max={100} step={1}
-          value={Math.round(track.volume * 100)}
-          onChange={(e) => handleVolumeChange(parseInt(e.target.value) / 100)}
-          style={{ width: '100%', accentColor: 'var(--accent)', height: '4px' }}
+          type="range" min={-30} max={6} step={0.5}
+          value={trackDb}
+          onChange={(e) => handleVolumeChange(dbToLinear(parseFloat(e.target.value)))}
+          style={{ flex: 1, accentColor: 'var(--accent)', height: '4px' }}
+        />
+        <input
+          type="number" min={-30} max={6} step={0.5}
+          value={trackDb}
+          onChange={(e) => handleVolumeChange(dbToLinear(Math.max(-30, Math.min(6, parseFloat(e.target.value) || -30))))}
+          style={{
+            width: '52px', padding: '1px 3px', fontSize: '12px', borderRadius: '3px',
+            background: 'var(--bg2)', color: 'var(--text1)', border: '0.5px solid var(--border)',
+            fontFamily: 'monospace', textAlign: 'right'
+          }}
         />
       </div>
       <div style={{ display: 'flex', alignItems: 'center', gap: '6px', padding: '0 12px' }}>
         <button
           onClick={handleMuteToggle}
           style={{
-            padding: '3px 10px', fontSize: '10px', borderRadius: '3px', cursor: 'pointer',
+            padding: '3px 10px', fontSize: '12px', borderRadius: '3px', cursor: 'pointer',
             background: track.muted ? 'rgba(239, 68, 68, 0.15)' : 'var(--bg2)',
             color: track.muted ? '#ef4444' : 'var(--text3)',
             border: track.muted ? '0.5px solid rgba(239, 68, 68, 0.3)' : '0.5px solid var(--border)',
             fontWeight: 500
           }}>
-          {track.muted ? '🔇 Muted' : '🔊 Mute'}
+          {track.muted ? <><VolumeX size={12} /> Muted</> : <><Volume2 size={12} /> Mute</>}
         </button>
       </div>
 
       <SectionHeader title="Fade" />
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '0 12px' }}>
-        <span style={{ fontSize: '10px', color: 'var(--text3)' }}>Fade In</span>
+        <span style={{ fontSize: '12px', color: 'var(--text3)' }}>Fade In</span>
         <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
           <input
             type="number" min={0} max={30} step={0.1}
@@ -759,16 +845,16 @@ function AudioTrackBasicTab({ trackId }: { trackId: string }): JSX.Element {
               setAudioFade(trackId, Math.round(sec * 1000), track.fadeOutMs ?? 0)
             }}
             style={{
-              width: '48px', padding: '2px 4px', fontSize: '10px', borderRadius: '3px',
+              width: '52px', padding: '2px 4px', fontSize: '12px', borderRadius: '3px',
               background: 'var(--bg2)', color: 'var(--text1)', border: '0.5px solid var(--border)',
               fontFamily: 'monospace', textAlign: 'right'
             }}
           />
-          <span style={{ fontSize: '9px', color: 'var(--text3)' }}>s</span>
+          <span style={{ fontSize: '11px', color: 'var(--text3)' }}>s</span>
         </div>
       </div>
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '0 12px' }}>
-        <span style={{ fontSize: '10px', color: 'var(--text3)' }}>Fade Out</span>
+        <span style={{ fontSize: '12px', color: 'var(--text3)' }}>Fade Out</span>
         <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
           <input
             type="number" min={0} max={30} step={0.1}
@@ -778,12 +864,12 @@ function AudioTrackBasicTab({ trackId }: { trackId: string }): JSX.Element {
               setAudioFade(trackId, track.fadeInMs ?? 0, Math.round(sec * 1000))
             }}
             style={{
-              width: '48px', padding: '2px 4px', fontSize: '10px', borderRadius: '3px',
+              width: '52px', padding: '2px 4px', fontSize: '12px', borderRadius: '3px',
               background: 'var(--bg2)', color: 'var(--text1)', border: '0.5px solid var(--border)',
               fontFamily: 'monospace', textAlign: 'right'
             }}
           />
-          <span style={{ fontSize: '9px', color: 'var(--text3)' }}>s</span>
+          <span style={{ fontSize: '11px', color: 'var(--text3)' }}>s</span>
         </div>
       </div>
     </div>
@@ -799,25 +885,7 @@ interface InspectorProps {
 }
 
 export function Inspector({ rightTab }: InspectorProps): JSX.Element {
-  const focusedId = useTimeline((s) => s.focusedId)
-  const clips = useTimeline((s) => s.clips)
-  const textClips = useTimeline((s) => s.textClips)
-  const audioTracks = useTimeline((s) => s.audioTracks)
-
-  const selectedClipId = useMemo(() => {
-    if (!focusedId) return null
-    return clips.some((c) => c.id === focusedId) ? focusedId : null
-  }, [focusedId, clips])
-
-  const selectedTextClipId = useMemo(() => {
-    if (!focusedId) return null
-    return textClips.some((tc) => tc.id === focusedId) ? focusedId : null
-  }, [focusedId, textClips])
-
-  const selectedAudioTrackId = useMemo(() => {
-    if (!focusedId) return null
-    return audioTracks.some((a) => a.id === focusedId) ? focusedId : null
-  }, [focusedId, audioTracks])
+  const { selectedClipId, selectedTextClipId, selectedAudioTrackId } = useSelectedEntity()
 
   const hasCaption = Boolean(selectedTextClipId)
   const hasClip = Boolean(selectedClipId)

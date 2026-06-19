@@ -6,16 +6,16 @@ const config: Config = {
     extend: {
       colors: {
         editor: {
-          bg: '#0d0d10',
-          panel: '#111114',
+          bg: '#0a0908',
+          panel: '#1a1816',
           border: '#2a2a30',
-          surface: '#1a1a20',
-          hover: '#222230'
+          surface: '#2a2724',
+          hover: '#3a3732'
         },
         accent: {
-          DEFAULT: '#534AB7',
-          hover: '#6558d4',
-          muted: '#3d3580'
+          DEFAULT: '#4f7fff',
+          hover: '#6b8fff',
+          muted: '#3b5fbf'
         },
         success: {
           DEFAULT: '#1D9E75',

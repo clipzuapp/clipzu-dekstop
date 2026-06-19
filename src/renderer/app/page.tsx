@@ -17,35 +17,43 @@ import { TextPanel } from '../components/TextPanel/index'
 import { CaptionEditor } from '../components/CaptionEditor/index'
 import { AudioPanel } from '../components/AudioPanel/index'
 import { ComingSoonPanel } from '../components/ComingSoonPanel/index'
+import { Undo2, Redo2, Scissors, Hand, ZoomIn, MousePointer2 } from 'lucide-react'
 import { useExport } from '../store/useExport'
 import { useProject, type ProjectState, type ProjectActions } from '../store/useProject'
 import { useStartup } from '../store/useStartup'
 import { useTimeline, createTextClip } from '../store/useTimeline'
 import { useCaption, defaultStyle } from '../store/useCaption'
 import { useToast } from '../store/useToast'
+import { usePreviewView } from '../store/usePreviewView'
 
 // ---------------------------------------------------------------------------
-// Layout defaults
+// Layout defaults — percentage-based for responsive density
 // ---------------------------------------------------------------------------
 
-const DEFAULT_MEDIA_PANEL_W = 280
-const DEFAULT_INSPECTOR_W = 300
-const DEFAULT_TIMELINE_H = 200
+function getDefaultMediaPanelW(): number {
+  return Math.round(window.innerWidth * 0.18)
+}
+function getDefaultInspectorW(): number {
+  return Math.round(window.innerWidth * 0.20)
+}
+function getDefaultTimelineH(): number {
+  return Math.round(window.innerHeight * 0.25)
+}
 
-const MEDIA_PANEL_MIN = 180
-const MEDIA_PANEL_MAX = 420
-const INSPECTOR_MIN = 220
-const INSPECTOR_MAX = 480
-const TIMELINE_MIN = 120
-const TIMELINE_MAX = 400
+const MEDIA_PANEL_MIN = 160
+const MEDIA_PANEL_MAX_PCT = 0.30
+const INSPECTOR_MIN = 200
+const INSPECTOR_MAX_PCT = 0.32
+const TIMELINE_MIN = 100
+const TIMELINE_MAX_PCT = 0.45
 
 type ActiveTool = 'select' | 'blade' | 'hand' | 'zoom'
 
-const TOOLS: Array<{ id: ActiveTool; label: string; hotkey: string; title: string }> = [
-  { id: 'select', label: 'V', hotkey: 'V', title: 'Select (V)' },
-  { id: 'blade', label: 'B', hotkey: 'B', title: 'Blade / Split (B)' },
-  { id: 'hand', label: 'H', hotkey: 'H', title: 'Hand / Pan (H)' },
-  { id: 'zoom', label: 'Z', hotkey: 'Z', title: 'Zoom (Z)' }
+const TOOLS: Array<{ id: ActiveTool; label: string; icon: JSX.Element; hotkey: string; title: string }> = [
+  { id: 'select', label: 'V', icon: <MousePointer2 size={14} />, hotkey: 'V', title: 'Select (V)' },
+  { id: 'blade', label: 'B', icon: <Scissors size={14} />, hotkey: 'B', title: 'Blade / Split (B)' },
+  { id: 'hand', label: 'H', icon: <Hand size={14} />, hotkey: 'H', title: 'Hand / Pan (H)' },
+  { id: 'zoom', label: 'Z', icon: <ZoomIn size={14} />, hotkey: 'Z', title: 'Zoom (Z)' }
 ]
 
 export default function Page(): JSX.Element {
@@ -54,11 +62,13 @@ export default function Page(): JSX.Element {
   const [activeTool, setActiveTool] = useState<ActiveTool>('select')
   const [activeLeftTab, setActiveLeftTab] = useState<LeftTabId>('media')
   const [activeRightTab, setActiveRightTab] = useState<RightTabId>('basic')
+  const isFullscreen = usePreviewView((s) => s.isFullscreen)
+  const toggleFullscreen = usePreviewView((s) => s.toggleFullscreen)
 
-  // Panel sizes (local state, not project state)
-  const [mediaPanelW, setMediaPanelW] = useState(DEFAULT_MEDIA_PANEL_W)
-  const [inspectorW, setInspectorW] = useState(DEFAULT_INSPECTOR_W)
-  const [timelineH, setTimelineH] = useState(DEFAULT_TIMELINE_H)
+  // Panel sizes (local state, computed from window dimensions)
+  const [mediaPanelW, setMediaPanelW] = useState(getDefaultMediaPanelW)
+  const [inspectorW, setInspectorW] = useState(getDefaultInspectorW)
+  const [timelineH, setTimelineH] = useState(getDefaultTimelineH)
 
   // Resize handler factory
   const makeResizeHandler = (
@@ -196,6 +206,7 @@ export default function Page(): JSX.Element {
         onUndo={undo}
         onRedo={redo}
         onAddText={handleAddText}
+        activeLeftTab={activeLeftTab}
       />
 
       <div
@@ -204,8 +215,9 @@ export default function Page(): JSX.Element {
           flexDirection: 'column',
           height: '100vh',
           width: '100vw',
-          background: 'var(--bg0)',
-          overflow: 'hidden'
+          background: 'radial-gradient(ellipse at 50% 30%, #141210 0%, var(--bg0) 70%)',
+          overflow: 'hidden',
+          position: 'relative'
         }}
       >
         {/* TOOLBAR — 38px fixed */}
@@ -224,7 +236,7 @@ export default function Page(): JSX.Element {
           <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
             <h1
               style={{
-                fontSize: '13px',
+                fontSize: '15px',
                 fontWeight: 500,
                 color: 'var(--text1)',
                 margin: 0
@@ -247,7 +259,7 @@ export default function Page(): JSX.Element {
                   alignItems: 'center',
                   justifyContent: 'center',
                   borderRadius: '4px',
-                  fontSize: '11px',
+                  fontSize: '13px',
                   fontFamily: 'var(--font-mono)',
                   color: activeTool === tool.id ? 'var(--accent)' : 'var(--text2)',
                   background: activeTool === tool.id ? 'rgba(79, 127, 255, 0.15)' : 'transparent',
@@ -261,12 +273,13 @@ export default function Page(): JSX.Element {
                 onClick={() => setActiveTool(tool.id)}
               >
                 {tool.label}
+                {tool.icon}
               </button>
             ))}
 
             <div className="separator" />
 
-            <span style={{ fontSize: '10px', color: 'var(--text3)' }}>
+            <span style={{ fontSize: '12px', color: 'var(--text3)' }}>
               {activeTool === 'select' && 'Select & Move'}
               {activeTool === 'blade' && 'Click to split'}
               {activeTool === 'hand' && 'Click & drag to pan'}
@@ -276,10 +289,10 @@ export default function Page(): JSX.Element {
 
           <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
             <button className="toolbar-btn" onClick={undo} title="Undo (Ctrl+Z)">
-              ↩
+              <Undo2 size={14} />
             </button>
             <button className="toolbar-btn" onClick={redo} title="Redo (Ctrl+Shift+Z)">
-              ↪
+              <Redo2 size={14} />
             </button>
 
             <div className="separator" />
@@ -293,7 +306,7 @@ export default function Page(): JSX.Element {
                 border: '0.5px solid var(--border2)',
                 borderRadius: '5px',
                 color: 'var(--text2)',
-                fontSize: '11px',
+                fontSize: '13px',
                 cursor: 'pointer',
                 marginRight: '2px'
               }}
@@ -310,7 +323,7 @@ export default function Page(): JSX.Element {
                 border: '0.5px solid var(--border2)',
                 borderRadius: '5px',
                 color: 'var(--text2)',
-                fontSize: '11px',
+                fontSize: '13px',
                 cursor: 'pointer',
                 fontWeight: 700,
                 marginRight: '2px'
@@ -399,7 +412,7 @@ export default function Page(): JSX.Element {
             onMouseEnter={(e) => (e.currentTarget.style.background = 'var(--accent)')}
             onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
             onMouseDown={makeResizeHandler(
-              'horizontal-left', setMediaPanelW, MEDIA_PANEL_MIN, MEDIA_PANEL_MAX,
+              'horizontal-left', setMediaPanelW, MEDIA_PANEL_MIN, Math.round(window.innerWidth * MEDIA_PANEL_MAX_PCT),
               () => mediaPanelW
             )}
           />
@@ -437,7 +450,7 @@ export default function Page(): JSX.Element {
             onMouseEnter={(e) => (e.currentTarget.style.background = 'var(--accent)')}
             onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
             onMouseDown={makeResizeHandler(
-              'horizontal-right', setInspectorW, INSPECTOR_MIN, INSPECTOR_MAX,
+              'horizontal-right', setInspectorW, INSPECTOR_MIN, Math.round(window.innerWidth * INSPECTOR_MAX_PCT),
               () => inspectorW
             )}
           />
@@ -465,7 +478,7 @@ export default function Page(): JSX.Element {
           onMouseEnter={(e) => (e.currentTarget.style.background = 'var(--accent)')}
           onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
           onMouseDown={makeResizeHandler(
-            'vertical', setTimelineH, TIMELINE_MIN, TIMELINE_MAX,
+            'vertical', setTimelineH, TIMELINE_MIN, Math.round(window.innerHeight * TIMELINE_MAX_PCT),
             () => timelineH
           )}
         />
@@ -480,12 +493,40 @@ export default function Page(): JSX.Element {
         >
           <Timeline activeTool={activeTool} />
         </div>
+
+        <ExportDialog show={showExport} onClose={() => setShowExport(false)} />
       </div>
 
-      {showExport && <ExportDialog onClose={() => setShowExport(false)} />}
       {showShortcuts && <ShortcutsDialog onClose={() => setShowShortcuts(false)} />}
       <ConfirmDialog />
       <ToastContainer />
+
+      {/* Fullscreen preview overlay */}
+      {isFullscreen && (
+        <div
+          style={{
+            position: 'fixed', inset: 0, zIndex: 9999,
+            background: '#000', display: 'flex', flexDirection: 'column'
+          }}
+        >
+          <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', minHeight: 0, padding: 16 }}>
+            <Preview />
+          </div>
+          <CaptionStrip />
+          <PlaybackControls />
+          <button
+            onClick={toggleFullscreen}
+            style={{
+              position: 'absolute', top: 12, right: 12,
+              background: 'rgba(0,0,0,0.6)', border: '1px solid rgba(255,255,255,0.2)',
+              borderRadius: 4, color: '#fff', fontSize: 11, padding: '4px 8px',
+              cursor: 'pointer', zIndex: 10
+            }}
+          >
+            Exit (Esc)
+          </button>
+        </div>
+      )}
     </>
   )
 }

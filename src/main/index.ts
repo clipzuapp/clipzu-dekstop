@@ -84,9 +84,9 @@ function resolveFFprobePath(): string {
 function resolveModelPath(): string {
   const isPackaged = app.isPackaged
   if (isPackaged) {
-    return join(process.resourcesPath, 'models', 'ggml-small.bin')
+    return join(process.resourcesPath, 'models', 'ggml-base-q8_0.bin')
   }
-  return join(app.getAppPath(), 'models', 'ggml-small.bin')
+  return join(app.getAppPath(), 'models', 'ggml-base-q8_0.bin')
 }
 
 let thumbnailService: ThumbnailService | null = null

@@ -4,21 +4,22 @@
    ========================================================================== */
 
 :root {
-  /* Background ladder — 4-stop surface elevation */
-  --bg0: #0f0f0f;        /* App shell background */
-  --bg1: #161616;        /* Panels (MediaPanel, Inspector, Timeline header) */
-  --bg2: #1e1e1e;        /* Inputs, clip thumbnails, dropdowns */
-  --bg3: #252525;        /* Hover states */
-  --bg4: #2e2e2e;        /* Active/selected states */
+  /* Background ladder — 5-stop surface elevation with warm tint */
+  --bg0: #0a0908;        /* App shell — deepest, near-black */
+  --bg1: #1a1816;        /* Panels — clear step above shell */
+  --bg2: #2a2724;        /* Inputs, cards — noticeably elevated */
+  --bg3: #3a3732;        /* Hover states — distinct pop */
+  --bg4: #4a4740;        /* Active/selected — maximum elevation */
 
   /* Borders — always hairline, never solid white */
-  --border: rgba(255, 255, 255, 0.08);
-  --border2: rgba(255, 255, 255, 0.14);
+  --border: rgba(255, 255, 255, 0.10);
+  --border2: rgba(255, 255, 255, 0.16);
 
   /* Text hierarchy */
   --text1: #f0f0f0;      /* Primary text */
   --text2: #999999;      /* Secondary / labels */
-  --text3: #555555;      /* Muted / disabled */
+  --text3: #7a7a7a;      /* Muted — passes WCAG AA (4.5:1 on bg1) */
+  --text4: #555555;      /* Disabled-only — not for readable content */
 
   /* Track & clip color coding */
   --accent: #4f7fff;     /* Video clips, active tabs, focus rings */
@@ -37,6 +38,17 @@
 /* ==========================================================================
    Global scrollbar override — 4px, hidden until hover
    ========================================================================== */
+
+/* Focus visible — keyboard accessibility ring */
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: 2px;
+}
+
+button:focus:not(:focus-visible) {
+  outline: none;
+}
 
 ::-webkit-scrollbar {
   width: 4px;
@@ -68,7 +80,7 @@
 
 /* Panel section titles */
 .section-title {
-  font-size: 10px;
+  font-size: 12px;
   font-weight: 500;
   text-transform: uppercase;
   letter-spacing: 0.5px;
@@ -77,21 +89,21 @@
 
 /* Clip labels on timeline */
 .clip-label {
-  font-size: 9px;
+  font-size: 11px;
   font-weight: 400;
   color: var(--text1);
 }
 
 /* Inspector labels */
 .inspector-label {
-  font-size: 10px;
+  font-size: 12px;
   font-weight: 400;
   color: var(--text2);
 }
 
 /* Inspector values */
 .inspector-value {
-  font-size: 10px;
+  font-size: 12px;
   font-weight: 400;
   font-family: var(--font-mono);
   color: var(--text1);
@@ -99,17 +111,22 @@
 
 /* Timecodes */
 .timecode {
-  font-size: 10px;
+  font-size: 12px;
   font-family: var(--font-mono);
   color: var(--text2);
 }
 
 /* Tab labels */
 .tab-label {
-  font-size: 10px;
+  font-size: 12px;
   font-weight: 400;
   color: var(--text3);
-  transition: color 0.15s;
+  transition: all 0.2s var(--ease-spring-subtle);
+}
+
+.tab-label:hover {
+  color: var(--text2);
+  transform: translateY(-1px);
 }
 
 .tab-label.active {
@@ -118,17 +135,18 @@
 
 /* Toolbar buttons */
 .toolbar-btn {
-  font-size: 11px;
+  font-size: 13px;
   font-weight: 400;
   color: var(--text2);
   padding: 4px 8px;
   border-radius: 4px;
-  transition: all 0.15s;
+  transition: all 0.2s var(--ease-spring-subtle);
 }
 
 .toolbar-btn:hover {
   color: var(--text1);
   background: var(--bg3);
+  transform: translateY(-1px);
 }
 
 /* ==========================================================================
@@ -157,17 +175,18 @@
 }
 
 /* ==========================================================================
-   Resize handles — transparent until hover
+   Resize handles — transparent until hover, glow on activation
    ========================================================================== */
 
 .resize-handle {
   background: transparent;
   flex-shrink: 0;
-  transition: background 0.15s;
+  transition: background 0.2s var(--ease-spring-subtle), box-shadow 0.2s var(--ease-spring-subtle);
 }
 
 .resize-handle:hover {
   background: var(--accent);
+  box-shadow: 0 0 8px rgba(79, 127, 255, 0.4);
 }
 
 .resize-handle-vertical {
@@ -184,10 +203,13 @@
    Common component styles
    ========================================================================== */
 
-/* Panel base */
+/* Panel base — elevated surface with depth */
 .panel {
   background: var(--bg1);
   border: 0.5px solid var(--border);
+  box-shadow:
+    0 1px 0 rgba(255, 255, 255, 0.03) inset,
+    0 2px 8px rgba(0, 0, 0, 0.6);
 }
 
 /* Input fields */
@@ -196,10 +218,11 @@
   border: 0.5px solid var(--border);
   border-radius: 4px;
   color: var(--text1);
-  font-size: 10px;
+  font-size: 12px;
   padding: 5px 8px;
   outline: none;
-  transition: border-color 0.15s;
+  transition: border-color 0.2s var(--ease-spring-subtle), box-shadow 0.2s var(--ease-spring-subtle);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.3) inset;
 }
 
 .input-field:focus {
@@ -210,11 +233,21 @@
 .btn {
   border: none;
   border-radius: 4px;
-  font-size: 11px;
+  font-size: 13px;
   font-weight: 500;
   padding: 5px 14px;
   cursor: pointer;
-  transition: all 0.15s;
+  transition: all 0.2s var(--ease-spring-subtle);
+}
+
+.btn:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.5);
+}
+
+.btn:active {
+  transform: translateY(0);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.3);
 }
 
 .btn-primary {
@@ -230,15 +263,18 @@
   background: var(--bg3);
   color: var(--text1);
   border: 0.5px solid var(--border);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.4);
 }
 
 .btn-secondary:hover {
   background: var(--bg4);
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.55);
 }
 
 /* Slider (range input) */
 .slider {
   -webkit-appearance: none;
+  appearance: none;
   width: 100%;
   height: 3px;
   border-radius: 2px;
@@ -249,6 +285,7 @@
 
 .slider::-webkit-slider-thumb {
   -webkit-appearance: none;
+  appearance: none;
   width: 10px;
   height: 10px;
   border-radius: 50%;
@@ -277,6 +314,27 @@
 /* ==========================================================================
    Animation keyframes
    ========================================================================== */
+
+/* Spring easing curves — 2026 motion language */
+:root {
+  --ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
+  --ease-spring-subtle: cubic-bezier(0.25, 1.1, 0.5, 1);
+  --ease-decelerate: cubic-bezier(0, 0, 0.2, 1);
+  --ease-accelerate: cubic-bezier(0.4, 0, 1, 1);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --ease-spring: ease;
+    --ease-spring-subtle: ease;
+    --ease-decelerate: ease;
+    --ease-accelerate: ease;
+  }
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}
 
 @keyframes fade-in {
   from {
@@ -351,7 +409,7 @@
    ========================================================================== */
 
 .empty-state {
-  font-size: 9px;
+  font-size: 11px;
   color: var(--text3);
   text-align: center;
   padding: 20px;

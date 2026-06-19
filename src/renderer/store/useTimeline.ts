@@ -133,17 +133,25 @@ export interface Clip {
   name?: string
   transform?: ClipTransform
   speed: number
-  /** Per-clip volume (0.0–1.0). Applied to native video audio track. */
+  /** Per-clip linear volume (0.0–2.0). 1.0 = 0 dB (unity), 2.0 = +6 dB (boost). */
   volume: number
   /** Per-clip mute. When true, native video audio is silenced. */
   muted: boolean
+  /** Fade-in duration in milliseconds (0 = no fade). Rendered as edge triangle on timeline. */
+  fadeInMs?: number
+  /** Fade-out duration in milliseconds (0 = no fade). Rendered as edge triangle on timeline. */
+  fadeOutMs?: number
 }
 
 export interface AudioTrack {
   id: string
   path: string
   startMs: number
+  /** Original media file duration (before any trim). Immutable after creation. */
+  sourceDurationMs: number
+  /** Display duration after trim = sourceDurationMs - trimStart - trimEnd */
   durationMs: number
+  /** Linear volume (0.0–2.0). 1.0 = 0 dB (unity), 2.0 = +6 dB (boost). */
   volume: number
   muted: boolean
   name?: string
@@ -195,6 +203,10 @@ export interface TextClip {
   originalStartMs?: number
   /** Original endMs before any trim */
   originalEndMs?: number
+  /** Fade-in duration in milliseconds (0 = no fade). Rendered as edge triangle on timeline. */
+  fadeInMs?: number
+  /** Fade-out duration in milliseconds (0 = no fade). Rendered as edge triangle on timeline. */
+  fadeOutMs?: number
 }
 
 export function createTextClip(overrides: Partial<TextClip> & Pick<TextClip, 'text'>): TextClip {
@@ -232,7 +244,10 @@ export interface TimelineState {
   totalDurationMs: number
   zoom: number
   isPlaying: boolean
+/** Master volume range. 0 = silence, 1.0 = 0 dB (unity). No boost on master. */
   masterVolume: number
+  /** When true, playback loops between in/out points if set, otherwise timeline bounds. */
+  loopEnabled: boolean
   // Unified selection (Phase 4)
   selectedIds: string[]
   focusedId: string | null
@@ -250,8 +265,10 @@ interface TimelineActions {
   setClipSpeed: (clipId: string, speed: number) => void
   setClipVolume: (clipId: string, volume: number) => void
   setClipMute: (clipId: string, muted: boolean) => void
+  setClipFade: (clipId: string, fadeInMs: number, fadeOutMs: number) => void
 
   addAudioTrack: (track: AudioTrack) => void
+  addMediaBatch: (clips: Clip[], audioTracks: AudioTrack[]) => void
   removeAudioTrack: (trackId: string) => void
   moveAudioTrack: (trackId: string, startMs: number) => void
   trimAudioTrack: (trackId: string, trimStart: number, trimEnd: number) => void
@@ -265,6 +282,7 @@ interface TimelineActions {
   deleteTextClip: (id: string) => void
   selectTextClip: (id: string | null) => void
   splitTextClip: (id: string, splitAtMs: number) => void
+  setTextFade: (id: string, fadeInMs: number, fadeOutMs: number) => void
 
   beginDragCapture: () => void
   commitDrag: () => void
@@ -313,6 +331,7 @@ interface TimelineActions {
   rippleDeleteClip: (clipId: string) => void
   setMasterVolume: (volume: number) => void
   setPlaying: (playing: boolean) => void
+  toggleLoop: () => void
   clearTimeline: () => void
   loadTimeline: (data: { clips: Clip[]; audioTracks: AudioTrack[]; textClips?: TextClip[] }) => void
   recalcTotalDuration: () => void
@@ -357,6 +376,7 @@ const initialState: TimelineState = {
   zoom: 1,
   isPlaying: false,
   masterVolume: 0.8,
+  loopEnabled: false,
   selectedIds: [],
   focusedId: null,
   anchorId: null
@@ -588,6 +608,8 @@ export const useTimeline = create<TimelineState & TimelineActions>()(
 
     setMasterVolume: (volume) => set((state) => { state.masterVolume = Math.max(0, Math.min(1, volume)) }),
 
+    toggleLoop: () => set((state) => { state.loopEnabled = !state.loopEnabled }),
+
     rippleDeleteClip: (clipId) => {
       pushUndoSnapshot()
       set((state) => {
@@ -659,7 +681,7 @@ export const useTimeline = create<TimelineState & TimelineActions>()(
     setClipVolume: (clipId, volume) => {
       set((state) => {
         const clip = state.clips.find((c) => c.id === clipId)
-        if (clip) clip.volume = Math.max(0, Math.min(1, volume))
+        if (clip) clip.volume = Math.max(0, Math.min(2.0, volume))
       })
     },
 
@@ -669,6 +691,15 @@ export const useTimeline = create<TimelineState & TimelineActions>()(
         if (clip) clip.muted = muted
       })
     },
+
+    setClipFade: (clipId, fadeInMs, fadeOutMs) =>
+      set((state) => {
+        const clip = state.clips.find((c) => c.id === clipId)
+        if (clip) {
+          clip.fadeInMs = Math.max(0, fadeInMs)
+          clip.fadeOutMs = Math.max(0, fadeOutMs)
+        }
+      }),
 
     // -- Audio tracks (Phase 5: first-class citizens) --
 
@@ -680,6 +711,7 @@ export const useTimeline = create<TimelineState & TimelineActions>()(
         if (track.trackIndex === undefined) track.trackIndex = 0
         if (track.fadeInMs === undefined) track.fadeInMs = 0
         if (track.fadeOutMs === undefined) track.fadeOutMs = 0
+        if (!track.sourceDurationMs) track.sourceDurationMs = track.durationMs
         state.audioTracks.push(track)
         // Auto-create audio Track entry
         const idx = track.trackIndex
@@ -689,6 +721,46 @@ export const useTimeline = create<TimelineState & TimelineActions>()(
             kind: 'audio', muted: false, locked: false, hidden: false, solo: false
           })
         }
+      })
+    },
+
+    addMediaBatch: (clips, audioTracks) => {
+      if (clips.length === 0 && audioTracks.length === 0) return
+      pushUndoSnapshot()
+      set((state) => {
+        for (const clip of clips) {
+          if (!clip.sourceDurationMs) clip.sourceDurationMs = clip.durationMs
+          if (!clip.transform) clip.transform = { ...DEFAULT_TRANSFORM }
+          if (!clip.speed) clip.speed = 1.0
+          if (clip.volume === undefined) clip.volume = 1.0
+          if (clip.muted === undefined) clip.muted = false
+          state.clips.push(clip)
+          const exists = state.tracks.some((t) => t.kind === 'video' && t.index === clip.trackIndex)
+          if (!exists) {
+            state.tracks.push({
+              id: `track_v${clip.trackIndex}`, index: clip.trackIndex,
+              name: `Video ${clip.trackIndex + 1}`, kind: 'video',
+              muted: false, locked: false, hidden: false, solo: false
+            })
+          }
+        }
+        for (const track of audioTracks) {
+          if (track.trimStart === undefined) track.trimStart = 0
+          if (track.trimEnd === undefined) track.trimEnd = 0
+          if (track.trackIndex === undefined) track.trackIndex = 0
+          if (track.fadeInMs === undefined) track.fadeInMs = 0
+          if (track.fadeOutMs === undefined) track.fadeOutMs = 0
+          if (!track.sourceDurationMs) track.sourceDurationMs = track.durationMs
+          state.audioTracks.push(track)
+          const idx = track.trackIndex
+          if (!state.tracks.some((t) => t.kind === 'audio' && t.index === idx)) {
+            state.tracks.push({
+              id: `track_audio_${idx}`, index: idx, name: track.name ?? `Audio ${idx + 1}`,
+              kind: 'audio', muted: false, locked: false, hidden: false, solo: false
+            })
+          }
+        }
+        state.totalDurationMs = recalcDuration(state.clips)
       })
     },
 
@@ -720,7 +792,7 @@ export const useTimeline = create<TimelineState & TimelineActions>()(
     setAudioVolume: (trackId, volume) =>
       set((state) => {
         const track = state.audioTracks.find((t) => t.id === trackId)
-        if (track) track.volume = Math.max(0, Math.min(1, volume))
+        if (track) track.volume = Math.max(0, Math.min(2.0, volume))
       }),
 
     toggleAudioMute: (trackId) =>
@@ -831,6 +903,15 @@ export const useTimeline = create<TimelineState & TimelineActions>()(
         state.anchorId = id
       })
     },
+
+    setTextFade: (id, fadeInMs, fadeOutMs) =>
+      set((state) => {
+        const tc = state.textClips.find((t) => t.id === id)
+        if (tc) {
+          tc.fadeInMs = Math.max(0, fadeInMs)
+          tc.fadeOutMs = Math.max(0, fadeOutMs)
+        }
+      }),
 
     splitTextClip: (id, splitAtMs) => {
       pushUndoSnapshot()
@@ -1097,14 +1178,21 @@ export const useTimeline = create<TimelineState & TimelineActions>()(
         ...c,
         volume: c.volume ?? 1,
         muted: c.muted ?? false,
-        speed: c.speed ?? 1
+        speed: c.speed ?? 1,
+        fadeInMs: c.fadeInMs ?? 0,
+        fadeOutMs: c.fadeOutMs ?? 0
       }))
       state.audioTracks = (data.audioTracks || []).map((t) => ({
         ...t,
         fadeInMs: t.fadeInMs ?? 0,
-        fadeOutMs: t.fadeOutMs ?? 0
+        fadeOutMs: t.fadeOutMs ?? 0,
+        sourceDurationMs: t.sourceDurationMs ?? t.durationMs
       }))
-      state.textClips = data.textClips || []
+      state.textClips = (data.textClips || []).map((tc) => ({
+        ...tc,
+        fadeInMs: tc.fadeInMs ?? 0,
+        fadeOutMs: tc.fadeOutMs ?? 0
+      }))
       state.totalDurationMs = recalcDuration(state.clips)
     }),
 

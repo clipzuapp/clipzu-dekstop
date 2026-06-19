@@ -1,13 +1,17 @@
-import { useRef, useEffect, useCallback, useMemo } from 'react'
+import { useRef, useEffect, useCallback, useState } from 'react'
 import { useTimeline } from '../../store/useTimeline'
 import { useCaption } from '../../store/useCaption'
 import { useProject } from '../../store/useProject'
+import { useSelectedEntity } from '../../store/useSelectedEntity'
+import { usePreviewView } from '../../store/usePreviewView'
 import { formatTime } from '../../utils/format'
 import { getAnimationProgress } from '../StylePanel/AnimationPresets'
 import { resolveActiveWord, buildRevealText, createActivationCache, type ActivationCache } from '../../utils/wordActivation'
 import { TransformOverlay } from './TransformOverlay'
+import { GuideOverlay } from './GuideOverlay'
 import * as AudioEngine from '../../services/AudioEngine'
-import { type AudioTrack, computeEffectiveMuted } from '../../store/useTimeline'
+import { type AudioTrack, computeEffectiveMuted, getInPoint, getOutPoint } from '../../store/useTimeline'
+import { ContextMenu, type ContextMenuItem } from '../ContextMenu/index'
 
 /**
  * Preview component — dynamic canvas sized from project resolution.
@@ -34,22 +38,13 @@ export function Preview(): JSX.Element {
   const setPlayhead = useTimeline((s) => s.setPlayhead)
   const setPlaying = useTimeline((s) => s.setPlaying)
   const totalDurationMs = useTimeline((s) => s.totalDurationMs)
-  const focusedId = useTimeline((s) => s.focusedId)
+  const loopEnabled = useTimeline((s) => s.loopEnabled)
   const textClips = useTimeline((s) => s.textClips)
   const audioTracks = useTimeline((s) => s.audioTracks)
   /** Timeline track lanes (for mute/solo state) */
   const trackLanes = useTimeline((s) => s.tracks)
 
-  // Derive selected clip/text IDs from unified focusedId + entity type
-  const selectedClipId = useMemo(() => {
-    if (!focusedId) return null
-    return clips.some((c) => c.id === focusedId) ? focusedId : null
-  }, [focusedId, clips])
-
-  const selectedTextClipId = useMemo(() => {
-    if (!focusedId) return null
-    return textClips.some((tc) => tc.id === focusedId) ? focusedId : null
-  }, [focusedId, textClips])
+  const { selectedClipId, selectedTextClipId } = useSelectedEntity()
   const setClipTransform = useTimeline((s) => s.setClipTransform)
   const beginDragCapture = useTimeline((s) => s.beginDragCapture)
   const commitDrag = useTimeline((s) => s.commitDrag)
@@ -60,11 +55,45 @@ export function Preview(): JSX.Element {
   const projectResolution = useProject((s) => s.resolution)
   const masterVolume = useTimeline((s) => s.masterVolume)
 
+  // ---- Preview view state (SSOT: usePreviewView) ----
+  const zoomMode = usePreviewView((s) => s.zoomMode)
+  const panX = usePreviewView((s) => s.panX)
+  const panY = usePreviewView((s) => s.panY)
+  const quality = usePreviewView((s) => s.quality)
+  const playbackSpeed = usePreviewView((s) => s.playbackSpeed)
+  const isFullscreen = usePreviewView((s) => s.isFullscreen)
+  const adjustPan = usePreviewView((s) => s.adjustPan)
+  const setPan = usePreviewView((s) => s.setPan)
+  const toggleFullscreen = usePreviewView((s) => s.toggleFullscreen)
+  const resetZoom = usePreviewView((s) => s.resetZoom)
+  const resetPan = usePreviewView((s) => s.resetPan)
+  const setGrid = usePreviewView((s) => s.setGrid)
+  const setPlaybackSpeed = usePreviewView((s) => s.setPlaybackSpeed)
+  const guides = usePreviewView((s) => s.guides)
+  const toggleGuide = usePreviewView((s) => s.toggleGuide)
+  const cycleGrid = usePreviewView((s) => s.cycleGrid)
+  const setZoomMode = usePreviewView((s) => s.setZoomMode)
+  const setQuality = usePreviewView((s) => s.setQuality)
+
+  // Container ref for ResizeObserver (computes fit/fill scale)
+  const outerContainerRef = useRef<HTMLDivElement>(null)
+  const [containerSize, setContainerSize] = useState({ w: 0, h: 0 })
+  // Space-key pan tracking
+  const spaceDownRef = useRef(false)
+  const panDragRef = useRef<{ startX: number; startY: number; startPanX: number; startPanY: number } | null>(null)
+
+  // Context menu state for preview canvas
+  const [previewCtxMenu, setPreviewCtxMenu] = useState<{ x: number; y: number } | null>(null)
+
   // Keep refs in sync with latest state for use inside event callbacks
   const isPlayingRef = useRef(isPlaying)
   isPlayingRef.current = isPlaying
   const playheadMsRef = useRef(playheadMs)
   playheadMsRef.current = playheadMs
+  const totalDurationMsRef = useRef(totalDurationMs)
+  totalDurationMsRef.current = totalDurationMs
+  const loopEnabledRef = useRef(loopEnabled)
+  loopEnabledRef.current = loopEnabled
   const clipsRef = useRef(clips)
   clipsRef.current = clips
   const textClipsRef = useRef(textClips)
@@ -73,6 +102,38 @@ export function Preview(): JSX.Element {
   audioTracksRef.current = audioTracks
   const trackLanesRef = useRef(trackLanes)
   trackLanesRef.current = trackLanes
+
+  // ---- ResizeObserver: track outer container size for fit/fill computation ----
+  useEffect(() => {
+    const el = outerContainerRef.current
+    if (!el) return
+    const ro = new ResizeObserver((entries) => {
+      const entry = entries[0]
+      if (entry) {
+        const { width, height } = entry.contentRect
+        setContainerSize({ w: width, h: height })
+      }
+    })
+    ro.observe(el)
+    return () => ro.disconnect()
+  }, [])
+
+  // ---- Effective scale from zoomMode + container size ----
+  const pw = projectResolution.width
+  const ph = projectResolution.height
+  const effectiveScale = (() => {
+    const cw = containerSize.w
+    const ch = containerSize.h
+    if (cw === 0 || ch === 0) return 1
+    if (zoomMode === 'fit') return Math.min(cw / pw, ch / ph)
+    if (zoomMode === 'fill') return Math.max(cw / pw, ch / ph)
+    return zoomMode / 100
+  })()
+
+  // Quality divisor for canvas resolution
+  const qualityDiv = quality === 'full' ? 1 : quality === 'half' ? 2 : 4
+  const canvasW = Math.round(pw / qualityDiv)
+  const canvasH = Math.round(ph / qualityDiv)
 
   // ---- helpers ----
 
@@ -323,6 +384,16 @@ export function Preview(): JSX.Element {
       }
 
       if (totalDurationMs > 0 && timelineMs >= totalDurationMs) {
+        if (loopEnabledRef.current) {
+          const inPoint = getInPoint()
+          const outPoint = getOutPoint()
+          if (inPoint !== null && outPoint !== null && inPoint < outPoint) {
+            setPlayhead(inPoint)
+            return
+          }
+          setPlayhead(0)
+          return
+        }
         setPlayhead(totalDurationMs)
         setPlaying(false)
         return
@@ -343,6 +414,16 @@ export function Preview(): JSX.Element {
         setPlayhead(nextClip.startMs)
         // Effect 1 will load the next clip; onLoaded in effect 1 auto-plays (isPlayingRef is true)
       } else {
+        if (loopEnabledRef.current) {
+          const inPoint = getInPoint()
+          const outPoint = getOutPoint()
+          if (inPoint !== null && outPoint !== null && inPoint < outPoint) {
+            setPlayhead(inPoint)
+            return
+          }
+          setPlayhead(0)
+          return
+        }
         setPlayhead(clipEnd)
         setPlaying(false)
       }
@@ -579,27 +660,32 @@ export function Preview(): JSX.Element {
   // Cursor ref for dynamic cursor updates (avoids React re-renders on mousemove)
   const gizmoCursorRef = useRef<string>('default')
   
-  /** Hit-test a mouse position against transform handles. Returns handle name or null. */
-  const hitTestHandle = useCallback((cx: number, cy: number, t: { x: number; y: number; scaleX: number; scaleY: number; rotation: number }, canvasW: number, canvasH: number): string | null => {
+  /** Hit-test a mouse position against transform handles. Returns handle name or null.
+   * HANDLE_RADIUS scales with display density for consistent click target size. */
+  const hitTestHandle = useCallback((cx: number, cy: number, t: { x: number; y: number; scaleX: number; scaleY: number; rotation: number }, canvasW: number, canvasH: number, displayW: number, displayH: number): string | null => {
     const centerX = canvasW / 2 + t.x
     const centerY = canvasH / 2 + t.y
     const hw = (canvasW * t.scaleX) / 2
     const hh = (canvasH * t.scaleY) / 2
     const rad = (t.rotation * Math.PI) / 180
     const cos = Math.cos(-rad), sin = Math.sin(-rad)
-  
+
     // Transform mouse to local space (so handles are axis-aligned)
     const dx = cx - centerX, dy = cy - centerY
     const lx = dx * cos - dy * sin
     const ly = dx * sin + dy * cos
-  
-    const HANDLE_RADIUS = 8 // px in canvas coords
-  
+
+    // Dynamic handle radius: target ~8 CSS px regardless of canvas resolution
+    const ratioX = displayW > 0 ? canvasW / displayW : 1
+    const ratioY = displayH > 0 ? canvasH / displayH : 1
+    const ratio = (ratioX + ratioY) / 2
+    const HANDLE_RADIUS = 8 * ratio
+
     // Check handles in priority order: rotation, corners, edges, body
     // Rotation handle (above center-top)
-    const rotDist = Math.sqrt(lx * lx + (ly + hh + 20) * (ly + hh + 20))
-    if (rotDist < HANDLE_RADIUS + 4) return 'rotate'
-  
+    const rotDist = Math.sqrt(lx * lx + (ly + hh + 20 * ratio) * (ly + hh + 20 * ratio))
+    if (rotDist < HANDLE_RADIUS + 4 * ratio) return 'rotate'
+
     // Corners
     const corners: Array<[string, number, number]> = [
       ['nw', -hw, -hh], ['ne', hw, -hh], ['sw', -hw, hh], ['se', hw, hh]
@@ -607,16 +693,16 @@ export function Preview(): JSX.Element {
     for (const [name, hx, hy] of corners) {
       if (Math.sqrt((lx - hx) ** 2 + (ly - hy) ** 2) < HANDLE_RADIUS) return name
     }
-  
+
     // Edges
     if (Math.abs(ly + hh) < HANDLE_RADIUS && Math.abs(lx) < hw - HANDLE_RADIUS) return 'n'
     if (Math.abs(ly - hh) < HANDLE_RADIUS && Math.abs(lx) < hw - HANDLE_RADIUS) return 's'
     if (Math.abs(lx + hw) < HANDLE_RADIUS && Math.abs(ly) < hh - HANDLE_RADIUS) return 'w'
     if (Math.abs(lx - hw) < HANDLE_RADIUS && Math.abs(ly) < hh - HANDLE_RADIUS) return 'e'
-  
+
     // Inside bounding box
     if (lx >= -hw && lx <= hw && ly >= -hh && ly <= hh) return 'move'
-  
+
     return null
   }, [])
   
@@ -646,7 +732,7 @@ export function Preview(): JSX.Element {
     const cx = (e.clientX - rect.left) * scaleX
     const cy = (e.clientY - rect.top) * scaleY
   
-    const handle = hitTestHandle(cx, cy, t, canvas.width, canvas.height)
+    const handle = hitTestHandle(cx, cy, t, canvas.width, canvas.height, rect.width, rect.height)
     if (!handle) return
   
     transformDragRef.current = {
@@ -671,7 +757,7 @@ export function Preview(): JSX.Element {
     const cx = (e.clientX - rect.left) * scaleX
     const cy = (e.clientY - rect.top) * scaleY
   
-    const handle = hitTestHandle(cx, cy, clip.transform, canvas.width, canvas.height)
+    const handle = hitTestHandle(cx, cy, clip.transform, canvas.width, canvas.height, rect.width, rect.height)
     const newCursor = cursorForHandle(handle)
     if (gizmoCursorRef.current !== newCursor) {
       gizmoCursorRef.current = newCursor
@@ -785,12 +871,143 @@ export function Preview(): JSX.Element {
     }
   }, [])
 
-  const togglePlay = (): void => {
-    setPlaying(!isPlaying)
-  }
+  // ---- Context menu handler for preview canvas ----
+  const handlePreviewContextMenu = useCallback((e: React.MouseEvent) => {
+    e.preventDefault()
+    setPreviewCtxMenu({ x: e.clientX, y: e.clientY })
+  }, [])
 
-  const pw = projectResolution.width
-  const ph = projectResolution.height
+  /** Build context menu items for the preview canvas */
+  const buildPreviewCtxMenuItems = useCallback((): ContextMenuItem[] => {
+    const items: ContextMenuItem[] = [
+      // Zoom presets
+      { label: 'Fit to Window', shortcut: 'Ctrl+0', onClick: resetZoom },
+      { label: 'Fill', onClick: () => setZoomMode('fill') },
+      { label: '100%', onClick: () => setZoomMode(100) },
+      { label: '50%', onClick: () => setZoomMode(50) },
+      { label: '200%', onClick: () => setZoomMode(200) },
+      { divider: true },
+      // Pan
+      { label: 'Reset Pan', onClick: resetPan },
+      { divider: true },
+      // Guides
+      { label: guides.titleSafe ? '✓ Title Safe' : 'Title Safe', onClick: () => toggleGuide('titleSafe') },
+      { label: guides.actionSafe ? '✓ Action Safe' : 'Action Safe', onClick: () => toggleGuide('actionSafe') },
+      { label: `Grid: ${guides.grid === 'none' ? 'Off' : guides.grid === 'thirds' ? 'Thirds' : 'Center'}`, onClick: cycleGrid },
+      { divider: true },
+      // Quality
+      { label: quality === 'full' ? '✓ Quality: Full' : 'Quality: Full', onClick: () => setQuality('full') },
+      { label: quality === 'half' ? '✓ Quality: Half' : 'Quality: Half', onClick: () => setQuality('half') },
+      { label: quality === 'quarter' ? '✓ Quality: Quarter' : 'Quality: Quarter', onClick: () => setQuality('quarter') },
+      { divider: true },
+      // Playback speed
+      { label: playbackSpeed === 1 ? '✓ Speed: 1x' : 'Speed: 1x', onClick: () => setPlaybackSpeed(1) },
+      { label: playbackSpeed === 0.5 ? '✓ Speed: 0.5x' : 'Speed: 0.5x', onClick: () => setPlaybackSpeed(0.5) },
+      { label: playbackSpeed === 2 ? '✓ Speed: 2x' : 'Speed: 2x', onClick: () => setPlaybackSpeed(2) },
+    ]
+    // Reset transform — only if a clip with transform is selected
+    if (selectedClipId) {
+      const selClip = clips.find((c) => c.id === selectedClipId)
+      if (selClip?.transform) {
+        items.push(
+          { divider: true },
+          { label: 'Reset Transform', onClick: () => setClipTransform(selectedClipId, { x: 0, y: 0, scaleX: 1, scaleY: 1, rotation: 0 }) }
+        )
+      }
+    }
+    return items
+  }, [resetZoom, resetPan, setZoomMode, setGrid, setQuality, setPlaybackSpeed,
+      guides, toggleGuide, cycleGrid, quality, playbackSpeed,
+      selectedClipId, clips, setClipTransform])
+
+  // ---- Wheel handler: Ctrl+wheel = zoom, plain wheel = pan V, Shift+wheel = pan H ----
+  const handleWheel = useCallback((e: React.WheelEvent) => {
+    e.preventDefault()
+    if (e.ctrlKey || e.metaKey) {
+      // Zoom in/out through presets
+      const delta = e.deltaY < 0 ? 1 : -1
+      const view = usePreviewView.getState()
+      const current = typeof view.zoomMode === 'number' ? view.zoomMode : 100
+      const presets = [25, 50, 100, 200, 400]
+      const idx = presets.indexOf(current)
+      if (idx >= 0) {
+        const next = Math.max(0, Math.min(presets.length - 1, idx + delta))
+        view.setZoomMode(presets[next])
+      } else {
+        // Between presets — snap to nearest
+        const nearest = presets.reduce((a, b) => Math.abs(b - current) < Math.abs(a - current) ? b : a)
+        const nIdx = presets.indexOf(nearest)
+        const next = Math.max(0, Math.min(presets.length - 1, nIdx + delta))
+        view.setZoomMode(presets[next])
+      }
+    } else if (e.shiftKey) {
+      // Horizontal pan
+      adjustPan(-e.deltaY * 0.5, 0)
+    } else {
+      // Vertical pan
+      adjustPan(0, -e.deltaY * 0.5)
+    }
+  }, [adjustPan])
+
+  // ---- Middle-click / Space+drag pan ----
+  const handleOuterMouseDown = useCallback((e: React.MouseEvent) => {
+    // Middle-click (button 1) or Space+left-click
+    if (e.button === 1 || (e.button === 0 && spaceDownRef.current)) {
+      e.preventDefault()
+      panDragRef.current = { startX: e.clientX, startY: e.clientY, startPanX: panX, startPanY: panY }
+      const onMove = (ev: MouseEvent): void => {
+        if (!panDragRef.current) return
+        const dx = ev.clientX - panDragRef.current.startX
+        const dy = ev.clientY - panDragRef.current.startY
+        setPan(panDragRef.current.startPanX + dx, panDragRef.current.startPanY + dy)
+      }
+      const onUp = (): void => {
+        panDragRef.current = null
+        window.removeEventListener('mousemove', onMove)
+        window.removeEventListener('mouseup', onUp)
+      }
+      window.addEventListener('mousemove', onMove)
+      window.addEventListener('mouseup', onUp)
+    }
+  }, [panX, panY, setPan])
+
+  // ---- Space key tracking for pan mode ----
+  useEffect(() => {
+    const onDown = (e: KeyboardEvent): void => {
+      if (e.code === 'Space' && !e.repeat) {
+        const target = e.target as HTMLElement
+        if (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA') return
+        spaceDownRef.current = true
+      }
+    }
+    const onUp = (e: KeyboardEvent): void => {
+      if (e.code === 'Space') spaceDownRef.current = false
+    }
+    window.addEventListener('keydown', onDown)
+    window.addEventListener('keyup', onUp)
+    return () => { window.removeEventListener('keydown', onDown); window.removeEventListener('keyup', onUp) }
+  }, [])
+
+  // ---- Apply playback speed to video elements ----
+  useEffect(() => {
+    const video = videoRef.current
+    if (video) video.playbackRate = playbackSpeed
+    // Apply to overlay videos
+    const assigned = overlayAssignedRef.current
+    for (const [, vid] of assigned) {
+      vid.playbackRate = playbackSpeed
+    }
+  }, [playbackSpeed])
+
+  // ---- Escape exits fullscreen ----
+  useEffect(() => {
+    if (!isFullscreen) return
+    const onKey = (e: KeyboardEvent): void => {
+      if (e.key === 'Escape') toggleFullscreen()
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [isFullscreen, toggleFullscreen])
 
   // ---- Compute video CSS transform from selected clip's transform (SSOT) ----
   const selectedClip = selectedClipId ? clips.find((c) => c.id === selectedClipId) ?? null : null
@@ -803,96 +1020,115 @@ export function Preview(): JSX.Element {
     videoTransform = `translate(${tx}%, ${ty}%) scale(${t.scaleX}, ${t.scaleY}) rotate(${t.rotation}deg)`
   }
 
+  // Viewport dimensions (CSS pixels, before transform scale)
+  const viewportW = pw * effectiveScale
+  const viewportH = ph * effectiveScale
+
   return (
     <div
-      className="bg-black rounded-lg overflow-hidden relative"
+      ref={outerContainerRef}
+      onWheel={handleWheel}
+      onMouseDown={handleOuterMouseDown}
       style={{
-        aspectRatio: `${pw} / ${ph}`,
-        maxWidth: '100%',
-        maxHeight: '100%',
-        width: pw > ph ? '100%' : 'auto',
-        height: ph > pw ? '100%' : 'auto'
+        width: '100%', height: '100%',
+        display: 'flex', alignItems: 'center', justifyContent: 'center',
+        overflow: 'hidden', position: 'relative',
+        cursor: spaceDownRef.current ? 'grab' : 'default'
       }}
     >
-      {/* Video element for base layer (lowest track) */}
-      <video
-        ref={videoRef}
-        className="absolute inset-0 w-full h-full object-contain"
-        playsInline
-        style={{ zIndex: 0, ...(videoTransform ? {
-          transform: videoTransform,
-          transformOrigin: 'center'
-        } : {}) }}
-      />
-
-      {/* Overlay video pool for multi-layer compositing (higher tracks) */}
-      <div ref={overlayContainerRef} className="absolute inset-0" style={{ zIndex: 5, pointerEvents: 'none' }} />
-
-      {/* Canvas overlay for captions + transform box */}
-      <canvas
-        ref={canvasRef}
-        width={pw}
-        height={ph}
-        className="absolute inset-0 w-full h-full"
-        style={{ pointerEvents: selectedClipId ? 'auto' : 'none', cursor: selectedClipId ? 'move' : 'default' }}
-        onMouseDown={handleTransformMouseDown}
-        onMouseMove={handleTransformMouseMove}
-        onMouseLeave={() => {
-          if (canvasRef.current) {
-            gizmoCursorRef.current = selectedClipId ? 'move' : 'default'
-            canvasRef.current.style.cursor = gizmoCursorRef.current
-          }
+      {/* Viewport: sized to project aspect ratio, scaled by effectiveScale + pan */}
+      <div
+        style={{
+          width: viewportW,
+          height: viewportH,
+          transform: `translate(${panX}px, ${panY}px)`,
+          transformOrigin: 'center',
+          position: 'relative',
+          flexShrink: 0
         }}
-      />
-
-      {/* Interactive transform overlay — above canvas, reads same store values */}
-      <TransformOverlay />
-
-      {/* Play controls */}
-      <div className="absolute bottom-0 left-0 right-0 h-10 bg-gradient-to-t from-black/80 to-transparent flex items-center justify-center px-2 pointer-events-none">
-        <button
-          onClick={togglePlay}
-          className="pointer-events-auto w-8 h-8 flex items-center justify-center text-white hover:text-accent transition-colors"
+      >
+        {/* Black canvas area with video + overlays */}
+        <div
+          className="bg-black rounded-lg overflow-hidden relative"
+          style={{ width: '100%', height: '100%' }}
+          onContextMenu={handlePreviewContextMenu}
         >
-          {isPlaying ? (
-            <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
-              <rect x="3" y="2" width="4" height="12" />
-              <rect x="9" y="2" width="4" height="12" />
-            </svg>
-          ) : (
-            <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
-              <polygon points="3,2 13,8 3,14" />
-            </svg>
-          )}
-        </button>
-      </div>
+          {/* Video element for base layer (lowest track) */}
+          <video
+            ref={videoRef}
+            className="absolute inset-0 w-full h-full object-contain"
+            playsInline
+            style={{ zIndex: 0, ...(videoTransform ? {
+              transform: videoTransform,
+              transformOrigin: 'center'
+            } : {}) }}
+          />
 
-      {/* Empty state */}
-      {clips.length === 0 && (
-        <div className="absolute inset-0 flex items-center justify-center text-gray-600 pointer-events-none">
-          <div className="text-center">
-            <svg
-              className="w-12 h-12 mx-auto mb-2 opacity-50"
-              fill="none"
-              viewBox="0 0 24 24"
-              stroke="currentColor"
-            >
-              <path
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                strokeWidth={1.5}
-                d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z"
-              />
-            </svg>
-            <p className="text-sm">Add clips to preview</p>
+          {/* Overlay video pool for multi-layer compositing (higher tracks) */}
+          <div ref={overlayContainerRef} className="absolute inset-0" style={{ zIndex: 5, pointerEvents: 'none' }} />
+
+          {/* Canvas overlay for captions + transform box */}
+          <canvas
+            ref={canvasRef}
+            width={canvasW}
+            height={canvasH}
+            className="absolute inset-0 w-full h-full"
+            style={{ pointerEvents: selectedClipId ? 'auto' : 'none', cursor: selectedClipId ? 'move' : 'default' }}
+            onMouseDown={handleTransformMouseDown}
+            onMouseMove={handleTransformMouseMove}
+            onMouseLeave={() => {
+              if (canvasRef.current) {
+                gizmoCursorRef.current = selectedClipId ? 'move' : 'default'
+                canvasRef.current.style.cursor = gizmoCursorRef.current
+              }
+            }}
+          />
+
+          {/* Interactive transform overlay — above canvas, reads same store values */}
+          <TransformOverlay />
+
+          {/* Guide overlay (safe areas, grid, snap guides) */}
+          <GuideOverlay />
+
+          {/* Empty state */}
+          {clips.length === 0 && (
+            <div className="absolute inset-0 flex items-center justify-center text-gray-600 pointer-events-none">
+              <div className="text-center">
+                <svg
+                  className="w-12 h-12 mx-auto mb-2 opacity-50"
+                  fill="none"
+                  viewBox="0 0 24 24"
+                  stroke="currentColor"
+                >
+                  <path
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    strokeWidth={1.5}
+                    d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z"
+                  />
+                </svg>
+                <p className="text-sm">Add clips to preview</p>
+              </div>
+            </div>
+          )}
+
+          {/* Timecode overlay */}
+          <div className="absolute top-2 left-2 px-2 py-0.5 bg-black/70 rounded text-[11px] font-mono select-none pointer-events-none flex items-center gap-1">
+            <span className="text-white" style={{ minWidth: 58, textAlign: 'right' }}>{formatTime(playheadMs)}</span>
+            <span className="text-gray-500 text-[9px]">/</span>
+            <span className="text-gray-400" style={{ minWidth: 58 }}>{formatTime(totalDurationMs)}</span>
           </div>
         </div>
-      )}
-
-      {/* Timecode overlay */}
-      <div className="absolute top-2 left-2 px-2 py-0.5 bg-black/70 rounded text-[11px] text-white font-mono select-none pointer-events-none">
-        {formatTime(playheadMs)} / {formatTime(totalDurationMs)}
       </div>
+      {/* Context menu */}
+      {previewCtxMenu && (
+        <ContextMenu
+          items={buildPreviewCtxMenuItems()}
+          x={previewCtxMenu.x}
+          y={previewCtxMenu.y}
+          onClose={() => setPreviewCtxMenu(null)}
+        />
+      )}
     </div>
   )
 }

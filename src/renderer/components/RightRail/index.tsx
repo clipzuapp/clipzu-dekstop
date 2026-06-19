@@ -57,6 +57,8 @@ export function RightRail({ activeTab, onSelect }: Props): JSX.Element {
             key={tab.id}
             onClick={() => onSelect(tab.id)}
             title={tab.label}
+            aria-label={tab.label}
+            aria-pressed={isActive}
             style={{
               width: '52px',
               display: 'flex',
@@ -86,7 +88,7 @@ export function RightRail({ activeTab, onSelect }: Props): JSX.Element {
             }}
           >
             <tab.Icon size={20} />
-            <span style={{ fontSize: '8px', fontWeight: 400, lineHeight: '1.1' }}>
+            <span style={{ fontSize: '10px', fontWeight: 400, lineHeight: '1.1' }}>
               {tab.label}
             </span>
           </button>

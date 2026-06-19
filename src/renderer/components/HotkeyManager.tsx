@@ -4,6 +4,9 @@ import { useProject } from '../store/useProject'
 import { useCaption } from '../store/useCaption'
 import { useExport } from '../store/useExport'
 import { useToast } from '../store/useToast'
+import { usePreviewView } from '../store/usePreviewView'
+import { useMediaLibrary } from '../store/useMediaLibrary'
+import type { LeftTabId } from './LeftRail/index'
 
 /**
  * HotkeyManager - Global keyboard shortcut handler
@@ -22,9 +25,11 @@ interface HotkeyManagerProps {
   onUndo?: () => unknown
   onRedo?: () => unknown
   onAddText?: () => void
+  /** Which left panel tab is currently active (for context-aware Ctrl+A) */
+  activeLeftTab?: LeftTabId
 }
 
-export function HotkeyManager({ onExport, onShortcuts, activeTool: _activeTool, setActiveTool, onUndo, onRedo, onAddText }: HotkeyManagerProps): null {
+export function HotkeyManager({ onExport, onShortcuts, activeTool: _activeTool, setActiveTool, onUndo, onRedo, onAddText, activeLeftTab }: HotkeyManagerProps): null {
   const isPlaying = useTimeline((s) => s.isPlaying)
   const playheadMs = useTimeline((s) => s.playheadMs)
   const totalDurationMs = useTimeline((s) => s.totalDurationMs)
@@ -76,9 +81,18 @@ export function HotkeyManager({ onExport, onShortcuts, activeTool: _activeTool, 
       }
 
       // L: forward (skip 5s)
-      if (e.key === 'l' && !isMod) {
+      if (e.key === 'l' && !isMod && !e.shiftKey) {
         e.preventDefault()
         setPlayhead(Math.min(totalDurationMsRef.current, playheadMsRef.current + 5000))
+        return
+      }
+
+      // Shift+L: toggle loop playback
+      if (e.key === 'L' && !isMod && e.shiftKey) {
+        e.preventDefault()
+        useTimeline.getState().toggleLoop()
+        const loopOn = useTimeline.getState().loopEnabled
+        useToast.getState().info(loopOn ? 'Loop ON' : 'Loop OFF')
         return
       }
 
@@ -273,10 +287,21 @@ export function HotkeyManager({ onExport, onShortcuts, activeTool: _activeTool, 
         return
       }
 
-      // Ctrl+A: select all
+      // Escape: deselect all (timeline + media library)
+      if (e.key === 'Escape') {
+        useTimeline.getState().deselectAll()
+        useMediaLibrary.getState().deselectAll()
+        return
+      }
+
+      // Ctrl+A: select all (context-aware: media library vs timeline)
       if (isMod && e.key === 'a') {
         e.preventDefault()
-        useTimeline.getState().selectAll()
+        if (activeLeftTab === 'media') {
+          useMediaLibrary.getState().selectAll()
+        } else {
+          useTimeline.getState().selectAll()
+        }
         return
       }
 
@@ -344,13 +369,47 @@ export function HotkeyManager({ onExport, onShortcuts, activeTool: _activeTool, 
         // Z only for zoom tool when not Ctrl (Ctrl+Z is undo)
         if ((e.key === 'z' || e.key === 'Z') && !isMod) { e.preventDefault(); setActiveTool('zoom'); return }
       }
+
+      // ---- Preview zoom hotkeys ----
+      // Ctrl+= : zoom in
+      if (isMod && (e.key === '=' || e.key === '+') && !e.shiftKey) {
+        e.preventDefault()
+        usePreviewView.getState().zoomIn()
+        return
+      }
+      // Ctrl+- : zoom out
+      if (isMod && e.key === '-' && !e.shiftKey) {
+        e.preventDefault()
+        usePreviewView.getState().zoomOut()
+        return
+      }
+      // Ctrl+0 : reset to Fit
+      if (isMod && e.key === '0') {
+        e.preventDefault()
+        usePreviewView.getState().resetZoom()
+        return
+      }
+      // Ctrl+Shift+F : toggle fullscreen
+      if (isMod && e.shiftKey && e.key === 'F') {
+        e.preventDefault()
+        usePreviewView.getState().toggleFullscreen()
+        return
+      }
+      // Shift+G : cycle grid modes
+      if (!isMod && e.shiftKey && e.key === 'G') {
+        e.preventDefault()
+        usePreviewView.getState().cycleGrid()
+        const grid = usePreviewView.getState().guides.grid
+        useToast.getState().info(`Grid: ${grid}`)
+        return
+      }
     }
 
     window.addEventListener('keydown', handleKeyDown)
     return () => window.removeEventListener('keydown', handleKeyDown)
   }, [
     setPlaying, setPlayhead, splitClipAtPlayhead,
-    undo, redo, onExport, onShortcuts, setActiveTool, onUndo, onRedo, onAddText
+    undo, redo, onExport, onShortcuts, setActiveTool, onUndo, onRedo, onAddText, activeLeftTab
   ])
 
   return null
