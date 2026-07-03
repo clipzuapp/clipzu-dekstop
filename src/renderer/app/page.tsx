@@ -132,7 +132,7 @@ export default function Page(): JSX.Element {
   // Listen for export progress updates
   useEffect(() => {
     const cleanup = window.electron.ipcRenderer.on('export:progress', (_event: unknown, data: unknown) => {
-      const d = data as { progress?: number; jobId?: string; status?: string }
+      const d = data as { progress?: number; jobId?: string; status?: string; error?: string }
       if (d.progress !== undefined) {
         useExport.getState().updateProgress(d.jobId!, d.progress)
       }
@@ -140,9 +140,9 @@ export default function Page(): JSX.Element {
         d.status &&
         (d.status === 'completed' || d.status === 'cancelled' || d.status === 'error')
       ) {
-        useExport.getState().setJobStatus(d.jobId!, d.status as 'completed' | 'cancelled' | 'error')
+        useExport.getState().setJobStatus(d.jobId!, d.status as 'completed' | 'cancelled' | 'error', d.error)
         if (d.status === 'completed') useToast.getState().success('Export job completed')
-        if (d.status === 'error') useToast.getState().error('Export job failed')
+        if (d.status === 'error') useToast.getState().error(d.error ? `Export failed: ${d.error}` : 'Export job failed')
       }
     })
     return () => {

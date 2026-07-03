@@ -47,9 +47,18 @@ interface ExportActions {
   startExport: (params: {
     clipPaths: string[]
     clipTrackIndices: number[]
+    clipHasAudio?: boolean[]
+    clipHidden?: boolean[]
+    clipVideoMuted?: boolean[]
+    clipFadeInMs?: number[]
+    clipFadeOutMs?: number[]
     clipTransforms: Array<{ x: number; y: number; scaleX: number; scaleY: number; rotation: number; opacity: number; cropTop: number; cropBottom: number; cropLeft: number; cropRight: number } | null>
     clipVolumes: Array<{ volume: number; muted: boolean }>
-    audioTracks: Array<{ path: string; startMs: number; volume: number }>
+    clipStartMs?: number[]
+    clipDurationMs?: number[]
+    clipTrimStarts?: number[]
+    clipSpeeds?: number[]
+    audioTracks: Array<{ path: string; startMs: number; volume: number; trimStart?: number; durationMs?: number; fadeInMs?: number; fadeOutMs?: number }>
     srtPath: string | null
     captionStyle: {
       fontFamily: string
@@ -73,11 +82,12 @@ interface ExportActions {
     totalDurationMs: number
     projectWidth: number
     projectHeight: number
+    fps: 24 | 30 | 60
   }) => Promise<void>
   cancelExport: (jobId: string) => Promise<void>
   clearQueue: () => void
   updateProgress: (jobId: string, progress: number) => void
-  setJobStatus: (jobId: string, status: ExportJob['status']) => void
+  setJobStatus: (jobId: string, status: ExportJob['status'], error?: string) => void
   getOutputDimensions: () => { width: number; height: number }
 }
 
@@ -89,7 +99,7 @@ const initialState: ExportState = {
   upscaleEnabled: false,
   upscaleAlgorithm: 'lanczos',
   codec: 'h264',
-  qualityPreset: 'fast',
+  qualityPreset: 'slow',
   isExporting: false
 }
 
@@ -175,11 +185,12 @@ export const useExport = create<ExportState & ExportActions>()(
         }
       }),
 
-    setJobStatus: (jobId, status) =>
+    setJobStatus: (jobId, status, error) =>
       set((state) => {
         const job = state.queue.find((j) => j.id === jobId)
         if (job) {
           job.status = status
+          if (error) job.error = error
           if (status === 'completed' || status === 'cancelled' || status === 'error') {
             state.isExporting = false
           }

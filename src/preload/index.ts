@@ -36,7 +36,8 @@ const electronAPI = {
         'project:save',
         'project:load',
         'project:exportSRT',
-        'project:createTempSRT'
+        'project:createTempSRT',
+        'project:createTempASS'
       ]
       if (validChannels.includes(channel)) {
         return ipcRenderer.invoke(channel, ...args)

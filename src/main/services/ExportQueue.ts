@@ -1,6 +1,11 @@
 import { ChildProcess } from 'child_process'
 import { BrowserWindow } from 'electron'
+import { unlink } from 'fs/promises'
 import { FFmpegService, FFmpegProgress, ClipTransformExport } from './FFmpegService'
+import type { ExportCaptionStyle } from '../../shared/utils/srt'
+
+// Re-export so callers that previously imported from here keep working
+export type { ExportCaptionStyle }
 
 /**
  * ExportQueue - Priority queue for export jobs
@@ -18,42 +23,26 @@ interface ExportJob {
   completedAt?: number
 }
 
-export interface ExportCaptionStyle {
-    fontFamily: string
-    fontSize: number
-    fontWeight: number
-    fontColor: string
-    bgColor: string
-    bgOpacity: number
-    strokeColor: string
-    strokeWidth: number
-    x: number
-    y: number
-    alignment: 'left' | 'center' | 'right'
-    position: 'top' | 'center' | 'bottom'
-    /** Uniform scale multiplier (1.0 = native size). Must match preview style.scale. */
-    scale?: number
-    /** Word-level caption display mode */
-    captionMode?: 'full-phrase' | 'word-reveal' | 'karaoke' | 'single-word'
-    /** Entry-level animation preset */
-    animation?: 'none' | 'pop' | 'fade' | 'slide-up' | 'karaoke' | 'typewriter'
-    /** Smooth fade-in for words in word-reveal mode (ms) */
-    revealFadeMs?: number
-  }
-
 interface ExportParams {
   clipPaths: string[]
   clipTrackIndices: number[]
+  clipHasAudio?: boolean[]
+  clipHidden?: boolean[]
+  clipVideoMuted?: boolean[]
+  clipFadeInMs?: number[]
+  clipFadeOutMs?: number[]
   clipTransforms: Array<ClipTransformExport | null>
   clipVolumes?: Array<{ volume: number; muted: boolean }>
-  audioTracks: Array<{ path: string; startMs: number; volume: number }>
+  clipStartMs?: number[]
+  clipDurationMs?: number[]
+  clipTrimStarts?: number[]
+  clipSpeeds?: number[]
+  audioTracks: Array<{ path: string; startMs: number; volume: number; trimStart?: number; durationMs?: number; fadeInMs?: number; fadeOutMs?: number }>
   srtPath: string | null
   captionStyle: ExportCaptionStyle | null
   outputWidth: number
   outputHeight: number
-  /** Reference canvas width (project resolution) for font-size scaling */
   projectWidth: number
-  /** Reference canvas height (project resolution) for position calculation */
   projectHeight: number
   codec: 'h264' | 'h265' | 'prores' | 'vp9'
   qualityPreset: 'fast' | 'slow'
@@ -61,13 +50,27 @@ interface ExportParams {
   upscaleEnabled?: boolean
   upscaleAlgorithm?: 'lanczos' | 'bicubic'
   totalDurationMs: number
+  fps?: 24 | 30 | 60
 }
 
 const MAX_CONCURRENT = 1
 
+/** req 2.22 — Delete temp files registered for a job; ignore ENOENT */
+async function cleanupTempFiles(paths: string[]): Promise<void> {
+  await Promise.all(
+    paths.map(async (filePath) => {
+      try {
+        await unlink(filePath)
+      } catch {
+        // Non-fatal — file may already be gone
+      }
+    })
+  )
+}
+
 class ExportQueueManager {
   private queue: Array<{ job: ExportJob; params: ExportParams }> = []
-  private activeJobs: Map<string, { job: ExportJob; process: ChildProcess; controller: AbortController }> = new Map()
+  private activeJobs: Map<string, { job: ExportJob; process: ChildProcess; controller: AbortController; tempFiles: string[] }> = new Map()
   private completedJobs: Map<string, ExportJob> = new Map()
   private getWindow: () => BrowserWindow | null
   private ffmpeg: FFmpegService
@@ -114,21 +117,38 @@ class ExportQueueManager {
     const controller = new AbortController()
     job.status = 'running'
 
+    const tempFiles: string[] = []
+    if (params.srtPath && /temp_captions_/i.test(params.srtPath)) {
+      tempFiles.push(params.srtPath)
+    }
+
+    // req 2.2 — Single-pass encode at full target resolution (no half-res intermediate)
     const args = this.ffmpeg.buildExportCommand({
       clipPaths: params.clipPaths,
       clipTrackIndices: params.clipTrackIndices,
+      clipHasAudio: params.clipHasAudio,
+      clipHidden: params.clipHidden,
+      clipVideoMuted: params.clipVideoMuted,
+      clipFadeInMs: params.clipFadeInMs,
+      clipFadeOutMs: params.clipFadeOutMs,
       clipTransforms: params.clipTransforms,
       clipVolumes: params.clipVolumes,
+      clipStartMs: params.clipStartMs,
+      clipDurationMs: params.clipDurationMs,
+      clipTrimStarts: params.clipTrimStarts,
+      clipSpeeds: params.clipSpeeds,
       audioTracks: params.audioTracks,
       srtPath: params.srtPath,
       captionStyle: params.captionStyle,
-      outputWidth: params.upscaleEnabled ? Math.round(params.outputWidth / 2) : params.outputWidth,
-      outputHeight: params.upscaleEnabled ? Math.round(params.outputHeight / 2) : params.outputHeight,
+      outputWidth: params.outputWidth,
+      outputHeight: params.outputHeight,
       projectWidth: params.projectWidth,
       projectHeight: params.projectHeight,
+      fps: params.fps,
       codec: params.codec,
       qualityPreset: params.qualityPreset,
-      outputPath: params.upscaleEnabled ? `${params.outputPath}.tmp.mp4` : params.outputPath
+      totalDurationMs: params.totalDurationMs,
+      outputPath: params.outputPath
     })
 
     const onProgress = (progress: FFmpegProgress): void => {
@@ -143,61 +163,57 @@ class ExportQueueManager {
 
     const { process: ffmpegProcess, promise } = this.ffmpeg.spawn(args, params.totalDurationMs, onProgress)
 
-    this.activeJobs.set(job.id, { job, process: ffmpegProcess, controller })
+    this.activeJobs.set(job.id, { job, process: ffmpegProcess, controller, tempFiles })
+
+    const finishJob = async (status: ExportJob['status'], error?: string): Promise<void> => {
+      await cleanupTempFiles(tempFiles)
+      job.status = status
+      job.error = error
+      job.completedAt = Date.now()
+      this.activeJobs.delete(job.id)
+      this.completedJobs.set(job.id, { ...job })
+      this.sendProgress(job.id, job.progress, 0, status)
+      this.processQueue()
+    }
 
     promise
       .then(async () => {
-        if (controller.signal.aborted) return
-
-        // Handle upscale if enabled
-        if (params.upscaleEnabled) {
-          const tmpPath = `${params.outputPath}.tmp.mp4`
-          this.sendProgress(job.id, 50, 0, 'upscaling')
-
-          const upscalePromise = this.ffmpeg.upscaleVideo(
-            tmpPath,
-            params.outputPath,
-            params.outputWidth,
-            params.outputHeight,
-            params.upscaleAlgorithm || 'lanczos',
-            params.totalDurationMs,
-            (progress) => {
-              // Scale upscale progress from 50-100%
-              const scaledPercent = 50 + progress.percent * 0.5
-              this.sendProgress(job.id, scaledPercent, progress.fps, progress.speed)
-            }
-          )
-
-          try {
-            await upscalePromise.promise
-            // Cleanup temp file
-            const fs = require('fs')
-            try { fs.unlinkSync(tmpPath) } catch (_e) { /* ignore */ }
-          } catch (err) {
-            throw err
-          }
-        }
-
-        job.status = 'completed'
-        job.progress = 100
-        job.completedAt = Date.now()
-        this.activeJobs.delete(job.id)
-        this.completedJobs.set(job.id, { ...job })
-        this.sendProgress(job.id, 100, 0, job.status)
-        this.processQueue()
-      })
-      .catch((err: Error) => {
         if (controller.signal.aborted) {
-          job.status = 'cancelled'
-        } else {
-          job.status = 'error'
-          job.error = err.message
+          await finishJob('cancelled')
+          return
         }
-        job.completedAt = Date.now()
-        this.activeJobs.delete(job.id)
-        this.completedJobs.set(job.id, { ...job })
-        this.sendProgress(job.id, job.progress, 0, job.status)
-        this.processQueue()
+
+        // req 2.19 — Post-export ffprobe validation
+        const hasClipAudio = (params.clipHasAudio ?? params.clipPaths.map(() => true)).some(
+          (has, i) =>
+            has !== false &&
+            !params.clipHidden?.[i] &&
+            !params.clipVideoMuted?.[i] &&
+            (params.clipVolumes?.[i]?.volume ?? 1) > 0
+        )
+        const expectAudio = hasClipAudio || params.audioTracks.length > 0
+
+        try {
+          await this.ffmpeg.validateExportOutput(params.outputPath, {
+            width: params.outputWidth,
+            height: params.outputHeight,
+            totalDurationMs: params.totalDurationMs,
+            expectAudio
+          })
+        } catch (validationErr) {
+          await finishJob('error', (validationErr as Error).message)
+          return
+        }
+
+        job.progress = 100
+        await finishJob('completed')
+      })
+      .catch(async (err: Error) => {
+        if (controller.signal.aborted) {
+          await finishJob('cancelled')
+        } else {
+          await finishJob('error', err.message)
+        }
       })
   }
 

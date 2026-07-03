@@ -30,6 +30,8 @@
  *   activeWord = null, prevWord = last word before gap, nextWord = first after gap
  */
 
+import { resolveWordActiveIndex, resolveWordGapNeighbors } from '../../shared/utils/renderGeometry'
+
 export interface WordTiming {
   word: string
   startMs: number
@@ -155,30 +157,15 @@ export function resolveActiveWord(
     }
   }
 
-  // ---- Full binary search (first call, scrub, or fast path miss) ----
-  let lo = 0
-  let hi = words.length - 1
-  let activeIndex = -1
-
-  while (lo <= hi) {
-    const mid = (lo + hi) >>> 1
-    const w = words[mid]
-
-    if (playheadMs < w.startMs) {
-      hi = mid - 1
-    } else if (playheadMs >= w.endMs) {
-      lo = mid + 1
-    } else {
-      activeIndex = mid
-      break
-    }
-  }
+  // ---- Full binary search — delegated to shared SSOT (req 2.10 / F3) ----
+  // resolveWordActiveIndex is the single authoritative implementation; both
+  // the preview cache fast-path and the ASS exporter use the same algorithm.
+  const activeIndex = resolveWordActiveIndex(words, playheadMs)
 
   let activation: WordActivation
 
   if (activeIndex === -1) {
-    const nextIndex = lo < words.length ? lo : -1
-    const prevIndex = hi >= 0 ? hi : -1
+    const { prevIndex, nextIndex } = resolveWordGapNeighbors(words, playheadMs)
     activation = {
       activeWord: null,
       prevWord: prevIndex >= 0 ? words[prevIndex] : null,

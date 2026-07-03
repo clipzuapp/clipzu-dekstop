@@ -34,9 +34,15 @@ export interface TrimmingMode {
   clipId: string
   clipKind: 'clip' | 'text' | 'audio'
   startClientX: number
+  /** Source trim in-point (clipKind='clip' only) */
   origTrimStart: number
+  /** Source trim out-point (clipKind='clip' only) */
   origTrimEnd: number
   sourceDurationMs: number
+  /** Timeline-absolute start (clipKind='audio' edge drag only) */
+  origTimelineStartMs?: number
+  /** Timeline-absolute end (clipKind='audio' edge drag only) */
+  origTimelineEndMs?: number
   // For text clips: preserve original startMs/endMs for non-destructive trim
   origStartMs?: number
   origEndMs?: number

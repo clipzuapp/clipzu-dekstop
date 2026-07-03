@@ -190,14 +190,16 @@ export class WhisperService {
   }
 
   /**
-   * Fallback model chain — tried in order when the current model is incompatible.
+   * Fallback model chain — tried after the constructor-provided primary model
+   * when the current model is incompatible.
    * All models must be GGML format (whisper.cpp v1.8.x does not support GGUF).
    *
    * Order rationale (q5_1 REMOVED — known kernel bug in v1.8.6 ggml-cpu.dll):
-   *   1. ggml-base-q8_0.bin  — fast quantized default (~110MB, q8_0, ~5x realtime)
-   *   2. ggml-base.bin       — unquantized fallback (~142MB, F16, same WER)
-   *   3. ggml-small-q8_0.bin — quantized small (~370MB, ~2x realtime, lower WER)
-   *   4. ggml-small.bin      — unquantized small (~466MB, highest quality)
+   *   - primary constructor model first (app default: ggml-small-q8_0.bin)
+   *   - ggml-base-q8_0.bin  — fast quantized fallback
+   *   - ggml-base.bin       — unquantized base fallback
+   *   - ggml-small-q8_0.bin — quantized small fallback
+   *   - ggml-small.bin      — unquantized small fallback
    */
   private static readonly FALLBACK_MODELS = [
     'ggml-base-q8_0.bin',
@@ -849,10 +851,12 @@ export class WhisperService {
       const silence = Buffer.alloc(dataSize, 0)
       writeFileSync(dummyWav, Buffer.concat([header, silence]))
 
-      // Smoke test: load model + transcribe 1 second of silence. 15s timeout.
+      // Smoke test: load model + transcribe 1 second of silence.
+      // Small models can take >15s to cold-load on Windows, so keep this
+      // timeout long enough to avoid false "not compatible" startup warnings.
       const result = await this.spawnForValidation(cliPath, [
         '-m', modelPath, '-f', dummyWav, '-t', '1', '-ng', '-nfa', '-l', 'en', '-osrt'
-      ], 15000)
+      ], 45000)
 
       WhisperService.validationCache.set(cacheKey, result)
 
@@ -896,10 +900,15 @@ export class WhisperService {
     }
 
     const modelDir = dirname(this.modelPath)
+    const primaryModel = basename(this.modelPath)
+    const candidateModels = [
+      primaryModel,
+      ...WhisperService.FALLBACK_MODELS.filter((fileName) => fileName !== primaryModel)
+    ]
     const triedModels: ModelCompatibilityInfo['triedModels'] = []
 
-    for (let i = 0; i < WhisperService.FALLBACK_MODELS.length; i++) {
-      const fileName = WhisperService.FALLBACK_MODELS[i]
+    for (let i = 0; i < candidateModels.length; i++) {
+      const fileName = candidateModels[i]
       const candidatePath = join(modelDir, fileName)
 
       // Check model dir first, then models-test dir as secondary source
@@ -968,10 +977,25 @@ export class WhisperService {
         return testPath
       }
 
-      // Timeout is NOT a compatibility failure — the model may work with more time.
-      // Log a distinct warning and continue to the next candidate.
+      // Timeout is NOT a compatibility failure. If the file is a valid GGML
+      // model, use it with a warning instead of telling the UI there is no
+      // compatible model; real transcription uses a longer-running process.
       if (result.errorType === 'timeout') {
-        console.warn(`[WhisperService] Model ${fileName} timed out — skipping (not incompatible)`)
+        const header = this.readGgmlHeader(testPath)
+        if (header.valid) {
+          this.activeModelPath = testPath
+          this.lastValidation = {
+            activeModel: fileName,
+            primaryOk: i === 0,
+            fallbackLevel: i,
+            triedModels
+          }
+          console.warn(`[WhisperService] Model ${fileName} validation timed out but GGML header is valid — using it with caution`)
+          this._resolvedModelPathCache = testPath
+          this._startupValidated = true
+          return testPath
+        }
+        console.warn(`[WhisperService] Model ${fileName} timed out and header check failed — trying next fallback`)
       } else if (result.error) {
         console.warn(`[WhisperService] Model ${fileName} failed validation: ${result.error} (${result.errorType || 'unspecified'})`)
       }

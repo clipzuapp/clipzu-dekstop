@@ -29,7 +29,7 @@ export function Timeline({ activeTool = 'select' }: TimelineProps): JSX.Element 
   const containerRef = useRef<HTMLDivElement>(null)
 
   // ---- Interaction hook (owns all mouse/keyboard logic) ----
-  const { handleMouseDown, handleMouseMove, handleClick, handleWheel, getMachine } =
+  const { handleMouseDown, handleMouseMove, handleClick, getMachine } =
     useTimelineInteraction(canvasRef as React.RefObject<HTMLCanvasElement>, containerRef as React.RefObject<HTMLDivElement>, activeTool)
 
   // ---- Store subscriptions (render-only) ----
@@ -80,6 +80,13 @@ export function Timeline({ activeTool = 'select' }: TimelineProps): JSX.Element 
   const captionLaneCount = textClips.length > 0 ? 1 : 0
   const totalLanes = videoTrackIndices.length + audioLaneCount + captionLaneCount
   const totalH = LAYOUT.RULER_H + totalLanes * (LAYOUT.TRACK_LANE_H + LAYOUT.LANE_GAP)
+  const timelineEndMs = Math.max(
+    totalDurationMs,
+    ...clips.map((c) => c.startMs + c.durationMs),
+    ...audioTracks.map((t) => t.startMs + t.durationMs),
+    ...textClips.map((t) => t.endMs)
+  )
+  const timelineContentW = Math.ceil(LAYOUT.LANE_LABEL_W + timelineEndMs * PIXELS_PER_MS + 320)
 
   // ---- Canvas rendering (RAF-throttled) ----
 
@@ -96,7 +103,7 @@ export function Timeline({ activeTool = 'select' }: TimelineProps): JSX.Element 
       const ctx = canvas.getContext('2d')
       if (!ctx) return
 
-      const w = Math.max(container.clientWidth, 400)
+      const w = Math.max(container.clientWidth, timelineContentW, 400)
       const h = Math.max(container.clientHeight, totalH)
       canvas.width = w
       canvas.height = h
@@ -240,7 +247,7 @@ export function Timeline({ activeTool = 'select' }: TimelineProps): JSX.Element 
       if (rafRef.current !== null) { cancelAnimationFrame(rafRef.current); rafRef.current = null }
     }
   }, [clips, audioTracks, tracks, markers, textClips, playheadMs, totalDurationMs, zoom, selectedIds, focusedId,
-    PIXELS_PER_MS, totalH, videoTrackIndices, totalLanes, activeTool, getMachine])
+    PIXELS_PER_MS, totalH, timelineContentW, videoTrackIndices, totalLanes, activeTool, getMachine])
 
   // ---- Auto-scroll to keep playhead in view during playback ----
 
@@ -272,6 +279,44 @@ export function Timeline({ activeTool = 'select' }: TimelineProps): JSX.Element 
       if (track.path) extractWaveform(track.path)
     }
   }, [audioTracks])
+
+  // ---- Native non-passive wheel listener so e.preventDefault() works ----
+  // React's synthetic onWheel is passive by default in modern browsers, which
+  // means calling e.preventDefault() inside it has no effect. We attach the
+  // real DOM listener with { passive: false } so we can block the browser's
+  // default scroll/zoom and take full control of the timeline scroll behavior.
+  useEffect(() => {
+    const container = containerRef.current
+    if (!container) return
+    const onWheel = (e: WheelEvent): void => {
+      e.preventDefault()
+      if (e.ctrlKey || e.metaKey) {
+        // Zoom — delegate to the interaction hook's zoom logic by dispatching
+        // a synthetic React event is complex; instead replicate it here directly.
+        const { zoom } = useTimeline.getState()
+        const canvas = canvasRef.current
+        if (canvas) {
+          const rect = canvas.getBoundingClientRect()
+          const mouseX = e.clientX - rect.left - LAYOUT.LANE_LABEL_W
+          const ppm = 0.1 * zoom
+          const timeUnderCursor = mouseX / ppm
+          const factor = e.deltaY > 0 ? 0.85 : 1.15
+          const newZoom = Math.max(0.02, Math.min(10, zoom * factor))
+          const newPPM = 0.1 * newZoom
+          const newScrollLeft = timeUnderCursor * newPPM - mouseX + LAYOUT.LANE_LABEL_W
+          container.scrollLeft = Math.max(0, newScrollLeft)
+          useTimeline.getState().setZoom(newZoom)
+        }
+      } else if (e.shiftKey) {
+        container.scrollLeft += e.deltaY
+      } else {
+        const delta = Math.abs(e.deltaX) > Math.abs(e.deltaY) ? e.deltaX : e.deltaY
+        container.scrollLeft += delta
+      }
+    }
+    container.addEventListener('wheel', onWheel, { passive: false })
+    return () => { container.removeEventListener('wheel', onWheel) }
+  }, [canvasRef, containerRef])
 
   // ---- HTML5 drop target ----
 
@@ -344,7 +389,7 @@ export function Timeline({ activeTool = 'select' }: TimelineProps): JSX.Element 
             items = [{
               path: data.path, durationMs: data.durationMs ?? 0,
               width: data.width ?? 0, height: data.height ?? 0,
-              hasAudio: data.hasAudio ?? false, name: data.name ?? 'Media',
+              hasAudio: data.hasAudio ?? true, name: data.name ?? 'Media',
               isAudio: data.isAudio ?? false, isSfx: data.isSfx ?? false
             }]
           }
@@ -357,7 +402,7 @@ export function Timeline({ activeTool = 'select' }: TimelineProps): JSX.Element 
       const batchClips: Array<{
         id: string; path: string; startMs: number; sourceDurationMs: number; durationMs: number
         trackIndex: number; trimStart: number; trimEnd: number; name?: string
-        speed: number; volume: number; muted: boolean
+        hasAudio?: boolean; speed: number; volume: number; muted: boolean
       }> = []
       const batchAudio: Array<{
         id: string; path: string; startMs: number; sourceDurationMs: number; durationMs: number
@@ -390,6 +435,7 @@ export function Timeline({ activeTool = 'select' }: TimelineProps): JSX.Element 
             durationMs: item.durationMs ?? 0,
             trackIndex: 0, trimStart: 0, trimEnd: 0,
             name: item.name ?? 'Clip',
+            hasAudio: item.hasAudio ?? true,
             speed: 1.0, volume: 1, muted: false
           })
         }
@@ -600,12 +646,12 @@ export function Timeline({ activeTool = 'select' }: TimelineProps): JSX.Element 
         </div>
         <div className="flex items-center gap-1">
           <button className="w-6 h-6 flex items-center justify-center text-gray-500 hover:text-gray-300 text-xs rounded bg-editor-surface"
-            onClick={() => setZoom(Math.max(0.1, zoom - 0.2))}>
+            onClick={() => setZoom(Math.max(0.02, zoom * 0.75))}>
             <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor"><rect x="2" y="7" width="12" height="2" /></svg>
           </button>
           <span className="text-[12px] text-gray-500 w-8 text-center tabular-nums">{(zoom * 100).toFixed(0)}%</span>
           <button className="w-6 h-6 flex items-center justify-center text-gray-500 hover:text-gray-300 text-xs rounded bg-editor-surface"
-            onClick={() => setZoom(Math.min(10, zoom + 0.2))}>
+            onClick={() => setZoom(Math.min(10, zoom * 1.33))}>
             <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor">
               <rect x="2" y="7" width="12" height="2" /><rect x="7" y="2" width="2" height="12" />
             </svg>
@@ -684,7 +730,6 @@ export function Timeline({ activeTool = 'select' }: TimelineProps): JSX.Element 
             onClick={handleClick}
             onMouseDown={handleMouseDown}
             onMouseMove={handleMouseMove}
-            onWheel={handleWheel}
             onContextMenu={showContextMenu}
             onDoubleClick={handleDoubleClick}
           />

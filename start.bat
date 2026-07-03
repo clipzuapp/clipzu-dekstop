@@ -61,12 +61,12 @@ if %errorlevel% neq 0 (
 )
 
 REM Check Whisper model
-if not exist "resources\models\ggml-small.bin" (
-    if not exist "models\ggml-small.bin" (
+if not exist "resources\models\ggml-small-q8_0.bin" (
+    if not exist "models\ggml-small-q8_0.bin" (
         echo.
         echo [WARN] Whisper model not found. Auto-caption feature requires it.
-        echo        Download from: https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-small.bin
-        echo        Place in: resources\models\ggml-small.bin
+        echo        Download from: https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-small-q8_0.bin
+        echo        Place in: resources\models\ggml-small-q8_0.bin
         echo.
     ) else (
         echo [OK] Whisper model found in models/

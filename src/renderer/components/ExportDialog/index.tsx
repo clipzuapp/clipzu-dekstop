@@ -1,11 +1,12 @@
 import { useShallow } from 'zustand/react/shallow'
 import { useExport, EXPORT_PRESETS } from '../../store/useExport'
 import type { PresetKey } from '../../store/useExport'
-import { useTimeline, DEFAULT_TRANSFORM, computeEffectiveMuted, type TimelineState } from '../../store/useTimeline'
+import { useTimeline, DEFAULT_TRANSFORM, computeEffectiveMuted, computeEffectiveVideoHidden, computeEffectiveVideoMuted, type TimelineState } from '../../store/useTimeline'
 import { useProject } from '../../store/useProject'
 import { useCaption } from '../../store/useCaption'
 import { useToast } from '../../store/useToast'
 import { formatDuration } from '../../utils/format'
+
 
 /**
  * ExportDialog - Modal for export configuration and queue management
@@ -44,6 +45,7 @@ export function ExportDialog({ onClose, show = true }: { onClose: () => void; sh
   })))
 
   const projectResolution = useProject((s) => s.resolution)
+  const projectFps = useProject((s) => s.fps)
   const captionStyle = useCaption((s) => s.activeStyle)
 
   // Use store-level isExporting — single source of truth
@@ -55,20 +57,73 @@ export function ExportDialog({ onClose, show = true }: { onClose: () => void; sh
       return
     }
 
+    let defaultExt = 'mp4'
+    if (codec === 'prores') defaultExt = 'mov'
+    else if (codec === 'vp9') defaultExt = 'webm'
+
     const outputPath = await window.electron.ipcRenderer.invoke(
       'ffmpeg:openSaveDialog',
-      `export_${Date.now()}.mp4`
+      `export_${Date.now()}.${defaultExt}`
     )
     if (!outputPath) return
 
     try {
-      // Create temp SRT if captions exist (before starting video export)
+      // Create temp ASS if captions exist (before starting video export).
+      // ASS preserves per-caption style/font contracts; SRT can only carry one global style.
       let srtPath: string | null = null
       if (textClips.length > 0) {
-        srtPath = await window.electron.ipcRenderer.invoke('project:createTempSRT', textClips, {
+        const dims = useExport.getState().getOutputDimensions()
+        const renderWidth = upscaleEnabled ? Math.round(dims.width / 2) : dims.width
+        const renderHeight = upscaleEnabled ? Math.round(dims.height / 2) : dims.height
+        const fallbackStyle = {
+          fontFamily: captionStyle.fontFamily,
+          fontSize: captionStyle.fontSize,
+          fontWeight: captionStyle.fontWeight,
+          fontColor: captionStyle.color,
+          bgColor: captionStyle.bgColor,
+          bgOpacity: captionStyle.bgOpacity,
+          strokeColor: captionStyle.strokeColor,
+          strokeWidth: captionStyle.strokeWidth,
+          x: captionStyle.x,
+          y: captionStyle.y,
+          alignment: captionStyle.alignment,
+          position: captionStyle.position,
+          scale: captionStyle.scale ?? 1,
           captionMode: captionStyle.captionMode,
           animation: captionStyle.animation,
           revealFadeMs: captionStyle.revealFadeMs
+        }
+        srtPath = await window.electron.ipcRenderer.invoke('project:createTempASS', textClips.map((clip) => ({
+          startMs: clip.startMs,
+          endMs: clip.endMs,
+          text: clip.text,
+          words: clip.words,
+          style: clip.style
+            ? {
+                fontFamily: clip.style.fontFamily,
+                fontSize: clip.style.fontSize,
+                fontWeight: clip.style.fontWeight,
+                fontColor: clip.style.color,
+                bgColor: clip.style.bgColor,
+                bgOpacity: clip.style.bgOpacity,
+                strokeColor: clip.style.strokeColor,
+                strokeWidth: clip.style.strokeWidth,
+                x: clip.style.x,
+                y: clip.style.y,
+                alignment: clip.style.alignment,
+                position: clip.style.position,
+                scale: clip.style.scale ?? 1,
+                captionMode: clip.style.captionMode,
+                animation: clip.style.animation,
+                revealFadeMs: clip.style.revealFadeMs
+              }
+            : undefined
+        })), {
+          outputWidth: renderWidth,
+          outputHeight: renderHeight,
+          projectWidth: projectResolution.width,
+          projectHeight: projectResolution.height,
+          fallbackStyle
         })
       }
 
@@ -76,11 +131,30 @@ export function ExportDialog({ onClose, show = true }: { onClose: () => void; sh
       await startExport({
         clipPaths: clips.map((c) => c.path),
         clipTrackIndices: clips.map((c) => c.trackIndex),
+        clipHasAudio: clips.map((c) => c.hasAudio ?? true),
+        // Respect track hidden + solo state — matches what Preview renders
+        clipHidden: clips.map((c) => computeEffectiveVideoHidden(c.trackIndex, tracks)),
+        // Respect per-clip mute AND video track mute — matches Preview audio behavior
+        clipVideoMuted: clips.map((c) => computeEffectiveVideoMuted(c.muted ?? false, c.trackIndex, tracks)),
+        clipFadeInMs: clips.map((c) => c.fadeInMs ?? 0),
+        clipFadeOutMs: clips.map((c) => c.fadeOutMs ?? 0),
         clipTransforms: clips.map((c) => c.transform ?? DEFAULT_TRANSFORM),
         clipVolumes: clips.map((c) => ({ volume: c.volume ?? 1, muted: c.muted ?? false })),
+        clipStartMs: clips.map((c) => c.startMs),
+        clipDurationMs: clips.map((c) => c.durationMs),
+        clipTrimStarts: clips.map((c) => c.trimStart),
+        clipSpeeds: clips.map((c) => c.speed ?? 1),
         audioTracks: audioTracks
           .filter((t) => !computeEffectiveMuted(t.muted, t.trackIndex, tracks))
-          .map((t) => ({ path: t.path, startMs: t.startMs, volume: t.volume })),
+          .map((t) => ({
+            path: t.path,
+            startMs: t.startMs,
+            volume: t.volume,
+            trimStart: t.trimStart ?? 0,
+            durationMs: t.durationMs,
+            fadeInMs: t.fadeInMs ?? 0,
+            fadeOutMs: t.fadeOutMs ?? 0
+          })),
         srtPath,
         captionStyle: textClips.length > 0
           ? {
@@ -105,7 +179,8 @@ export function ExportDialog({ onClose, show = true }: { onClose: () => void; sh
         outputPath,
         totalDurationMs,
         projectWidth: projectResolution.width,
-        projectHeight: projectResolution.height
+        projectHeight: projectResolution.height,
+        fps: projectFps
       })
 
       // Export SRT sidecar (non-blocking — don't show error since video may still succeed)

@@ -2,16 +2,16 @@ import { ipcMain, dialog, BrowserWindow } from 'electron'
 import { readFile, writeFile, mkdir } from 'fs/promises'
 import { dirname, join } from 'path'
 import { existsSync } from 'fs'
-import { generateSRT, generateExportSRT, type ExportSRTOptions } from '../../shared/utils/srt'
+import { createHash } from 'crypto'
+import {
+  generateSRT,
+  generateExportSRT,
+  generateExportASS,
+  type ExportSRTOptions,
+  type ExportASSOptions,
+  type ExportCaptionStyle
+} from '../../shared/utils/srt'
 
-/**
- * Project IPC handlers - Save/Load .ecp project files
- */
-
-/**
- * Caption style fields persisted in .ecp project files.
- * Must stay in sync with renderer CaptionStyle (useCaption.ts).
- */
 interface ProjectCaptionStyle {
   fontFamily: string
   fontSize: number
@@ -48,6 +48,7 @@ interface ProjectFile {
     trimStart: number
     trimEnd: number
     name?: string
+    hasAudio?: boolean
   }>
   audioTracks: Array<{
     id: string
@@ -90,6 +91,11 @@ interface ProjectFile {
     language: string
   }
   exportPreset: string
+}
+
+/** req 2.21 — Deterministic 8-char content hash for temp caption filenames */
+function captionContentHash(payload: unknown): string {
+  return createHash('sha256').update(JSON.stringify(payload)).digest('hex').slice(0, 8)
 }
 
 export function registerProjectHandler(getWindow: () => BrowserWindow | null): void {
@@ -180,7 +186,8 @@ export function registerProjectHandler(getWindow: () => BrowserWindow | null): v
         text: string
         words?: Array<{ word: string; startMs: number; endMs: number }>
       }>,
-      options?: ExportSRTOptions
+      options?: ExportSRTOptions,
+      jobId?: string
     ) => {
       try {
         const os = require('os')
@@ -191,13 +198,51 @@ export function registerProjectHandler(getWindow: () => BrowserWindow | null): v
           await mkdir(tmpDir, { recursive: true })
         }
 
-        const srtPath = join(tmpDir, `temp_captions_${Date.now()}.srt`)
+        const hash = captionContentHash({ entries, options: options ?? {} })
+        const suffix = jobId ? `_${jobId}` : ''
+        const srtPath = join(tmpDir, `temp_captions_${hash}${suffix}.srt`)
         const srtContent = generateExportSRT(entries, options ?? {})
 
         await writeFile(srtPath, srtContent, 'utf-8')
         return srtPath
       } catch (err) {
         throw new Error(`Failed to create temp SRT: ${(err as Error).message}`)
+      }
+    }
+  )
+
+  ipcMain.handle(
+    'project:createTempASS',
+    async (
+      _event,
+      entries: Array<{
+        startMs: number
+        endMs: number
+        text: string
+        words?: Array<{ word: string; startMs: number; endMs: number }>
+        style?: ExportCaptionStyle
+      }>,
+      options: ExportASSOptions,
+      jobId?: string
+    ) => {
+      try {
+        const os = require('os')
+        const path = require('path')
+        const tmpDir = path.join(os.tmpdir(), 'capcraft')
+
+        if (!existsSync(tmpDir)) {
+          await mkdir(tmpDir, { recursive: true })
+        }
+
+        const hash = captionContentHash({ entries, options })
+        const suffix = jobId ? `_${jobId}` : ''
+        const assPath = join(tmpDir, `temp_captions_${hash}${suffix}.ass`)
+        const assContent = generateExportASS(entries, options)
+
+        await writeFile(assPath, assContent, 'utf-8')
+        return assPath
+      } catch (err) {
+        throw new Error(`Failed to create temp ASS: ${(err as Error).message}`)
       }
     }
   )

@@ -91,6 +91,37 @@ const initialState: CaptionState = {
 /** Module-level cleanup for whisper:progress listener to prevent leaks */
 let whisperProgressCleanup: (() => void) | null = null
 
+function retimeWordsForEditedText(
+  text: string,
+  existingWords: TextClip['words'] | undefined,
+  durationMs: number
+): TextClip['words'] | undefined {
+  const nextWords = text.trim().split(/\s+/).filter(Boolean)
+  if (nextWords.length === 0) return undefined
+
+  if (existingWords && existingWords.length === nextWords.length) {
+    return existingWords.map((word, index) => ({
+      ...word,
+      word: nextWords[index]
+    }))
+  }
+
+  const safeDuration = Math.max(1, durationMs)
+  const totalChars = nextWords.reduce((sum, word) => sum + Math.max(1, word.length), 0)
+  let cursor = 0
+
+  return nextWords.map((word, index) => {
+    const isLast = index === nextWords.length - 1
+    const wordDuration = isLast
+      ? safeDuration - cursor
+      : Math.max(1, Math.round(safeDuration * (Math.max(1, word.length) / totalChars)))
+    const startMs = cursor
+    const endMs = Math.min(safeDuration, cursor + wordDuration)
+    cursor = endMs
+    return { word, startMs, endMs }
+  })
+}
+
 /**
  * Shared transcription lifecycle — status/progress management, IPC invocation,
  * TextClip mapping, error handling, and progress listener cleanup.
@@ -297,7 +328,20 @@ export const useCaption = create<CaptionState & CaptionActions>()(
 
     editEntry: (id, text) => {
       // updateTextClip already pushes undo snapshot
-      useTimeline.getState().updateTextClip(id, { text })
+      const timeline = useTimeline.getState()
+      const clip = timeline.textClips.find((tc) => tc.id === id)
+      const nextWordCount = text.trim().split(/\s+/).filter(Boolean).length
+      const preservesWordTiming = !!clip?.words && clip.words.length === nextWordCount
+      const words = clip
+        ? retimeWordsForEditedText(text, clip.words, clip.durationMs)
+        : undefined
+      timeline.updateTextClip(id, {
+        text,
+        words,
+        wordTimestampsSource: words
+          ? preservesWordTiming ? clip?.wordTimestampsSource : 'synthetic'
+          : undefined
+      })
     },
 
     deleteEntry: (id) => {
@@ -327,8 +371,7 @@ export const useCaption = create<CaptionState & CaptionActions>()(
       // updateTextClip already pushes undo snapshot
       useTimeline.getState().updateTextClip(id, {
         startMs,
-        durationMs: endMs - startMs,
-        endMs
+        durationMs: endMs - startMs
       })
     },
 

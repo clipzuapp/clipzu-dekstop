@@ -3,6 +3,21 @@ import { immer } from 'zustand/middleware/immer'
 import { useProject } from './useProject'
 import { clearWaveformCache } from '../services/WaveformService'
 import { useCaption, type CaptionStyle } from './useCaption'
+import {
+  recalcTimelineDuration,
+  applyTextClipMutations,
+  normalizeTextClip,
+  getTextClipEnd,
+  shiftTextClipStart
+} from '../../shared/utils/timeline'
+
+export {
+  recalcTimelineDuration,
+  getTextClipEnd,
+  normalizeTextClip,
+  applyTextClipMutations,
+  shiftTextClipStart
+} from '../../shared/utils/timeline'
 
 function uuid(): string {
   if (typeof window !== 'undefined' && window.crypto?.randomUUID) {
@@ -43,7 +58,7 @@ export function pushUndoSnapshot(): void {
     audioTracks: audioTracks.map(deepCloneAudioTrack),
     textClips: textClips.map(deepCloneTextClip),
     captions: textClips.map((tc) => ({
-      id: tc.id, startMs: tc.startMs, endMs: tc.endMs, text: tc.text
+      id: tc.id, startMs: tc.startMs, endMs: getTextClipEnd(tc), text: tc.text
     }))
   })
 }
@@ -131,6 +146,8 @@ export interface Clip {
   trimStart: number
   trimEnd: number
   name?: string
+  /** Whether the source media contains a native audio stream. */
+  hasAudio?: boolean
   transform?: ClipTransform
   speed: number
   /** Per-clip linear volume (0.0–2.0). 1.0 = 0 dB (unity), 2.0 = +6 dB (boost). */
@@ -184,6 +201,43 @@ export function computeEffectiveMuted(
   return trackMuted || laneMuted || (hasSolo && !laneSolo)
 }
 
+/**
+ * Compute whether a video clip should be hidden/skipped given track-level
+ * hidden and solo state. SSOT — used by Preview, Export, Timeline canvas.
+ * A clip is suppressed when its track is hidden, OR when another video track
+ * has solo active and this track doesn't.
+ */
+export function computeEffectiveVideoHidden(
+  trackIndex: number,
+  tracks: Track[]
+): boolean {
+  const videoTracks = tracks.filter((l) => l.kind === 'video')
+  const parentTrack = videoTracks.find((l) => l.index === trackIndex)
+  const isHidden = parentTrack?.hidden ?? false
+  const hasSolo = videoTracks.some((l) => l.solo)
+  const isSolo = parentTrack?.solo ?? false
+  return isHidden || (hasSolo && !isSolo)
+}
+
+/**
+ * Compute whether a video clip's native audio should be suppressed given
+ * track-level mute and solo state. SSOT — used by Preview and Export.
+ * Suppresses audio when: clip is muted, OR video track is muted, OR a sibling
+ * video track has solo active and this track doesn't. (req 2.9 / F2)
+ */
+export function computeEffectiveVideoMuted(
+  clipMuted: boolean,
+  trackIndex: number,
+  tracks: Track[]
+): boolean {
+  const videoTracks = tracks.filter((l) => l.kind === 'video')
+  const parentTrack = videoTracks.find((l) => l.index === trackIndex)
+  const trackMuted = parentTrack?.muted ?? false
+  const hasSolo = videoTracks.some((l) => l.solo)
+  const isSolo = parentTrack?.solo ?? false
+  return clipMuted || trackMuted || (hasSolo && !isSolo)
+}
+
 export interface TextClip {
   id: string
   startMs: number
@@ -213,12 +267,12 @@ export function createTextClip(overrides: Partial<TextClip> & Pick<TextClip, 'te
   const ts = Date.now()
   const rand = Math.random().toString(36).slice(2, 6)
   const startMs = overrides.startMs ?? 0
-  const durationMs = overrides.durationMs ?? 3000
-  return {
+  const durationMs = overrides.durationMs ?? (overrides.endMs !== undefined ? overrides.endMs - startMs : 3000)
+  return normalizeTextClip({
     id: overrides.id ?? `text_${ts}_${rand}`,
     startMs,
     durationMs,
-    endMs: overrides.endMs ?? startMs + durationMs,
+    endMs: startMs + durationMs,
     trackIndex: overrides.trackIndex ?? 0,
     text: overrides.text,
     style: overrides.style,
@@ -227,7 +281,7 @@ export function createTextClip(overrides: Partial<TextClip> & Pick<TextClip, 'te
     sourceId: overrides.sourceId,
     sourceType: overrides.sourceType,
     transcriptionJobId: overrides.transcriptionJobId,
-  }
+  })
 }
 
 // ---------------------------------------------------------------------------
@@ -341,9 +395,8 @@ interface TimelineActions {
 // Helpers
 // ---------------------------------------------------------------------------
 
-function recalcDuration(clips: Clip[]): number {
-  if (clips.length === 0) return 0
-  return clips.reduce((max, c) => Math.max(max, c.startMs + c.durationMs), 0)
+function syncTotalDuration(state: TimelineState): void {
+  state.totalDurationMs = recalcTimelineDuration(state)
 }
 
 function makeDefaultTracks(): Track[] {
@@ -395,7 +448,7 @@ export const useTimeline = create<TimelineState & TimelineActions>()(
         if (clip.volume === undefined) clip.volume = 1.0
         if (clip.muted === undefined) clip.muted = false
         state.clips.push(clip)
-        state.totalDurationMs = recalcDuration(state.clips)
+        syncTotalDuration(state)
         const exists = state.tracks.some((t) => t.kind === 'video' && t.index === clip.trackIndex)
         if (!exists) {
           state.tracks.push({
@@ -414,7 +467,7 @@ export const useTimeline = create<TimelineState & TimelineActions>()(
         if (clip) {
           clip.startMs = Math.max(0, startMs)
           if (trackIndex !== undefined) clip.trackIndex = trackIndex
-          state.totalDurationMs = recalcDuration(state.clips)
+          syncTotalDuration(state)
         }
       })
     },
@@ -432,7 +485,7 @@ export const useTimeline = create<TimelineState & TimelineActions>()(
           if (trimStart !== prevTrimStart) {
             clip.startMs = Math.max(0, clip.startMs + (trimStart - prevTrimStart))
           }
-          state.totalDurationMs = recalcDuration(state.clips)
+          syncTotalDuration(state)
         }
       })
     },
@@ -443,7 +496,7 @@ export const useTimeline = create<TimelineState & TimelineActions>()(
         if (clip) {
           clip.startMs = Math.max(0, startMs)
           if (trackIndex !== undefined) clip.trackIndex = trackIndex
-          state.totalDurationMs = recalcDuration(state.clips)
+          syncTotalDuration(state)
         }
       })
     },
@@ -460,7 +513,7 @@ export const useTimeline = create<TimelineState & TimelineActions>()(
           if (trimStart !== prevTrimStart) {
             clip.startMs = Math.max(0, clip.startMs + (trimStart - prevTrimStart))
           }
-          state.totalDurationMs = recalcDuration(state.clips)
+          syncTotalDuration(state)
         }
       })
     },
@@ -472,7 +525,7 @@ export const useTimeline = create<TimelineState & TimelineActions>()(
         state.selectedIds = state.selectedIds.filter((id) => id !== clipId)
         if (state.focusedId === clipId) state.focusedId = null
         if (state.anchorId === clipId) state.anchorId = null
-        state.totalDurationMs = recalcDuration(state.clips)
+        syncTotalDuration(state)
       })
     },
 
@@ -488,7 +541,7 @@ export const useTimeline = create<TimelineState & TimelineActions>()(
         state.selectedIds = []
         state.focusedId = null
         state.anchorId = null
-        state.totalDurationMs = recalcDuration(state.clips)
+        syncTotalDuration(state)
       })
     },
 
@@ -504,7 +557,7 @@ export const useTimeline = create<TimelineState & TimelineActions>()(
           name: clip.name ? `${clip.name} (copy)` : 'Clip (copy)'
         }
         state.clips.push(newClip)
-        state.totalDurationMs = recalcDuration(state.clips)
+        syncTotalDuration(state)
         state.selectedIds = [newClip.id]
         state.focusedId = newClip.id
         state.anchorId = newClip.id
@@ -529,7 +582,7 @@ export const useTimeline = create<TimelineState & TimelineActions>()(
           state.clips.push(newClip)
           newIds.push(newClip.id)
         }
-        state.totalDurationMs = recalcDuration(state.clips)
+        syncTotalDuration(state)
         state.selectedIds = newIds
         state.focusedId = newIds[0] ?? null
         state.anchorId = newIds[0] ?? null
@@ -545,7 +598,7 @@ export const useTimeline = create<TimelineState & TimelineActions>()(
             if (deltaTrack !== undefined) clip.trackIndex = Math.max(0, clip.trackIndex + deltaTrack)
           }
         }
-        state.totalDurationMs = recalcDuration(state.clips)
+        syncTotalDuration(state)
       })
     },
 
@@ -584,7 +637,15 @@ export const useTimeline = create<TimelineState & TimelineActions>()(
           const offset = playheadMs - minStart
           for (const orig of _clipboard!.textClips) {
             const newId = `text_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`
-            state.textClips.push({ ...orig, id: newId, startMs: orig.startMs + offset, endMs: orig.startMs + offset + orig.durationMs, style: orig.style ? { ...orig.style } : undefined, words: deepCloneWords(orig.words) })
+            state.textClips.push(normalizeTextClip({
+              ...orig,
+              id: newId,
+              startMs: orig.startMs + offset,
+              durationMs: orig.durationMs,
+              endMs: orig.startMs + offset + orig.durationMs,
+              style: orig.style ? { ...orig.style } : undefined,
+              words: deepCloneWords(orig.words)
+            }))
           }
         }
         if (_clipboard!.audioTracks.length > 0) {
@@ -598,7 +659,7 @@ export const useTimeline = create<TimelineState & TimelineActions>()(
         state.selectedIds = newIds
         state.focusedId = newIds[0] ?? null
         state.anchorId = newIds[0] ?? null
-        state.totalDurationMs = recalcDuration(state.clips)
+        syncTotalDuration(state)
       })
     },
 
@@ -618,12 +679,14 @@ export const useTimeline = create<TimelineState & TimelineActions>()(
         const clipEnd = clip.startMs + clip.durationMs
         state.clips = state.clips.filter((c) => c.id !== clipId)
         for (const c of state.clips) { if (c.startMs >= clipEnd) c.startMs -= clip.durationMs }
-        for (const tc of state.textClips) { if (tc.startMs >= clipEnd) { tc.startMs -= clip.durationMs; tc.endMs -= clip.durationMs } }
+        for (const tc of state.textClips) {
+          if (tc.startMs >= clipEnd) shiftTextClipStart(tc, -clip.durationMs)
+        }
         for (const a of state.audioTracks) { if (a.startMs >= clipEnd) a.startMs -= clip.durationMs }
         state.selectedIds = state.selectedIds.filter((id) => id !== clipId)
         if (state.focusedId === clipId) state.focusedId = null
         if (state.anchorId === clipId) state.anchorId = null
-        state.totalDurationMs = recalcDuration(state.clips)
+        syncTotalDuration(state)
       })
     },
 
@@ -631,7 +694,7 @@ export const useTimeline = create<TimelineState & TimelineActions>()(
       const { focusedId, playheadMs: ph, textClips } = useTimeline.getState()
       // Text clip split priority
       if (focusedId) {
-        const textClip = textClips.find((tc) => tc.id === focusedId && ph > tc.startMs && ph < tc.endMs)
+        const textClip = textClips.find((tc) => tc.id === focusedId && ph > tc.startMs && ph < getTextClipEnd(tc))
         if (textClip) { useTimeline.getState().splitTextClip(focusedId, ph); return }
         if (textClips.some((tc) => tc.id === focusedId)) return
       }
@@ -658,6 +721,7 @@ export const useTimeline = create<TimelineState & TimelineActions>()(
         }
         newClip.durationMs = clip.sourceDurationMs - newClip.trimStart - newClip.trimEnd
         state.clips.splice(clipIndex + 1, 0, newClip)
+        syncTotalDuration(state)
       })
     },
 
@@ -721,6 +785,7 @@ export const useTimeline = create<TimelineState & TimelineActions>()(
             kind: 'audio', muted: false, locked: false, hidden: false, solo: false
           })
         }
+        syncTotalDuration(state)
       })
     },
 
@@ -760,7 +825,7 @@ export const useTimeline = create<TimelineState & TimelineActions>()(
             })
           }
         }
-        state.totalDurationMs = recalcDuration(state.clips)
+        syncTotalDuration(state)
       })
     },
 
@@ -770,14 +835,9 @@ export const useTimeline = create<TimelineState & TimelineActions>()(
         state.audioTracks = state.audioTracks.filter((t) => t.id !== trackId)
         state.selectedIds = state.selectedIds.filter((id) => id !== trackId)
         if (state.focusedId === trackId) state.focusedId = null
+        syncTotalDuration(state)
       })
     },
-
-    moveAudioTrack: (trackId, startMs) =>
-      set((state) => {
-        const track = state.audioTracks.find((t) => t.id === trackId)
-        if (track) track.startMs = Math.max(0, startMs)
-      }),
 
     trimAudioTrack: (trackId, trimStart, trimEnd) =>
       set((state) => {
@@ -785,7 +845,17 @@ export const useTimeline = create<TimelineState & TimelineActions>()(
         if (track) {
           track.trimStart = trimStart
           track.trimEnd = trimEnd
-          track.durationMs = Math.max(100, track.durationMs)
+          track.durationMs = Math.max(100, track.sourceDurationMs - trimStart - trimEnd)
+          syncTotalDuration(state)
+        }
+      }),
+
+    moveAudioTrack: (trackId, startMs) =>
+      set((state) => {
+        const track = state.audioTracks.find((t) => t.id === trackId)
+        if (track) {
+          track.startMs = Math.max(0, startMs)
+          syncTotalDuration(state)
         }
       }),
 
@@ -815,11 +885,12 @@ export const useTimeline = create<TimelineState & TimelineActions>()(
     addTextClip: (clip) => {
       pushUndoSnapshot()
       set((state) => {
-        state.textClips.push(clip)
+        state.textClips.push(normalizeTextClip({ ...clip }))
         const hasCaptionTrack = state.tracks.some((t) => t.kind === 'caption')
         if (!hasCaptionTrack) {
           state.tracks.push({ id: 'track_caption_0', index: 0, name: 'Captions', kind: 'caption', muted: false, locked: false, hidden: false, solo: false })
         }
+        syncTotalDuration(state)
       })
     },
 
@@ -827,11 +898,12 @@ export const useTimeline = create<TimelineState & TimelineActions>()(
       if (clips.length === 0) return
       pushUndoSnapshot()
       set((state) => {
-        for (const clip of clips) state.textClips.push(clip)
+        for (const clip of clips) state.textClips.push(normalizeTextClip({ ...clip }))
         const hasCaptionTrack = state.tracks.some((t) => t.kind === 'caption')
         if (!hasCaptionTrack) {
           state.tracks.push({ id: 'track_caption_0', index: 0, name: 'Captions', kind: 'caption', muted: false, locked: false, hidden: false, solo: false })
         }
+        syncTotalDuration(state)
       })
     },
 
@@ -839,50 +911,34 @@ export const useTimeline = create<TimelineState & TimelineActions>()(
       pushUndoSnapshot()
       set((state) => {
         const clip = state.textClips.find((c) => c.id === id)
-        if (clip) {
-          // Non-destructive caption trim (Phase 6): preserve originals on first trim
-          const isTrim = updates.startMs !== undefined || updates.endMs !== undefined
-          if (isTrim) {
-            if (!clip.originalWords && clip.words) {
-              clip.originalWords = clip.words.map((w) => ({ ...w }))
-            }
-            if (clip.originalStartMs === undefined) {
-              clip.originalStartMs = clip.startMs
-            }
-            if (clip.originalEndMs === undefined) {
-              clip.originalEndMs = clip.endMs
-            }
-          }
-          Object.assign(clip, updates)
-          if (updates.startMs !== undefined || updates.durationMs !== undefined) {
-            clip.endMs = clip.startMs + clip.durationMs
-          }
+        if (!clip) return
+        // Apply non-timing fields directly (text, style, words, trackIndex, etc.)
+        const { startMs, durationMs, endMs, ...nonTiming } = updates
+        Object.assign(clip, nonTiming)
+        // Apply timing fields through the invariant-preserving function
+        if (startMs !== undefined || durationMs !== undefined || endMs !== undefined) {
+          applyTextClipMutations(clip, { startMs, durationMs, endMs })
+        } else {
+          normalizeTextClip(clip)
         }
+        syncTotalDuration(state)
       })
     },
 
     updateTextClipLive: (id, updates) => {
       set((state) => {
         const clip = state.textClips.find((c) => c.id === id)
-        if (clip) {
-          // Non-destructive caption trim (Phase 6): preserve originals on first trim
-          const isTrim = updates.startMs !== undefined || updates.endMs !== undefined
-          if (isTrim) {
-            if (!clip.originalWords && clip.words) {
-              clip.originalWords = clip.words.map((w) => ({ ...w }))
-            }
-            if (clip.originalStartMs === undefined) {
-              clip.originalStartMs = clip.startMs
-            }
-            if (clip.originalEndMs === undefined) {
-              clip.originalEndMs = clip.endMs
-            }
-          }
-          Object.assign(clip, updates)
-          if (updates.startMs !== undefined || updates.durationMs !== undefined) {
-            clip.endMs = clip.startMs + clip.durationMs
-          }
+        if (!clip) return
+        // Apply non-timing fields directly (text, style, words, trackIndex, etc.)
+        const { startMs, durationMs, endMs, ...nonTiming } = updates
+        Object.assign(clip, nonTiming)
+        // Apply timing fields through the invariant-preserving function
+        if (startMs !== undefined || durationMs !== undefined || endMs !== undefined) {
+          applyTextClipMutations(clip, { startMs, durationMs, endMs })
+        } else {
+          normalizeTextClip(clip)
         }
+        syncTotalDuration(state)
       })
     },
 
@@ -893,6 +949,7 @@ export const useTimeline = create<TimelineState & TimelineActions>()(
         state.selectedIds = state.selectedIds.filter((tid) => tid !== id)
         if (state.focusedId === id) state.focusedId = null
         if (state.anchorId === id) state.anchorId = null
+        syncTotalDuration(state)
       })
     },
 
@@ -935,7 +992,7 @@ export const useTimeline = create<TimelineState & TimelineActions>()(
         const origStart = clip.originalStartMs
         const origEnd = clip.originalEndMs
 
-        const first: TextClip = {
+        const first: TextClip = normalizeTextClip({
           id: `${clip.id}_a`, startMs: clip.startMs, durationMs: splitAtMs - clip.startMs, endMs: splitAtMs,
           trackIndex: clip.trackIndex, text: firstText, style: clip.style ? { ...clip.style } : undefined,
           words: firstWords, wordTimestampsSource: clip.wordTimestampsSource,
@@ -943,17 +1000,18 @@ export const useTimeline = create<TimelineState & TimelineActions>()(
           originalWords: hasOriginals ? origWords?.filter((w) => w.endMs <= relativeSplit) : undefined,
           originalStartMs: hasOriginals ? origStart : undefined,
           originalEndMs: hasOriginals ? Math.min(origEnd!, splitAtMs) : undefined
-        }
-        const second: TextClip = {
-          id: `${clip.id}_b`, startMs: splitAtMs, durationMs: clip.endMs - splitAtMs, endMs: clip.endMs,
+        })
+        const second: TextClip = normalizeTextClip({
+          id: `${clip.id}_b`, startMs: splitAtMs, durationMs: getTextClipEnd(clip) - splitAtMs, endMs: getTextClipEnd(clip),
           trackIndex: clip.trackIndex, text: secondText, style: clip.style ? { ...clip.style } : undefined,
           words: secondWords, wordTimestampsSource: clip.wordTimestampsSource,
           sourceId: clip.sourceId, sourceType: clip.sourceType, transcriptionJobId: clip.transcriptionJobId,
           originalWords: hasOriginals ? origWords?.filter((w) => w.endMs > relativeSplit).map((w) => ({ ...w, startMs: w.startMs - relativeSplit, endMs: w.endMs - relativeSplit })) : undefined,
           originalStartMs: hasOriginals ? Math.max(origStart!, splitAtMs) : undefined,
           originalEndMs: hasOriginals ? origEnd : undefined
-        }
+        })
         state.textClips.splice(idx, 1, first, second)
+        syncTotalDuration(state)
       })
     },
 
@@ -979,7 +1037,7 @@ export const useTimeline = create<TimelineState & TimelineActions>()(
           state.clips = state.clips.filter((c) => c.trackIndex !== track.index)
         }
         state.tracks = state.tracks.filter((t) => t.id !== trackId)
-        state.totalDurationMs = recalcDuration(state.clips)
+        syncTotalDuration(state)
       })
     },
 
@@ -1015,7 +1073,7 @@ export const useTimeline = create<TimelineState & TimelineActions>()(
 
     // -- Playback --
     setPlayhead: (ms) => set((state) => { state.playheadMs = Math.max(0, ms) }),
-    setZoom: (zoom) => set((state) => { state.zoom = Math.max(0.1, Math.min(10, zoom)) }),
+    setZoom: (zoom) => set((state) => { state.zoom = Math.max(0.02, Math.min(10, zoom)) }),
     setPlaying: (playing) => set((state) => { state.isPlaying = playing }),
 
     // -- Unified Selection (Phase 4) --
@@ -1146,7 +1204,9 @@ export const useTimeline = create<TimelineState & TimelineActions>()(
       if (!_dragPreClips) return
       useProject.getState().pushUndo({
         clips: _dragPreClips, audioTracks: _dragPreAudioTracks!, textClips: _dragPreTextClips!,
-        captions: _dragPreTextClips!.map((tc) => ({ id: tc.id, startMs: tc.startMs, endMs: tc.endMs, text: tc.text }))
+        captions: _dragPreTextClips!.map((tc) => ({
+          id: tc.id, startMs: tc.startMs, endMs: getTextClipEnd(tc), text: tc.text
+        }))
       })
       _dragPreClips = null; _dragPreAudioTracks = null; _dragPreTextClips = null
     },
@@ -1161,7 +1221,7 @@ export const useTimeline = create<TimelineState & TimelineActions>()(
         state.clips.length = 0; state.clips.push(...preClips)
         state.audioTracks.length = 0; state.audioTracks.push(...preAudio)
         state.textClips.length = 0; state.textClips.push(...preText)
-        state.totalDurationMs = recalcDuration(state.clips)
+        syncTotalDuration(state)
       })
     },
 
@@ -1178,6 +1238,7 @@ export const useTimeline = create<TimelineState & TimelineActions>()(
         ...c,
         volume: c.volume ?? 1,
         muted: c.muted ?? false,
+        hasAudio: c.hasAudio ?? true,
         speed: c.speed ?? 1,
         fadeInMs: c.fadeInMs ?? 0,
         fadeOutMs: c.fadeOutMs ?? 0
@@ -1188,14 +1249,14 @@ export const useTimeline = create<TimelineState & TimelineActions>()(
         fadeOutMs: t.fadeOutMs ?? 0,
         sourceDurationMs: t.sourceDurationMs ?? t.durationMs
       }))
-      state.textClips = (data.textClips || []).map((tc) => ({
+      state.textClips = (data.textClips || []).map((tc) => normalizeTextClip({
         ...tc,
         fadeInMs: tc.fadeInMs ?? 0,
         fadeOutMs: tc.fadeOutMs ?? 0
       }))
-      state.totalDurationMs = recalcDuration(state.clips)
+      syncTotalDuration(state)
     }),
 
-    recalcTotalDuration: () => set((state) => { state.totalDurationMs = recalcDuration(state.clips) })
+    recalcTotalDuration: () => set((state) => { syncTotalDuration(state) })
   }))
 )

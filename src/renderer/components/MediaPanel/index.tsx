@@ -178,7 +178,7 @@ export function MediaPanel(): JSX.Element {
         durationMs: m.durationMs,
         width: m.width ?? 0,
         height: m.height ?? 0,
-        hasAudio: m.hasAudio ?? false,
+        hasAudio: m.hasAudio ?? true,
         name: m.name,
         isAudio: m.isAudio
       })))
@@ -191,7 +191,7 @@ export function MediaPanel(): JSX.Element {
         durationMs: item.durationMs,
         width: item.width ?? 0,
         height: item.height ?? 0,
-        hasAudio: item.hasAudio ?? false,
+        hasAudio: item.hasAudio ?? true,
         name: item.name,
         isAudio: item.isAudio
       })
@@ -345,6 +345,7 @@ export function MediaPanel(): JSX.Element {
         trimStart: 0,
         trimEnd: 0,
         name: item.name ?? 'Clip',
+        hasAudio: item.hasAudio ?? true,
         speed: 1.0,
         volume: 1,
         muted: false

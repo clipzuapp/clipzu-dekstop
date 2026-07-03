@@ -154,6 +154,7 @@ export function HotkeyManager({ onExport, onShortcuts, activeTool: _activeTool, 
             audioTracks: snapshot.audioTracks,
             textClips: snapshot.textClips
           })
+          useTimeline.getState().recalcTotalDuration()
         }
         return
       }
@@ -168,6 +169,7 @@ export function HotkeyManager({ onExport, onShortcuts, activeTool: _activeTool, 
             audioTracks: snapshot.audioTracks,
             textClips: snapshot.textClips
           })
+          useTimeline.getState().recalcTotalDuration()
         }
         return
       }

@@ -30,7 +30,7 @@ Desktop video editor with offline Whisper transcription, caption styling, and mu
 | Video | fluent-ffmpeg (`child_process.spawn`, never blocking) |
 | Transcription | whisper-cli.exe (direct spawn, streaming pipeline) |
 | Audio | Web Audio API (AudioEngine, multi-track mixing) |
-| DB/Cache | sql.js (pure JS SQLite, thumbnail cache) |
+| DB/Cache | better-sqlite3 (native SQLite, thumbnail cache) |
 | Packaging | electron-builder |
 
 ## Requirements
@@ -205,7 +205,7 @@ npx electron-vite dev
 
 ## VPS / Server Deployment
 
-Capcraft uses **sql.js** (pure JavaScript SQLite) instead of native bindings, so it works on any platform without compilation. No build tools needed.
+Capcraft uses **better-sqlite3** for thumbnail caching. On Linux VPS, native module compilation may be required during `npm install`. No other native build steps needed.
 
 ### Minimum VPS Specs
 

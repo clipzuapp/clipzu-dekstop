@@ -4,6 +4,7 @@
 
 import { useRef, useCallback, useEffect } from 'react'
 import { useTimeline } from '../store/useTimeline'
+import { recalcTimelineDuration } from '../../shared/utils/timeline'
 import {
   InteractionMachine,
   hitTest,
@@ -366,7 +367,7 @@ export function useTimelineInteraction(
                     c.trackIndex = newTrack
                   }
                 }
-                st.totalDurationMs = Math.max(...st.clips.map((c) => c.startMs + c.durationMs), 0)
+                st.totalDurationMs = recalcTimelineDuration(st)
               })
             }, { signal })
             window.addEventListener('mouseup', () => {
@@ -498,8 +499,10 @@ export function useTimelineInteraction(
           clipId: hit.id,
           clipKind: 'audio',
           startClientX: e.clientX,
-          origTrimStart: track.startMs,
-          origTrimEnd: track.startMs + track.durationMs,
+          origTrimStart: 0,
+          origTrimEnd: 0,
+          origTimelineStartMs: track.startMs,
+          origTimelineEndMs: track.startMs + track.durationMs,
           sourceDurationMs: track.sourceDurationMs
         }
         machine.transition(mode, (signal) => {
@@ -508,26 +511,30 @@ export function useTimelineInteraction(
             if (!tm || tm.clipKind !== 'audio') return
             const dx = ev.clientX - tm.startClientX
             const deltaMs = dx / ppm
+            const timelineStart = tm.origTimelineStartMs ?? 0
+            const timelineEnd = tm.origTimelineEndMs ?? timelineStart
             if (tm.mode === 'trimming-left') {
               // Clamp: startMs >= 0, durationMs <= sourceDurationMs, min 100ms
-              const maxLeftShift = tm.origTrimEnd - tm.sourceDurationMs
-              const newStart = Math.max(0, maxLeftShift, tm.origTrimStart + deltaMs)
-              if (newStart < tm.origTrimEnd - 100) {
+              const maxLeftShift = timelineEnd - tm.sourceDurationMs
+              const newStart = Math.max(0, maxLeftShift, timelineStart + deltaMs)
+              if (newStart < timelineEnd - 100) {
                 useTimeline.setState((st) => {
                   const a = st.audioTracks.find((at) => at.id === tm.clipId)
                   if (a) {
                     a.startMs = newStart
-                    a.durationMs = tm.origTrimEnd - newStart
+                    a.durationMs = timelineEnd - newStart
                   }
+                  st.totalDurationMs = recalcTimelineDuration(st)
                 })
               }
             } else {
               // Clamp: durationMs <= sourceDurationMs, min 100ms
-              const maxRightExtend = tm.origTrimStart + tm.sourceDurationMs
-              const newEnd = Math.min(maxRightExtend, Math.max(tm.origTrimStart + 100, tm.origTrimEnd + deltaMs))
+              const maxRightExtend = timelineStart + tm.sourceDurationMs
+              const newEnd = Math.min(maxRightExtend, Math.max(timelineStart + 100, timelineEnd + deltaMs))
               useTimeline.setState((st) => {
                 const a = st.audioTracks.find((at) => at.id === tm.clipId)
                 if (a) { a.durationMs = newEnd - a.startMs }
+                st.totalDurationMs = recalcTimelineDuration(st)
               })
             }
           }, { signal })
@@ -710,21 +717,33 @@ export function useTimelineInteraction(
 
   // ---- Wheel handler ----
   const handleWheel = useCallback((e: React.WheelEvent) => {
+    e.preventDefault()
+    const canvas = canvasRef.current
+    const container = containerRef.current
+    if (!container) return
+
     if (e.ctrlKey || e.metaKey) {
-      e.preventDefault()
-      const canvas = canvasRef.current
-      const container = containerRef.current
-      if (canvas && container) {
+      // Ctrl+wheel → zoom, anchor to time position under cursor
+      if (canvas) {
         const rect = canvas.getBoundingClientRect()
         const mouseX = e.clientX - rect.left - LAYOUT.LANE_LABEL_W
         const { ppm, zoom } = stateRef.current
         const timeUnderCursor = mouseX / ppm
-        const newZoom = Math.max(0.1, Math.min(10, zoom + (e.deltaY > 0 ? -0.1 : 0.1)))
+        // Multiplicative zoom step: 15% per scroll tick, feels proportional at any zoom level
+        const factor = e.deltaY > 0 ? 0.85 : 1.15
+        const newZoom = Math.max(0.02, Math.min(10, zoom * factor))
         const newPPM = 0.1 * newZoom
         const newScrollLeft = timeUnderCursor * newPPM - mouseX + LAYOUT.LANE_LABEL_W
-        container.scrollLeft = newScrollLeft
+        container.scrollLeft = Math.max(0, newScrollLeft)
         setZoom(newZoom)
       }
+    } else if (e.shiftKey) {
+      // Shift+wheel → horizontal scroll
+      container.scrollLeft += e.deltaY
+    } else {
+      // Plain wheel → horizontal scroll (deltaX for trackpad horizontal gesture, deltaY for mouse wheel)
+      const delta = Math.abs(e.deltaX) > Math.abs(e.deltaY) ? e.deltaX : e.deltaY
+      container.scrollLeft += delta
     }
   }, [canvasRef, containerRef, setZoom])
 

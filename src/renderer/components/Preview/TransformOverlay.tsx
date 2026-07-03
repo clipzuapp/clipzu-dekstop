@@ -321,8 +321,6 @@ export function TransformOverlay(): JSX.Element | null {
     captureDisplaySize()
     beginDragCapture()
 
-    const t = clip.transform
-
     // Fixed opposite corner in percentage
     let fixedX = videoBox.left + videoBox.width / 2
     let fixedY = videoBox.top + videoBox.height / 2

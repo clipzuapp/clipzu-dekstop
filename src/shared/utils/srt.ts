@@ -4,6 +4,8 @@
  * Pure functions — no Electron, Node, or browser dependencies
  */
 
+import { computeCaptionLayout } from './renderGeometry'
+
 export interface CaptionEntry {
   id: string
   startMs: number
@@ -93,11 +95,40 @@ export interface ExportSRTOptions {
   revealFadeMs?: number
 }
 
+export interface ExportCaptionStyle {
+  fontFamily: string
+  fontSize: number
+  fontWeight: number
+  fontColor?: string
+  color?: string
+  bgColor: string
+  bgOpacity: number
+  strokeColor: string
+  strokeWidth: number
+  x: number
+  y: number
+  alignment: 'left' | 'center' | 'right'
+  position: 'top' | 'center' | 'bottom'
+  scale?: number
+  captionMode?: 'full-phrase' | 'word-reveal' | 'karaoke' | 'single-word'
+  animation?: 'none' | 'pop' | 'fade' | 'slide-up' | 'karaoke' | 'typewriter'
+  revealFadeMs?: number
+}
+
+export interface ExportASSOptions {
+  outputWidth: number
+  outputHeight: number
+  projectWidth: number
+  projectHeight: number
+  fallbackStyle: ExportCaptionStyle
+}
+
 interface ExportClip {
   startMs: number
   endMs: number
   text: string
   words?: Array<{ word: string; startMs: number; endMs: number }>
+  style?: ExportCaptionStyle
 }
 
 interface SRTOutputEntry {
@@ -216,4 +247,223 @@ export function generateExportSRT(
       `${i + 1}\n${formatSRTTime(entry.startMs)} --> ${formatSRTTime(entry.endMs)}\n${entry.text}\n`
     )
     .join('\n')
+}
+
+function formatASSTime(ms: number): string {
+  const totalCs = Math.max(0, Math.round(ms / 10))
+  const cs = totalCs % 100
+  const totalSec = Math.floor(totalCs / 100)
+  const sec = totalSec % 60
+  const min = Math.floor(totalSec / 60) % 60
+  const hour = Math.floor(totalSec / 3600)
+  return `${hour}:${pad(min)}:${pad(sec)}.${pad(cs)}`
+}
+
+function escapeASS(value: string): string {
+  return value
+    .replace(/\r?\n/g, '\\N')
+    .replace(/\{/g, '\\{')
+    .replace(/\}/g, '\\}')
+}
+
+function toAssColorLocal(hex: string, opacity = 1): string {
+  const normalized = /^#[0-9a-fA-F]{6}$/.test(hex) ? hex : '#ffffff'
+  const alpha = Math.round((1 - Math.max(0, Math.min(1, opacity))) * 255)
+    .toString(16)
+    .padStart(2, '0')
+    .toUpperCase()
+  const r = normalized.slice(1, 3)
+  const g = normalized.slice(3, 5)
+  const b = normalized.slice(5, 7)
+  return `&H${alpha}${b}${g}${r}`
+}
+
+function computeCaptionMargins(
+  style: ExportCaptionStyle,
+  outputWidth: number,
+  outputHeight: number,
+  projectWidth: number,
+  projectHeight: number,
+  fontSize: number
+): { alignment: number; marginL: number; marginR: number; marginV: number } {
+  const srcAspect = projectWidth / projectHeight
+  const outAspect = outputWidth / outputHeight
+  let videoW: number, videoH: number, padX: number, padY: number
+  if (srcAspect > outAspect) {
+    videoW = outputWidth
+    videoH = Math.round(outputWidth / srcAspect)
+    padX = 0
+    padY = Math.round((outputHeight - videoH) / 2)
+  } else {
+    videoH = outputHeight
+    videoW = Math.round(outputHeight * srcAspect)
+    padY = 0
+    padX = Math.round((outputWidth - videoW) / 2)
+  }
+
+  const assAlignment: Record<string, number> = {
+    'bottom-left': 1, 'bottom-center': 2, 'bottom-right': 3,
+    'center-left': 4, 'center-center': 5, 'center-right': 6,
+    'top-left': 7, 'top-center': 8, 'top-right': 9
+  }
+  const alignKey = `${style.position ?? 'bottom'}-${style.alignment ?? 'center'}`
+  const alignment = assAlignment[alignKey] ?? 2
+
+  const y = style.y ?? 75
+  const position = style.position ?? 'bottom'
+  const estTextH = fontSize * 1.3
+  let marginV: number
+  if (position === 'top') {
+    marginV = Math.round(padY + (y / 100) * videoH)
+  } else if (position === 'center') {
+    marginV = Math.round(padY + ((y - 50) / 100) * videoH)
+  } else {
+    marginV = Math.round(padY + ((100 - y) / 100) * videoH - estTextH / 2)
+  }
+
+  const x = style.x ?? 50
+  const hAlign = style.alignment ?? 'center'
+  let marginL = 10
+  let marginR = 10
+  if (hAlign === 'left') {
+    marginL = Math.round(padX + (x / 100) * videoW)
+  } else if (hAlign === 'right') {
+    marginR = Math.round(padX + ((100 - x) / 100) * videoW)
+  }
+
+  return {
+    alignment,
+    marginL: Math.max(0, marginL),
+    marginR: Math.max(0, marginR),
+    marginV: Math.max(0, marginV)
+  }
+}
+
+function expandExportClip(clip: ExportClip, style: ExportCaptionStyle): SRTOutputEntry[] {
+  const mode = style.captionMode ?? 'full-phrase'
+  const animation = style.animation ?? 'none'
+  const hasWords = clip.words && clip.words.length > 0
+
+  if (mode === 'word-reveal' && hasWords) {
+    return clip.words!.map((word, i, words) => {
+      const startMs = clip.startMs + word.startMs
+      const endMs = i < words.length - 1 ? clip.startMs + words[i + 1].startMs : clip.endMs
+      const text = words.slice(0, i + 1).map((w) => w.word).join(' ')
+      return { startMs, endMs, text: buildAnimationTags(animation, startMs, endMs) + escapeASS(text) }
+    })
+  }
+
+  if (mode === 'karaoke' && hasWords) {
+    return clip.words!.map((word, i, words) => {
+      const startMs = clip.startMs + word.startMs
+      const endMs = clip.startMs + word.endMs
+      const text = words
+        .map((w, j) => j === i ? `{\\c&H00FFFF&}${escapeASS(w.word)}{\\c&HFFFFFF&}` : escapeASS(w.word))
+        .join(' ')
+      return { startMs, endMs, text: buildAnimationTags(animation, startMs, endMs) + text }
+    })
+  }
+
+  if (mode === 'single-word' && hasWords) {
+    return clip.words!.map((word) => {
+      const startMs = clip.startMs + word.startMs
+      const endMs = clip.startMs + word.endMs
+      return { startMs, endMs, text: buildAnimationTags(animation, startMs, endMs) + escapeASS(word.word) }
+    })
+  }
+
+  const tags = style.animation === 'typewriter' ? '' : buildAnimationTags(animation, clip.startMs, clip.endMs)
+  return [{ startMs: clip.startMs, endMs: clip.endMs, text: tags + escapeASS(clip.text) }]
+}
+
+export function generateExportASS(clips: ExportClip[], options: ExportASSOptions): string {
+  const styleNames = new Map<string, string>()
+  const styles: string[] = []
+  const dialogues: string[] = []
+
+  const getStyleName = (style: ExportCaptionStyle): string => {
+    // req 2.8 / F1 — fontSize via shared SSOT, not a local reimplementation
+    const layout = computeCaptionLayout(
+      { x: style.x ?? 50, y: style.y ?? 75, fontSize: style.fontSize, scale: style.scale },
+      { width: options.outputWidth, height: options.outputHeight }
+    )
+    const fontSize = Math.round(layout.fontSize)
+    const outlineWidth = Math.max(0, Math.round((style.strokeWidth ?? 0) * layout.resScale * (style.scale ?? 1)))
+    const margins = computeCaptionMargins(
+      style,
+      options.outputWidth,
+      options.outputHeight,
+      options.projectWidth,
+      options.projectHeight,
+      fontSize
+    )
+    const key = JSON.stringify({
+      fontFamily: style.fontFamily,
+      fontSize,
+      fontWeight: style.fontWeight,
+      color: style.fontColor ?? style.color ?? '#ffffff',
+      bgColor: style.bgColor,
+      bgOpacity: style.bgOpacity,
+      strokeColor: style.strokeColor,
+      outlineWidth,
+      ...margins
+    })
+    const existing = styleNames.get(key)
+    if (existing) return existing
+
+    const name = `Capcraft${styleNames.size + 1}`
+    styleNames.set(key, name)
+    styles.push('Style: ' + [
+      name,
+      style.fontFamily,
+      fontSize,
+      toAssColorLocal(style.fontColor ?? style.color ?? '#ffffff'),
+      '&H00000000',
+      toAssColorLocal(style.strokeColor ?? '#000000'),
+      toAssColorLocal(style.bgColor ?? '#000000', style.bgOpacity ?? 0),
+      (style.fontWeight ?? 500) >= 700 ? -1 : 0,
+      0,
+      0,
+      0,
+      100,
+      100,
+      0,
+      0,
+      1,
+      outlineWidth,
+      0,
+      margins.alignment,
+      margins.marginL,
+      margins.marginR,
+      margins.marginV,
+      1
+    ].join(','))
+    return name
+  }
+
+  for (const clip of clips) {
+    const style = clip.style ?? options.fallbackStyle
+    const styleName = getStyleName(style)
+    for (const entry of expandExportClip(clip, style)) {
+      if (entry.endMs <= entry.startMs) continue
+      dialogues.push(`Dialogue: 0,${formatASSTime(entry.startMs)},${formatASSTime(entry.endMs)},${styleName},,0,0,0,,${entry.text}`)
+    }
+  }
+
+  return [
+    '[Script Info]',
+    'ScriptType: v4.00+',
+    `PlayResX: ${options.outputWidth}`,
+    `PlayResY: ${options.outputHeight}`,
+    'ScaledBorderAndShadow: yes',
+    '',
+    '[V4+ Styles]',
+    'Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding',
+    ...styles,
+    '',
+    '[Events]',
+    'Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text',
+    ...dialogues,
+    ''
+  ].join('\n')
 }

@@ -12,6 +12,7 @@ import { GuideOverlay } from './GuideOverlay'
 import * as AudioEngine from '../../services/AudioEngine'
 import { type AudioTrack, computeEffectiveMuted, getInPoint, getOutPoint } from '../../store/useTimeline'
 import { ContextMenu, type ContextMenuItem } from '../ContextMenu/index'
+import { computeCaptionLayout } from '../../../shared/utils/renderGeometry'
 
 /**
  * Preview component — dynamic canvas sized from project resolution.
@@ -618,7 +619,7 @@ export function Preview(): JSX.Element {
             drawKaraokeCaption(ctx, canvas.width, canvas.height, activeCaption.text, words, elapsed, style)
             break
           case 'single-word':
-            drawSingleWordCaption(ctx, canvas.width, canvas.height, activation, style)
+            drawSingleWordCaption(ctx, canvas.width, canvas.height, activeCaption.text, activation, style)
             break
           case 'full-phrase':
           default:
@@ -1171,15 +1172,12 @@ function drawFullPhraseCaption(
   text: string,
   style: CaptionDrawStyle
 ): void {
-  const resScale = width / 1080
-  const fontSize = style.fontSize * resScale * (style.scale ?? 1)
+  // req 2.8 / F1 — layout via SSOT, not local reimplementation
+  const { cx, cy, fontSize, resScale } = computeCaptionLayout(style, { width, height })
   const padding = 8 * resScale
 
   ctx.font = `${style.fontWeight} ${fontSize}px ${style.fontFamily}`
   ctx.textBaseline = 'middle'
-
-  const cx = (style.x / 100) * width
-  const cy = (style.y / 100) * height
 
   const alignMap: Record<string, CanvasTextAlign> = { left: 'left', center: 'center', right: 'right' }
   ctx.textAlign = alignMap[style.alignment] ?? 'center'
@@ -1273,8 +1271,8 @@ function drawWordRevealSmooth(
   revealFadeMs: number,
   style: CaptionDrawStyle
 ): void {
-  const resScale = width / 1080
-  const fontSize = style.fontSize * resScale * (style.scale ?? 1)
+  // req 2.8 / F1 — layout via SSOT
+  const { cx, cy, fontSize, resScale } = computeCaptionLayout(style, { width, height })
   const padding = 8 * resScale
 
   ctx.font = `${style.fontWeight} ${fontSize}px ${style.fontFamily}`
@@ -1284,8 +1282,6 @@ function drawWordRevealSmooth(
   const align = alignMap[style.alignment] ?? 'center'
   ctx.textAlign = align
 
-  const cx = (style.x / 100) * width
-  const cy = (style.y / 100) * height
   const lineHeight = fontSize * 1.3
   const maxWidth = width * 0.8
 
@@ -1395,14 +1391,11 @@ function drawKaraokeCaption(
   elapsedMs: number,
   style: CaptionDrawStyle
 ): void {
-  const resScale = width / 1080
-  const fontSize = style.fontSize * resScale * (style.scale ?? 1)
+  // req 2.8 / F1 — layout via SSOT
+  const { cx, cy, fontSize, resScale } = computeCaptionLayout(style, { width, height })
   ctx.font = `${style.fontWeight} ${fontSize}px ${style.fontFamily}`
   ctx.textAlign = 'center'
   ctx.textBaseline = 'middle'
-
-  const cx = (style.x / 100) * width
-  const cy = (style.y / 100) * height
   const lineH = fontSize * 1.3
 
   if (!words || words.length === 0) {
@@ -1444,10 +1437,13 @@ function drawSingleWordCaption(
   ctx: CanvasRenderingContext2D,
   width: number,
   height: number,
+  _text: string,
   activation: ReturnType<typeof resolveActiveWord> | null,
   style: CaptionDrawStyle
 ): void {
-  if (!activation?.activeWord) return
+  if (!activation?.activeWord) {
+    return
+  }
 
   const word = activation.activeWord.word
   drawFullPhraseCaption(ctx, width, height, word, style)
