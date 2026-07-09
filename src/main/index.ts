@@ -1,4 +1,4 @@
-﻿import { app, BrowserWindow, shell } from 'electron'
+﻿import { app, BrowserWindow, shell, Menu, dialog } from 'electron'
 import { join } from 'path'
 import { existsSync } from 'fs'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
@@ -7,6 +7,8 @@ import { registerWhisperHandler } from './ipc/whisper.handler'
 import { registerExportHandler } from './ipc/export.handler'
 import { registerProjectHandler } from './ipc/project.handler'
 import { registerSFXHandler } from './ipc/sfx.handler'
+import { registerWaveformCacheHandler } from './ipc/waveform-cache.handler'
+import { registerProxyHandler } from './ipc/proxy.handler'
 import { FFmpegService } from './services/FFmpegService'
 import { WhisperService, type ModelCompatibilityInfo } from './services/WhisperService'
 import { ThumbnailService } from './services/ThumbnailService'
@@ -91,6 +93,8 @@ function resolveModelPath(): string {
 
 let thumbnailService: ThumbnailService | null = null
 let whisperService: WhisperService | null = null
+let ffmpegService: FFmpegService | null = null
+let exportQueue: ExportQueueManager | null = null
 
 function createWindow(): void {
   mainWindow = new BrowserWindow({
@@ -111,6 +115,63 @@ function createWindow(): void {
     }
   })
 
+  // Build native application menu (File → New, Open, Save, Save As)
+  const template: Electron.MenuItemConstructorOptions[] = [
+    {
+      label: 'File',
+      submenu: [
+        {
+          label: 'New Project',
+          accelerator: 'CmdOrCtrl+N',
+          click: () => mainWindow?.webContents.send('menu:new-project')
+        },
+        { type: 'separator' },
+        {
+          label: 'Open Project…',
+          accelerator: 'CmdOrCtrl+O',
+          click: () => mainWindow?.webContents.send('menu:open-project')
+        },
+        { type: 'separator' },
+        {
+          label: 'Save',
+          accelerator: 'CmdOrCtrl+S',
+          click: () => mainWindow?.webContents.send('menu:save')
+        },
+        {
+          label: 'Save As…',
+          accelerator: 'CmdOrCtrl+Shift+S',
+          click: () => mainWindow?.webContents.send('menu:save-as')
+        }
+      ]
+    },
+    {
+      label: 'Edit',
+      submenu: [
+        { label: 'Undo', accelerator: 'CmdOrCtrl+Z', role: 'undo' },
+        { label: 'Redo', accelerator: 'CmdOrCtrl+Shift+Z', role: 'redo' },
+        { type: 'separator' },
+        { label: 'Cut', accelerator: 'CmdOrCtrl+X', role: 'cut' },
+        { label: 'Copy', accelerator: 'CmdOrCtrl+C', role: 'copy' },
+        { label: 'Paste', accelerator: 'CmdOrCtrl+V', role: 'paste' }
+      ]
+    },
+    {
+      label: 'View',
+      submenu: [
+        { label: 'Toggle DevTools', accelerator: 'F12', role: 'toggleDevTools' },
+        { type: 'separator' },
+        { label: 'Reset Zoom', accelerator: 'CmdOrCtrl+0', role: 'resetZoom' },
+        { label: 'Zoom In', accelerator: 'CmdOrCtrl+=', role: 'zoomIn' },
+        { label: 'Zoom Out', accelerator: 'CmdOrCtrl+-', role: 'zoomOut' },
+        { type: 'separator' },
+        { label: 'Toggle Fullscreen', accelerator: 'F11', role: 'togglefullscreen' }
+      ]
+    }
+  ]
+
+  const menu = Menu.buildFromTemplate(template)
+  Menu.setApplicationMenu(menu)
+
   mainWindow.on('ready-to-show', () => {
     mainWindow?.show()
   })
@@ -124,6 +185,56 @@ function createWindow(): void {
   mainWindow.webContents.setWindowOpenHandler((details) => {
     shell.openExternal(details.url)
     return { action: 'deny' }
+  })
+
+  // Intercept close to show "Save / Don't Save / Cancel" dialog when project is dirty
+  let pendingClose = false
+  mainWindow.on('close', (e) => {
+    if (pendingClose) return // Already confirmed — let it close
+    if (!mainWindow) return
+
+    e.preventDefault()
+
+    // Query renderer for dirty state
+    mainWindow.webContents.executeJavaScript(
+      'window.__capcraft_isDirty?.() ?? false'
+    ).then((isDirty) => {
+      if (!isDirty || !mainWindow) {
+        // Clean or window gone — just close
+        pendingClose = true
+        mainWindow?.close()
+        return
+      }
+
+      // Show native OS dialog (like VS Code / Word)
+      const choice = dialog.showMessageBoxSync(mainWindow, {
+        type: 'warning',
+        buttons: ['Save', 'Don\'t Save', 'Cancel'],
+        defaultId: 0,
+        cancelId: 2,
+        title: 'Unsaved Changes',
+        message: 'You have unsaved changes. Do you want to save before closing?'
+      })
+
+      if (choice === 0) {
+        // Save → then close
+        mainWindow.webContents.executeJavaScript(
+          'window.__capcraft_saveNow?.() ?? Promise.resolve(false)'
+        ).then((saved) => {
+          if (saved !== false) {
+            // saved = path string or null (user cancelled save dialog) → close
+            pendingClose = true
+            mainWindow?.close()
+          }
+          // If saved === false, save failed — stay open (user can retry)
+        })
+      } else if (choice === 1) {
+        // Don't Save → close without saving
+        pendingClose = true
+        mainWindow.close()
+      }
+      // choice === 2 (Cancel) → do nothing, window stays open
+    })
   })
 
   if (is.dev && process.env['ELECTRON_RENDERER_URL']) {
@@ -149,6 +260,7 @@ app.whenReady().then(() => {
 
   // Create service instances (OOP DI)
   const ffmpeg = new FFmpegService(ffmpegPath, ffprobePath)
+  ffmpegService = ffmpeg
   const whisper = new WhisperService(modelPath, ffmpeg)
   whisperService = whisper
   const thumbnails = new ThumbnailService(
@@ -158,14 +270,17 @@ app.whenReady().then(() => {
   thumbnailService = thumbnails
 
   const getWindow = (): BrowserWindow | null => mainWindow
-  const exportQueue = new ExportQueueManager(getWindow, ffmpeg)
+  const exportQ = new ExportQueueManager(getWindow, ffmpeg)
+  exportQueue = exportQ
 
   // Register all IPC handlers with service instances
   registerFFmpegHandler(getWindow, ffmpeg, thumbnails)
   registerWhisperHandler(getWindow, whisper, ffmpeg)
-  registerExportHandler(exportQueue)
+  registerExportHandler(exportQ, ffmpeg)
   registerProjectHandler(getWindow)
   registerSFXHandler()
+  registerWaveformCacheHandler()
+  registerProxyHandler(() => ffmpeg)
 
   // Push startup validation result to renderer after it loads
   const validation = validateStartupDeps(ffmpegPath, ffprobePath, modelPath)
@@ -241,7 +356,11 @@ app.on('window-all-closed', () => {
 })
 
 app.on('before-quit', () => {
-  // Kill any active transcription/extraction processes to prevent zombies
+  // Kill all child processes to prevent zombies from blocking exit
+  exportQueue?.destroy()
+  exportQueue = null
+  ffmpegService?.killAll()
+  ffmpegService = null
   if (whisperService) {
     whisperService.cancel()
   }
@@ -252,6 +371,10 @@ app.on('before-quit', () => {
 
 // Defensive second pass - child_process.kill() is idempotent, safe to call twice
 app.on('will-quit', () => {
+  exportQueue?.destroy()
+  exportQueue = null
+  ffmpegService?.killAll()
+  ffmpegService = null
   whisperService?.cancel()
   whisperService = null
   thumbnailService?.close()

@@ -1,6 +1,6 @@
 ﻿import React, { useRef, useEffect, useState, useCallback } from 'react'
 import { useShallow } from 'zustand/react/shallow'
-import { useTimeline, getClipboard, getStyleClipboard, computeEffectiveMuted, getInPoint, getOutPoint, type TimelineState, type Clip, type AudioTrack } from '../../store/useTimeline'
+import { useTimeline, pushUndoSnapshot, getClipboard, getStyleClipboard, computeEffectiveMuted, getInPoint, getOutPoint, type TimelineState, type Clip, type AudioTrack } from '../../store/useTimeline'
 import { useCaption } from '../../store/useCaption'
 import { useConfirm } from '../../store/useConfirm'
 import { ContextMenu, type ContextMenuItem } from '../ContextMenu/index'
@@ -9,6 +9,7 @@ import { getWaveform, extractWaveform } from '../../services/WaveformService'
 import { useTimelineInteraction } from '../../timeline/useTimelineInteraction'
 import { LAYOUT, hitTest, buildLaneLayout, computeBoxRect } from '../../timeline/interaction'
 import { VolumeX, Headphones, Lock, EyeOff, Trash2 } from 'lucide-react'
+import type { KeyframeTrack } from '../../effects/types/Keyframe'
 
 // ---------------------------------------------------------------------------
 // Types
@@ -131,6 +132,24 @@ export function Timeline({ activeTool = 'select' }: TimelineProps): JSX.Element 
         if (!isHidden) {
           const isSel = selectedIdSet.has(clip.id)
           drawClip(ctx, clip, LAYOUT.LANE_LABEL_W, y, PIXELS_PER_MS, isSel)
+
+          // Keyframe diamond overlay — show on all clips, brighter for selected
+          if (clip.keyframes && clip.keyframes.length > 0) {
+            drawKeyframeDiamonds(ctx, clip.keyframes, clip.startMs, clip.durationMs, LAYOUT.LANE_LABEL_W, y, PIXELS_PER_MS, isSel ? 1.0 : 0.4)
+          }
+
+          // Transition icon at clip out-point
+          if (clip.outTransition) {
+            const outX = LAYOUT.LANE_LABEL_W + (clip.startMs + clip.durationMs) * PIXELS_PER_MS
+            const transW = Math.max(clip.outTransition.durationMs * PIXELS_PER_MS, 6)
+            const transH = LAYOUT.TRACK_LANE_H - 8
+            const transY = y + 4
+            ctx.fillStyle = 'rgba(168, 85, 247, 0.4)'
+            ctx.fillRect(outX - transW, transY, transW, transH)
+            ctx.fillStyle = '#a855f7'
+            ctx.font = '9px Inter, system-ui'
+            ctx.fillText('◇', outX - transW / 2 - 3, transY + transH / 2 + 3)
+          }
         }
       })
 
@@ -566,6 +585,10 @@ export function Timeline({ activeTool = 'select' }: TimelineProps): JSX.Element 
       const clickedAudio = audioTracks.find((a) => a.id === hit.id)
       if (clickedAudio) {
         selectClip(clickedAudio.id)
+        const setAudioRole = (role: 'music' | 'sfx' | 'voice') => {
+          pushUndoSnapshot()
+          useTimeline.setState((s) => { const t = s.audioTracks.find((a2) => a2.id === clickedAudio.id); if (t) t.role = role })
+        }
         setCtxMenu({
           x: e.clientX, y: e.clientY,
           items: [
@@ -573,19 +596,15 @@ export function Timeline({ activeTool = 'select' }: TimelineProps): JSX.Element 
             { label: 'Copy', shortcut: 'Ctrl+C', onClick: () => { st.copySelection() } },
             { label: 'Paste', shortcut: 'Ctrl+V', onClick: () => st.pasteAtPlayhead(), disabled: !getClipboard() },
             { divider: true },
+            { label: clickedAudio.muted ? '✓ Mute' : 'Mute', onClick: () => st.toggleAudioMute(clickedAudio.id) },
+            { divider: true },
             { label: 'Delete', shortcut: 'Del', danger: true, onClick: () => {
               useTimeline.getState().removeAudioTrack(clickedAudio.id)
             }},
             { divider: true },
-            { label: 'Set as Music', onClick: () => {
-              useTimeline.setState((s) => { const t = s.audioTracks.find((a2) => a2.id === clickedAudio.id); if (t) t.role = 'music' })
-            }},
-            { label: 'Set as SFX', onClick: () => {
-              useTimeline.setState((s) => { const t = s.audioTracks.find((a2) => a2.id === clickedAudio.id); if (t) t.role = 'sfx' })
-            }},
-            { label: 'Set as Voice', onClick: () => {
-              useTimeline.setState((s) => { const t = s.audioTracks.find((a2) => a2.id === clickedAudio.id); if (t) t.role = 'voice' })
-            }},
+            { label: clickedAudio.role === 'music' ? '✓ Set as Music' : 'Set as Music', onClick: () => setAudioRole('music') },
+            { label: clickedAudio.role === 'sfx' ? '✓ Set as SFX' : 'Set as SFX', onClick: () => setAudioRole('sfx') },
+            { label: clickedAudio.role === 'voice' ? '✓ Set as Voice' : 'Set as Voice', onClick: () => setAudioRole('voice') },
             { divider: true },
             { label: 'Properties', onClick: () => selectClip(clickedAudio.id) }
           ]
@@ -600,6 +619,8 @@ export function Timeline({ activeTool = 'select' }: TimelineProps): JSX.Element 
       if (clickedClip) {
         const isLocked = tracks.find((t) => t.index === clickedClip.trackIndex)?.locked ?? false
         selectClip(clickedClip.id)
+        const speedLabels: [number, string][] = [[0.25, '0.25x'], [0.5, '0.5x'], [1, '1x (Normal)'], [1.5, '1.5x'], [2, '2x'], [4, '4x']]
+        const currentSpeed = clickedClip.speed ?? 1
         setCtxMenu({
           x: e.clientX, y: e.clientY,
           items: [
@@ -608,10 +629,20 @@ export function Timeline({ activeTool = 'select' }: TimelineProps): JSX.Element 
             { label: 'Paste', shortcut: 'Ctrl+V', onClick: () => st.pasteAtPlayhead(), disabled: !getClipboard() },
             { divider: true },
             { label: 'Duplicate', shortcut: 'Ctrl+D', onClick: () => duplicateClip(clickedClip.id), disabled: isLocked },
+            { label: 'Rename', onClick: () => {
+              const newName = window.prompt('Clip name:', clickedClip.name ?? ''); if (newName?.trim()) st.setClipName(clickedClip.id, newName.trim())
+            }},
             { divider: true },
             { label: 'Delete', shortcut: 'Del', danger: true, disabled: isLocked, onClick: () => deleteClip(clickedClip.id) },
             { label: 'Ripple Delete', danger: true, disabled: isLocked, onClick: () => rippleDeleteClip(clickedClip.id) },
             { label: 'Split at Playhead', shortcut: 'S', disabled: isLocked, onClick: () => splitClipAtPlayhead() },
+            { label: '◇ Add Keyframe at Playhead', disabled: isLocked, onClick: () => st.addKeyframeAtPlayhead(clickedClip.id, 'opacity', 100) },
+            { divider: true },
+            { label: clickedClip.muted ? '✓ Mute Audio' : 'Mute Audio', onClick: () => st.setClipMute(clickedClip.id, !clickedClip.muted) },
+            ...speedLabels.map(([speed, label]) => ({
+              label: currentSpeed === speed ? `✓ ${label}` : label,
+              onClick: () => st.setClipSpeed(clickedClip.id, speed)
+            })),
             { divider: true },
             { label: 'Generate Captions', onClick: () => { useCaption.getState().transcribeClip(clickedClip.id) } },
             { divider: true },
@@ -673,23 +704,26 @@ export function Timeline({ activeTool = 'select' }: TimelineProps): JSX.Element 
                 onContextMenu={(e) => {
                   e.preventDefault()
                   const t = tracks.find((tr) => tr.id === lane.trackId)
+                  const setAudioRole = (role: 'music' | 'sfx' | 'voice') => {
+                    pushUndoSnapshot()
+                    useTimeline.setState((s) => { const at = s.audioTracks.find((a2) => a2.id === lane.trackId); if (at) at.role = role })
+                  }
                   setCtxMenu({
                     x: e.clientX, y: e.clientY,
                     items: [
                       { label: 'Add Track Above', onClick: () => addTrack(lane.kind === 'caption' ? 'video' : lane.kind) },
                       { label: 'Add Track Below', onClick: () => addTrack(lane.kind === 'caption' ? 'video' : lane.kind) },
                       { divider: true },
+                      { label: t?.muted ? '✓ Mute' : 'Mute', disabled: !t, onClick: () => { if (t) toggleMuteTrack(t.id) } },
+                      { label: t?.solo ? '✓ Solo' : 'Solo', disabled: !t, onClick: () => { if (t) toggleSoloTrack(t.id) } },
+                      { label: t?.locked ? '✓ Lock' : 'Lock', disabled: !t, onClick: () => { if (t) toggleLockTrack(t.id) } },
+                      { label: t?.hidden ? '✓ Hide' : 'Hide', disabled: !t, onClick: () => { if (t) toggleHideTrack(t.id) } },
+                      { divider: true },
                       { label: 'Generate Captions', disabled: lane.kind !== 'video' || clips.filter((c) => c.trackIndex === lane.index).length === 0,
                         onClick: () => { useCaption.getState().transcribeTrack(lane.index) } },
                       { divider: true },
-                      { label: 'Set as Voice', disabled: lane.kind !== 'audio', onClick: () => {
-                        const matched = audioTracks.find((a) => a.id === lane.trackId)
-                        if (matched) useTimeline.setState((s) => { const t = s.audioTracks.find((a2) => a2.id === matched.id); if (t) t.role = 'voice' })
-                      }},
-                      { label: 'Set as Music', disabled: lane.kind !== 'audio', onClick: () => {
-                        const matched = audioTracks.find((a) => a.id === lane.trackId)
-                        if (matched) useTimeline.setState((s) => { const t = s.audioTracks.find((a2) => a2.id === matched.id); if (t) t.role = 'music' })
-                      }},
+                      { label: 'Set as Voice', disabled: lane.kind !== 'audio', onClick: () => setAudioRole('voice') },
+                      { label: 'Set as Music', disabled: lane.kind !== 'audio', onClick: () => setAudioRole('music') },
                       { divider: true },
                       { label: 'Rename Track', onClick: () => {
                         if (t) { const newName = window.prompt('Track name:', t.name); if (newName?.trim()) renameTrack(t.id, newName.trim()) }
@@ -1046,6 +1080,44 @@ function roundRect(ctx: CanvasRenderingContext2D, x: number, y: number, w: numbe
   ctx.lineTo(x, y + r)
   ctx.arcTo(x, y, x + r, y, r)
   ctx.closePath()
+}
+
+/** Draw small diamond markers at keyframe timecodes on a clip. */
+function drawKeyframeDiamonds(
+  ctx: CanvasRenderingContext2D,
+  keyframes: KeyframeTrack[],
+  clipStartMs: number,
+  clipDurationMs: number,
+  offsetX: number,
+  trackY: number,
+  ppm: number,
+  opacity: number = 1.0
+): void {
+  const clipX = offsetX + clipStartMs * ppm
+  const h = LAYOUT.TRACK_LANE_H - 4
+  const y = trackY + 2
+  const diamondSize = 4
+
+  ctx.save()
+  ctx.globalAlpha = opacity
+  ctx.fillStyle = '#a855f7'
+  for (const track of keyframes) {
+    for (const frame of track.frames) {
+      const localTimeMs = frame.time
+      if (localTimeMs < 0 || localTimeMs > clipDurationMs) continue
+      const dx = clipX + localTimeMs * ppm
+      const dy = y + h - diamondSize - 2
+      // Draw diamond shape
+      ctx.beginPath()
+      ctx.moveTo(dx, dy - diamondSize)
+      ctx.lineTo(dx + diamondSize, dy)
+      ctx.lineTo(dx, dy + diamondSize)
+      ctx.lineTo(dx - diamondSize, dy)
+      ctx.closePath()
+      ctx.fill()
+    }
+  }
+  ctx.restore()
 }
 
 export default Timeline

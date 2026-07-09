@@ -1,6 +1,6 @@
 import { useRef, useEffect, useState, useMemo } from 'react'
 import { useCaption } from '../../store/useCaption'
-import { useTimeline } from '../../store/useTimeline'
+import { useTimeline, getStyleClipboard } from '../../store/useTimeline'
 import { useConfirm } from '../../store/useConfirm'
 import { useToast } from '../../store/useToast'
 import { ContextMenu, type ContextMenuItem } from '../ContextMenu/index'
@@ -179,6 +179,9 @@ export function CaptionStrip(): JSX.Element {
                       useTimeline.getState().setPlayhead(entry.startMs)
                     }},
                     { divider: true },
+                    { label: 'Copy Style', onClick: () => { useTimeline.getState().copyStyle() } },
+                    { label: 'Paste Style', disabled: !getStyleClipboard(), onClick: () => { useTimeline.getState().pasteStyle() } },
+                    { divider: true },
                     { label: 'Duplicate', onClick: () => useCaption.getState().duplicateEntry(entry.id) },
                     { label: 'Split at Playhead', disabled: !(ph > entry.startMs && ph < entry.endMs), onClick: () => {
                       useCaption.getState().splitEntry(entry.id, ph)
@@ -187,7 +190,7 @@ export function CaptionStrip(): JSX.Element {
                     { label: 'Delete', danger: true, onClick: () => {
                       useConfirm.getState().show({
                         title: 'Delete Caption',
-                        message: `Delete caption "${entry.text.slice(0, 40)}${entry.text.length > 40 ? '…' : ''}"?`,
+                        message: `Delete caption "${entry.text.slice(0, 40)}${entry.text.length > 40 ? '\u2026' : ''}"?`,
                         variant: 'danger',
                         confirmLabel: 'Delete'
                       }).then((c) => { if (c) useCaption.getState().deleteEntry(entry.id) })

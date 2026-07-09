@@ -5,10 +5,7 @@ import { formatTime } from '../../utils/format'
 
 function SectionHeader({ title }: { title: string }): JSX.Element {
   return (
-    <div style={{
-      fontSize: '10px', color: 'var(--text3)', textTransform: 'uppercase',
-      letterSpacing: '0.06em', padding: '10px 12px 4px'
-    }}>
+    <div className="section-title" style={{ padding: '10px 12px 4px' }}>
       {title}
     </div>
   )
@@ -82,26 +79,26 @@ export function InspectorHeader(): JSX.Element | null {
   // ----- TextClip header -----
   if (selectedTextClip) {
     return (
-      <div style={{ borderBottom: '0.5px solid var(--border)', padding: '12px', display: 'flex', flexDirection: 'column', gap: '10px' }}>
-        <h3 style={{ fontSize: '13px', fontWeight: 600, color: 'var(--text1)', margin: 0 }}>Text</h3>
+      <div className="inspector-header-bar">
+        <h3 className="inspector-header-title">Text</h3>
 
         <SectionHeader title="Timing" />
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px' }}>
           <div>
-            <div style={{ fontSize: '10px', color: 'var(--text3)', marginBottom: '2px' }}>Start (ms)</div>
+            <div style={{ fontSize: '11px', color: 'var(--text3)', marginBottom: '2px' }}>Start (ms)</div>
             <input type="number" value={selectedTextClip.startMs}
               onChange={(e) => setEntryTiming(selectedTextClip.id, parseInt(e.target.value) || 0, selectedTextClip.endMs)}
               style={{
-                width: '100%', fontSize: '10px', background: 'var(--bg2)', color: 'var(--text2)',
+                width: '100%', fontSize: '11px', background: 'var(--bg2)', color: 'var(--text2)',
                 border: '0.5px solid var(--border)', borderRadius: '3px', padding: '3px 5px', boxSizing: 'border-box'
               }} />
           </div>
           <div>
-            <div style={{ fontSize: '10px', color: 'var(--text3)', marginBottom: '2px' }}>End (ms)</div>
+            <div style={{ fontSize: '11px', color: 'var(--text3)', marginBottom: '2px' }}>End (ms)</div>
             <input type="number" value={selectedTextClip.endMs}
               onChange={(e) => setEntryTiming(selectedTextClip.id, selectedTextClip.startMs, parseInt(e.target.value) || 0)}
               style={{
-                width: '100%', fontSize: '10px', background: 'var(--bg2)', color: 'var(--text2)',
+                width: '100%', fontSize: '11px', background: 'var(--bg2)', color: 'var(--text2)',
                 border: '0.5px solid var(--border)', borderRadius: '3px', padding: '3px 5px', boxSizing: 'border-box'
               }} />
           </div>
@@ -126,18 +123,18 @@ export function InspectorHeader(): JSX.Element | null {
   // ----- Clip header (Duration + Name) -----
   if (selectedClip) {
     return (
-      <div style={{ borderBottom: '0.5px solid var(--border)', padding: '12px', display: 'flex', flexDirection: 'column', gap: '12px' }}>
+      <div className="inspector-header-bar">
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-          <h3 style={{ fontSize: '13px', fontWeight: 600, color: 'var(--text1)', margin: 0 }}>Inspector</h3>
+          <h3 className="inspector-header-title">Inspector</h3>
         </div>
         <SectionHeader title="Clip" />
         <div style={{ padding: '0 0 4px', display: 'flex', flexDirection: 'column', gap: '3px' }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '10px' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '11px' }}>
             <span style={{ color: 'var(--text3)' }}>Duration</span>
             <span style={{ color: 'var(--text2)', fontFamily: 'monospace' }}>{formatTime(selectedClip.durationMs)}</span>
           </div>
           {selectedClip.name && (
-            <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '10px' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '11px' }}>
               <span style={{ color: 'var(--text3)' }}>Name</span>
               <span style={{ color: 'var(--text2)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: '130px' }}>
                 {selectedClip.name}

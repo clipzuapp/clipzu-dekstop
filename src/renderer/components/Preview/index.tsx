@@ -13,6 +13,9 @@ import * as AudioEngine from '../../services/AudioEngine'
 import { type AudioTrack, computeEffectiveMuted, getInPoint, getOutPoint } from '../../store/useTimeline'
 import { ContextMenu, type ContextMenuItem } from '../ContextMenu/index'
 import { computeCaptionLayout } from '../../../shared/utils/renderGeometry'
+import type { CaptionStyle } from '../../../shared/types/caption'
+import { evaluateKeyframes } from '../../services/KeyframeEvaluator'
+import { buildCssFilter } from '../../services/FilterPipeline'
 
 /**
  * Preview component — dynamic canvas sized from project resolution.
@@ -54,6 +57,7 @@ export function Preview(): JSX.Element {
   const captionStyle = useCaption((s) => s.activeStyle)
 
   const projectResolution = useProject((s) => s.resolution)
+  const backgroundColor = useProject((s) => s.backgroundColor)
   const masterVolume = useTimeline((s) => s.masterVolume)
 
   // ---- Preview view state (SSOT: usePreviewView) ----
@@ -149,14 +153,20 @@ export function Preview(): JSX.Element {
 
   const findClipAt = useCallback(
     (ms: number) => {
-      // Find exact match — prefer lowest trackIndex for multi-layer z-order
-      const exact = clipsRef.current.filter((c) => ms >= c.startMs && ms < c.startMs + c.durationMs)
+      // Exact match only — prefer lowest trackIndex for multi-layer z-order.
+      // NO fallback: if playhead is before/after all clips, return null so
+      // the preview shows blank instead of a stale/wrong frame.
+      const allClips = clipsRef.current
+      const exact = allClips.filter((c) => ms >= c.startMs && ms < c.startMs + c.durationMs)
       if (exact.length > 0) {
         exact.sort((a, b) => a.trackIndex - b.trackIndex)
         return exact[0]
       }
-      // Fallback: first clip starting after ms
-      return clipsRef.current.find((c) => c.startMs >= ms) ?? null
+      // Diagnostic: log all clips when none found at position
+      if (allClips.length > 0) {
+        console.log('[CLIP DIAG] No clip at ms=' + ms + ', available clips:', allClips.map(c => ({ id: c.id, startMs: c.startMs, endMs: c.startMs + c.durationMs, name: c.name })))
+      }
+      return null
     },
     [] // stable — reads clipsRef, never stale
   )
@@ -262,44 +272,56 @@ export function Preview(): JSX.Element {
     }
   }, [audioTracks, isPlaying])
 
-  // ---- effect 1: load video source only when the active clip changes ----
+  // ---- effect 1: load video source when clip changes + always seek on playhead move ----
 
   useEffect(() => {
     const video = videoRef.current
     if (!video) return
 
     const clip = findClipAt(playheadMs)
+    console.log('[SRC DIAG] playheadMs:', playheadMs, 'clip:', clip ? { id: clip.id, startMs: clip.startMs, durationMs: clip.durationMs } : null)
     if (!clip) {
       loadedClipIdRef.current = null
+      // Clear the video source so the last frame doesn't linger when playhead is outside all clips
+      if (video.src) {
+        console.log('[SRC DIAG] Clearing video source (no clip at playhead)')
+        video.removeAttribute('src')
+        video.load()
+      }
       return
     }
 
-    // Already loaded — skip source change
-    if (loadedClipIdRef.current === clip.id) return
-    loadedClipIdRef.current = clip.id
-
-    const src = toFileUrl(clip.path)
-    if (video.src === src) return
-
+    const src = toFileUrl(clip.proxyPath ?? clip.path)
     let cancelled = false
 
-    const onLoaded = (): void => {
-      if (cancelled) return
-      video.currentTime = clipTimeSec(clip, playheadMs)
-      // If we're in playing state, resume playback on the new source (Bug A fix)
-      if (isPlayingRef.current) {
-        video.play().catch(() => { /* autoplay policy */ })
+    // Source change needed?
+    if (loadedClipIdRef.current !== clip.id || video.src !== src) {
+      console.log('[SRC DIAG] Loading new source for clip:', clip.id, 'src:', src.slice(-80))
+      loadedClipIdRef.current = clip.id
+
+      const onLoaded = (): void => {
+        if (cancelled) return
+        const targetSec = clipTimeSec(clip, playheadMs)
+        console.log('[SRC DIAG] Source loaded, seeking to:', targetSec, 'sec, isPlaying:', isPlayingRef.current)
+        video.currentTime = targetSec
+        if (isPlayingRef.current) {
+          video.play().catch((err) => console.error('[SRC DIAG] Auto-play failed:', err.message || err))
+        }
+      }
+
+      video.preload = 'auto'
+      video.addEventListener('loadedmetadata', onLoaded, { once: true })
+      video.src = src
+    } else {
+      // Source already loaded — seek to correct position (fixes stale frame bug)
+      const targetSec = clipTimeSec(clip, playheadMs)
+      console.log('[SRC DIAG] Source already loaded, current:', video.currentTime.toFixed(2), 'target:', targetSec.toFixed(2))
+      if (Math.abs(video.currentTime - targetSec) > 0.05) {
+        video.currentTime = targetSec
       }
     }
 
-    video.preload = 'auto'
-    video.addEventListener('loadedmetadata', onLoaded, { once: true })
-    video.src = src
-
-    return () => {
-      cancelled = true
-      video.removeEventListener('loadedmetadata', onLoaded)
-    }
+    return () => { cancelled = true }
   }, [findClipAt, playheadMs, clipTimeSec, toFileUrl, clips])
 
   // ---- effect 2: manual seek when user scrubs (NOT during playback) ----
@@ -325,23 +347,38 @@ export function Preview(): JSX.Element {
     if (!video) return
 
     if (isPlaying) {
-      const clip = findClipAt(playheadMsRef.current)
+      const headMs = playheadMsRef.current
+      const clip = findClipAt(headMs)
+      console.log('[PLAY DIAG]', {
+        headMs,
+        clipFound: clip ? { id: clip.id, startMs: clip.startMs, durationMs: clip.durationMs, name: clip.name } : null,
+        readyState: video.readyState,
+        currentSrc: video.src ? video.src.slice(-80) : '(none)',
+        loadedClipId: loadedClipIdRef.current
+      })
       if (!clip) {
+        console.warn('[PLAY DIAG] No clip at playhead, stopping playback')
         setPlaying(false)
         return
       }
 
       // Auto-snap playhead to clip start if before it (BUG-01 fix)
-      let headMs = playheadMsRef.current
-      if (headMs < clip.startMs) {
-        headMs = clip.startMs
-        setPlayhead(headMs)
+      let effectiveHeadMs = headMs
+      if (effectiveHeadMs < clip.startMs) {
+        console.log('[PLAY DIAG] Snapping playhead from', effectiveHeadMs, 'to clip start', clip.startMs)
+        effectiveHeadMs = clip.startMs
+        setPlayhead(effectiveHeadMs)
       }
 
+      const targetSec = clipTimeSec(clip, effectiveHeadMs)
+      console.log('[PLAY DIAG] Seeking to video time:', targetSec, 'sec')
+
       const seekAndPlay = (): void => {
-        video.currentTime = clipTimeSec(clip, headMs)
-        video.play().catch(() => {
-          /* autoplay policy may block — user interaction required */
+        video.currentTime = targetSec
+        video.play().then(() => {
+          console.log('[PLAY DIAG] Play succeeded')
+        }).catch((err) => {
+          console.error('[PLAY DIAG] Play failed:', err.message || err)
         })
       }
 
@@ -350,6 +387,7 @@ export function Preview(): JSX.Element {
         seekAndPlay()
       } else {
         // Source still loading (effect 1 is setting src) — wait for metadata then play
+        console.log('[PLAY DIAG] Video not ready (readyState=' + video.readyState + '), waiting for loadedmetadata')
         video.addEventListener('loadedmetadata', seekAndPlay, { once: true })
       }
     } else {
@@ -446,7 +484,10 @@ export function Preview(): JSX.Element {
     if (!container) return
     const activeClips = findAllClipsAt(playheadMs)
     const baseClip = activeClips.length > 0 ? activeClips[0] : null
-    const overlayClips = activeClips.slice(1) // higher tracks
+    // Cap overlay elements at 4 to prevent unbounded video element creation.
+    // Lower track indices get priority (they appear first in activeClips).
+    const MAX_OVERLAYS = 4
+    const overlayClips = activeClips.slice(1, 1 + MAX_OVERLAYS)
     const assigned = overlayAssignedRef.current
     const audioIds = overlayAudioIdsRef.current
 
@@ -491,7 +532,8 @@ export function Preview(): JSX.Element {
         if (audioId) audioIds.set(clip.id, audioId)
       }
 
-      const src = toFileUrl(clip.path)
+      // Use proxy path for playback if available
+      const src = toFileUrl(clip.proxyPath ?? clip.path)
       if (vid.src !== src) {
         vid.src = src
         const onLoaded = (): void => {
@@ -508,6 +550,23 @@ export function Preview(): JSX.Element {
           vid.play().catch(() => {})
         }
         vid.style.display = ''
+      }
+
+      // Apply blend mode (GPU-accelerated via CSS compositor)
+      const blendMode = clip.blendMode ?? 'normal'
+      vid.style.mixBlendMode = blendMode
+
+      // Apply CSS filter from modifier stack
+      const cssFilter = buildCssFilter(clip.modifiers)
+      vid.style.filter = cssFilter
+
+      // Apply keyframe-evaluated opacity
+      const localTimeMs = playheadMs - clip.startMs
+      const kfValues = evaluateKeyframes(clip.keyframes, localTimeMs)
+      if (kfValues.opacity !== undefined) {
+        vid.style.opacity = String(kfValues.opacity / 100)
+      } else {
+        vid.style.opacity = '1'
       }
     }
 
@@ -909,17 +968,32 @@ export function Preview(): JSX.Element {
     // Reset transform — only if a clip with transform is selected
     if (selectedClipId) {
       const selClip = clips.find((c) => c.id === selectedClipId)
-      if (selClip?.transform) {
+      if (selClip) {
+        const timelineActions = useTimeline.getState()
+        const isLocked = trackLanes.find((t) => t.index === selClip.trackIndex)?.locked ?? false
         items.push(
           { divider: true },
-          { label: 'Reset Transform', onClick: () => setClipTransform(selectedClipId, { x: 0, y: 0, scaleX: 1, scaleY: 1, rotation: 0 }) }
+          { label: 'Rename', onClick: () => {
+            const newName = window.prompt('Clip name:', selClip.name ?? ''); if (newName?.trim()) timelineActions.setClipName(selectedClipId, newName.trim())
+          }},
+          { label: selClip.muted ? '✓ Mute Audio' : 'Mute Audio', disabled: isLocked, onClick: () => timelineActions.setClipMute(selectedClipId, !selClip.muted) },
+          { divider: true },
+          { label: 'Duplicate', shortcut: 'Ctrl+D', disabled: isLocked, onClick: () => timelineActions.duplicateClip(selectedClipId) },
+          { label: 'Split at Playhead', shortcut: 'S', disabled: isLocked, onClick: () => timelineActions.splitClipAtPlayhead() },
+          { label: 'Delete', shortcut: 'Del', danger: true, disabled: isLocked, onClick: () => timelineActions.deleteClip(selectedClipId) }
         )
+        if (selClip.transform) {
+          items.push(
+            { divider: true },
+            { label: 'Reset Transform', onClick: () => setClipTransform(selectedClipId, { x: 0, y: 0, scaleX: 1, scaleY: 1, rotation: 0 }) }
+          )
+        }
       }
     }
     return items
   }, [resetZoom, resetPan, setZoomMode, setGrid, setQuality, setPlaybackSpeed,
       guides, toggleGuide, cycleGrid, quality, playbackSpeed,
-      selectedClipId, clips, setClipTransform])
+      selectedClipId, clips, trackLanes, setClipTransform])
 
   // ---- Wheel handler: Ctrl+wheel = zoom, plain wheel = pan V, Shift+wheel = pan H ----
   const handleWheel = useCallback((e: React.WheelEvent) => {
@@ -1021,6 +1095,113 @@ export function Preview(): JSX.Element {
     videoTransform = `translate(${tx}%, ${ty}%) scale(${t.scaleX}, ${t.scaleY}) rotate(${t.rotation}deg)`
   }
 
+  // ---- Compute base clip CSS filter + keyframe overrides ----
+  const baseClipAtPlayhead = clips.find(
+    (c) => playheadMs >= c.startMs && playheadMs < c.startMs + c.durationMs && c.trackIndex === 0
+  )
+  const baseClipFilter = baseClipAtPlayhead ? buildCssFilter(baseClipAtPlayhead.modifiers) : ''
+  const baseClipKf = baseClipAtPlayhead
+    ? evaluateKeyframes(baseClipAtPlayhead.keyframes, playheadMs - baseClipAtPlayhead.startMs)
+    : {}
+  // Merge keyframe values over static transform for base clip
+  if (baseClipAtPlayhead?.transform && Object.keys(baseClipKf).length > 0) {
+    const t = baseClipAtPlayhead.transform
+    const kfScaleX = typeof baseClipKf.scale === 'number' ? baseClipKf.scale / 100 : 1
+    const kfScaleY = kfScaleX
+    const kfRotation = typeof baseClipKf.rotation === 'number' ? baseClipKf.rotation : 0
+    const kfX = typeof baseClipKf.positionX === 'number' ? baseClipKf.positionX : 0
+    const kfY = typeof baseClipKf.positionY === 'number' ? baseClipKf.positionY : 0
+    const mergedTx = ((t.x + kfX) / pw) * 100
+    const mergedTy = ((t.y + kfY) / ph) * 100
+    if (!selectedClipId || selectedClipId === baseClipAtPlayhead.id) {
+      videoTransform = `translate(${mergedTx}%, ${mergedTy}%) scale(${t.scaleX * kfScaleX}, ${t.scaleY * kfScaleY}) rotate(${t.rotation + kfRotation}deg)`
+    }
+  }
+
+  // ---- Transition state computation ----
+  // Detect if playhead is within an outTransition zone on the base clip.
+  // If so, compute exit opacity/transform for outgoing clip and enter for incoming.
+  let transitionExitOpacity: number | undefined
+  let transitionExitTransform: string | undefined
+  let transitionEnterClip: typeof clips[number] | null = null
+  let transitionEnterOpacity: number | undefined
+  let transitionEnterTransform: string | undefined
+
+  if (baseClipAtPlayhead?.outTransition) {
+    const trans = baseClipAtPlayhead.outTransition
+    const transStartMs = baseClipAtPlayhead.startMs + baseClipAtPlayhead.durationMs - trans.durationMs
+    const transEndMs = baseClipAtPlayhead.startMs + baseClipAtPlayhead.durationMs
+    if (playheadMs >= transStartMs && playheadMs < transEndMs) {
+      const progress = (playheadMs - transStartMs) / trans.durationMs // 0→1
+      const type = trans.type
+
+      // Exit effect on outgoing clip
+      if (type === 'crossfade' || type === 'dip-to-black') {
+        transitionExitOpacity = 1 - progress
+      } else if (type === 'slide-left') {
+        transitionExitTransform = `translateX(${-progress * 100}%)`
+        transitionExitOpacity = 1 - progress * 0.5
+      } else if (type === 'slide-right') {
+        transitionExitTransform = `translateX(${progress * 100}%)`
+        transitionExitOpacity = 1 - progress * 0.5
+      } else if (type === 'slide-up') {
+        transitionExitTransform = `translateY(${-progress * 100}%)`
+        transitionExitOpacity = 1 - progress * 0.5
+      } else if (type === 'slide-down') {
+        transitionExitTransform = `translateY(${progress * 100}%)`
+        transitionExitOpacity = 1 - progress * 0.5
+      } else if (type === 'zoom-in') {
+        const s = 1 + progress * 0.5
+        transitionExitTransform = `scale(${s})`
+        transitionExitOpacity = 1 - progress
+      } else if (type === 'zoom-out') {
+        const s = 1 - progress * 0.3
+        transitionExitTransform = `scale(${s})`
+        transitionExitOpacity = 1 - progress
+      } else if (type === 'wipe-left' || type === 'wipe-right') {
+        transitionExitOpacity = 1 - progress
+      }
+
+      // Find incoming clip (next clip on same track starting at/near out-point)
+      const outPointMs = baseClipAtPlayhead.startMs + baseClipAtPlayhead.durationMs
+      transitionEnterClip = clips.find(
+        (c) => c.trackIndex === baseClipAtPlayhead.trackIndex &&
+          c.id !== baseClipAtPlayhead.id &&
+          c.startMs <= outPointMs &&
+          c.startMs + c.durationMs > outPointMs
+      ) ?? null
+
+      // Enter effect on incoming clip
+      if (transitionEnterClip) {
+        if (type === 'crossfade' || type === 'dip-to-black') {
+          transitionEnterOpacity = progress
+        } else if (type === 'slide-left') {
+          transitionEnterTransform = `translateX(${(1 - progress) * 100}%)`
+          transitionEnterOpacity = 0.5 + progress * 0.5
+        } else if (type === 'slide-right') {
+          transitionEnterTransform = `translateX(${-(1 - progress) * 100}%)`
+          transitionEnterOpacity = 0.5 + progress * 0.5
+        } else if (type === 'slide-up') {
+          transitionEnterTransform = `translateY(${(1 - progress) * 100}%)`
+          transitionEnterOpacity = 0.5 + progress * 0.5
+        } else if (type === 'slide-down') {
+          transitionEnterTransform = `translateY(${-(1 - progress) * 100}%)`
+          transitionEnterOpacity = 0.5 + progress * 0.5
+        } else if (type === 'zoom-in') {
+          const s = 1.5 - progress * 0.5
+          transitionEnterTransform = `scale(${s})`
+          transitionEnterOpacity = progress
+        } else if (type === 'zoom-out') {
+          const s = 0.7 + progress * 0.3
+          transitionEnterTransform = `scale(${s})`
+          transitionEnterOpacity = progress
+        } else if (type === 'wipe-left' || type === 'wipe-right') {
+          transitionEnterOpacity = progress
+        }
+      }
+    }
+  }
+
   // Viewport dimensions (CSS pixels, before transform scale)
   const viewportW = pw * effectiveScale
   const viewportH = ph * effectiveScale
@@ -1048,10 +1229,10 @@ export function Preview(): JSX.Element {
           flexShrink: 0
         }}
       >
-        {/* Black canvas area with video + overlays */}
+        {/* Canvas area with video + overlays — background from project settings */}
         <div
-          className="bg-black rounded-lg overflow-hidden relative"
-          style={{ width: '100%', height: '100%' }}
+          className="rounded-lg overflow-hidden relative"
+          style={{ width: '100%', height: '100%', backgroundColor: backgroundColor || '#000000' }}
           onContextMenu={handlePreviewContextMenu}
         >
           {/* Video element for base layer (lowest track) */}
@@ -1059,11 +1240,40 @@ export function Preview(): JSX.Element {
             ref={videoRef}
             className="absolute inset-0 w-full h-full object-contain"
             playsInline
-            style={{ zIndex: 0, ...(videoTransform ? {
-              transform: videoTransform,
-              transformOrigin: 'center'
-            } : {}) }}
+            style={{
+              zIndex: 0,
+              ...(videoTransform ? { transform: videoTransform, transformOrigin: 'center' } : {}),
+              ...(baseClipFilter ? { filter: baseClipFilter } : {}),
+              ...(transitionExitOpacity !== undefined ? { opacity: transitionExitOpacity } : {}),
+              ...(transitionExitTransform ? { transform: (videoTransform || '') + ' ' + transitionExitTransform, transformOrigin: 'center' } : {})
+            }}
           />
+
+          {/* Transition enter overlay — renders incoming clip during transition */}
+          {transitionEnterClip && (
+            <video
+              key={`trans-enter-${transitionEnterClip.id}`}
+              src={`file:///${encodeURI(transitionEnterClip.path.replace(/\\/g, '/'))}`}
+              className="absolute inset-0 w-full h-full object-contain"
+              playsInline
+              muted
+              style={{
+                zIndex: 4,
+                opacity: transitionEnterOpacity ?? 1,
+                transform: transitionEnterTransform || undefined,
+                transformOrigin: 'center',
+                filter: buildCssFilter(transitionEnterClip.modifiers)
+              }}
+              ref={(el) => {
+                if (el) {
+                  const localMs = playheadMs - transitionEnterClip!.startMs
+                  el.currentTime = Math.max(0, localMs / 1000) * (transitionEnterClip!.speed ?? 1)
+                  if (isPlaying) el.play().catch(() => {})
+                  else el.pause()
+                }
+              }}
+            />
+          )}
 
           {/* Overlay video pool for multi-layer compositing (higher tracks) */}
           <div ref={overlayContainerRef} className="absolute inset-0" style={{ zIndex: 5, pointerEvents: 'none' }} />
@@ -1138,31 +1348,10 @@ export function Preview(): JSX.Element {
 // Caption drawing
 // ---------------------------------------------------------------------------
 
-// Shared style type used by all caption drawing functions.
-// NOTE: This is the VISUAL LAYER — it consumes timing data from the word
-// activation engine (resolveActiveWord) but does not compute timing itself.
-// Font, color, scale, outline, etc. are kept separate from {activeWord, prevWord, nextWord}.
-interface CaptionDrawStyle {
-  fontFamily: string
-  fontSize: number
-  fontWeight: number
-  color: string
-  strokeColor: string
-  strokeWidth: number
-  bgColor: string
-  bgOpacity: number
-  alignment: 'left' | 'center' | 'right'
-  x: number
-  y: number
-  /** Uniform scale multiplier (1.0 = native size). Applied on top of resolution scale. */
-  scale: number
-  /** Entry-level animation preset */
-  animation: 'none' | 'pop' | 'fade' | 'slide-up' | 'karaoke' | 'typewriter'
-  /** Word-level caption display mode */
-  captionMode: 'full-phrase' | 'word-reveal' | 'karaoke' | 'single-word'
-  /** Smooth word reveal fade duration in ms. 0 = instant (default). */
-  revealFadeMs?: number
-}
+// All caption draw functions accept CaptionStyle directly — the canonical
+// shared type. No local redeclaration needed; the top-level import covers it.
+// CaptionDrawStyle is an alias kept for readability at call sites below.
+type CaptionDrawStyle = CaptionStyle
 
 /** Mode 1: Full Phrase — display entire phrase, no word-level logic */
 function drawFullPhraseCaption(
@@ -1413,7 +1602,7 @@ function drawKaraokeCaption(
   if (style.strokeWidth > 0) ctx.strokeText(text, cx, cy)
   ctx.fillText(text, cx, cy)
 
-  // Highlight active word
+  // Highlight active element
   if (activation.activeWord) {
     const activeIdx = activation.activeIndex
     const activeWord = activation.activeWord.word
@@ -1425,10 +1614,29 @@ function drawKaraokeCaption(
     const startX = cx - totalW / 2 + beforeW
     const wordY = cy - lineH / 2
 
-    ctx.fillStyle = '#FFD700' // gold highlight
+    // Active state colors — fall back to original defaults when not configured
+    const highlightColor = style.activeHighlightColor ?? '#FFD700'
+    const textColor = style.activeTextColor ?? '#000000'
+    const activeScaleVal = style.activeScale ?? 1
+
+    // Apply active scale as an instant snap around the active element's center.
+    // ctx.save()/restore() isolates the transform — does not affect other draws.
+    if (activeScaleVal !== 1) {
+      const pivotX = startX + wordW / 2
+      ctx.save()
+      ctx.translate(pivotX, cy)
+      ctx.scale(activeScaleVal, activeScaleVal)
+      ctx.translate(-pivotX, -cy)
+    }
+
+    ctx.fillStyle = highlightColor
     ctx.fillRect(startX, wordY, wordW, lineH)
-    ctx.fillStyle = '#000'
+    ctx.fillStyle = textColor
     ctx.fillText(activeWord, startX + wordW / 2, cy)
+
+    if (activeScaleVal !== 1) {
+      ctx.restore()
+    }
   }
 }
 
@@ -1446,7 +1654,20 @@ function drawSingleWordCaption(
   }
 
   const word = activation.activeWord.word
-  drawFullPhraseCaption(ctx, width, height, word, style)
+  const activeScaleVal = style.activeScale ?? 1
+
+  // Apply active scale as an instant snap around the caption anchor.
+  if (activeScaleVal !== 1) {
+    const { cx, cy } = computeCaptionLayout(style, { width, height })
+    ctx.save()
+    ctx.translate(cx, cy)
+    ctx.scale(activeScaleVal, activeScaleVal)
+    ctx.translate(-cx, -cy)
+    drawFullPhraseCaption(ctx, width, height, word, style)
+    ctx.restore()
+  } else {
+    drawFullPhraseCaption(ctx, width, height, word, style)
+  }
 }
 
 function wrapText(ctx: CanvasRenderingContext2D, text: string, maxWidth: number): string[] {

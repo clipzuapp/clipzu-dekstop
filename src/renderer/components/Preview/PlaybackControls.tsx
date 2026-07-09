@@ -3,12 +3,13 @@ import { useTimeline } from '../../store/useTimeline'
 import { useProject, type AspectRatio, RESOLUTION_PRESETS } from '../../store/useProject'
 import { usePreviewView, ZOOM_PRESETS, SPEED_PRESETS, type QualityMode } from '../../store/usePreviewView'
 import { formatTimecode } from '../../utils/format'
-import { linearToDb, dbToLinear, formatDb } from '../../utils/audio'
+import { linearToDb, dbToLinear } from '../../utils/audio'
 import {
   SkipBack, Rewind, Play, Pause, FastForward, SkipForward,
   Volume2, VolumeX, Repeat, Maximize2, Minimize2, Grid3x3,
   Square, Eye, EyeOff
 } from 'lucide-react'
+import { SliderInputField } from '../SliderInputField/index'
 
 // ---------------------------------------------------------------------------
 // Dropdown primitive — lightweight, dark-themed, no external deps
@@ -130,11 +131,13 @@ export function PlaybackControls(): JSX.Element {
         alignItems: 'center',
         padding: '0 10px',
         gap: 8,
-        flexShrink: 0
+        flexShrink: 0,
+        overflow: 'hidden',
+        minWidth: 0
       }}
     >
-      {/* Left group: playback buttons */}
-      <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+      {/* Left group: playback buttons — never shrink */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 4, flexShrink: 0 }}>
         <button className="toolbar-btn" onClick={handleJumpStart} title="Jump to start" style={{ padding: '5px 8px' }}>
           <SkipBack size={14} />
         </button>
@@ -197,10 +200,13 @@ export function PlaybackControls(): JSX.Element {
       </div>
 
       {/* Spacer */}
-      <div style={{ flex: 1 }} />
+      <div style={{ flex: 1, minWidth: 8 }} />
+
+      {/* Right-side controls — shrink as a unit when bar is narrow */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexShrink: 1, minWidth: 0, overflow: 'hidden' }}>
 
       {/* Guide toggles */}
-      <div style={{ display: 'flex', alignItems: 'center', gap: 2 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 2, flexShrink: 0 }}>
         <button
           className="toolbar-btn"
           onClick={() => toggleGuide('titleSafe')}
@@ -246,26 +252,9 @@ export function PlaybackControls(): JSX.Element {
         <span style={{ fontSize: 13, color: 'var(--text2)' }}>
           {masterVolume === 0 ? <VolumeX size={14} /> : <Volume2 size={14} />}
         </span>
-        <span style={{ fontSize: 11, color: 'var(--text3)', fontFamily: 'monospace', width: 44, textAlign: 'right' }}>
-          {formatDb(linearToDb(masterVolume))}
-        </span>
-        <input
-          type="range" min={-30} max={0} step={0.5}
-          value={linearToDb(masterVolume)}
-          onChange={(e) => setMasterVolume(dbToLinear(parseFloat(e.target.value)))}
-          className="slider"
-          style={{ width: 60, height: 3 }}
-        />
-        <input
-          type="number" min={-30} max={0} step={0.5}
-          value={linearToDb(masterVolume)}
-          onChange={(e) => setMasterVolume(dbToLinear(Math.max(-30, Math.min(0, parseFloat(e.target.value) || -30))))}
-          style={{
-            width: 48, padding: '1px 3px', fontSize: 11, borderRadius: 3,
-            background: 'var(--bg2)', color: 'var(--text1)', border: '0.5px solid var(--border)',
-            fontFamily: 'monospace', textAlign: 'right'
-          }}
-        />
+        <SliderInputField label="Volume" value={linearToDb(masterVolume)} min={-30} max={0} step={0.5} unit="dB"
+          compact
+          onChange={(v) => setMasterVolume(dbToLinear(v))} />
       </div>
 
       <div className="separator" />
@@ -378,10 +367,12 @@ export function PlaybackControls(): JSX.Element {
         className="toolbar-btn"
         onClick={toggleFullscreen}
         title="Fullscreen preview (Ctrl+Shift+F)"
-        style={{ padding: '4px 6px' }}
+        style={{ padding: '4px 6px', flexShrink: 0 }}
       >
         {isFullscreen ? <Minimize2 size={14} /> : <Maximize2 size={14} />}
       </button>
+
+      </div>{/* end right-side controls */}
     </div>
   )
 }

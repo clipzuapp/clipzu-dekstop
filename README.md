@@ -11,13 +11,23 @@ Desktop video editor with offline Whisper transcription, caption styling, and mu
 - Streaming transcription pipeline (FFmpeg → whisper-cli, no temp files)
 - Caption styling & animation presets (pop, fade, slide-up, karaoke, typewriter)
 - Word-level caption modes (full-phrase, word-reveal, karaoke, single-word)
+- Active state styling (highlight color, active text color, active scale)
 - Text clips with custom styling on timeline
+- **Effects system** with data-driven modifiers (keyframe animation, composable stack)
+- **Transitions** with registry-based definitions (dissolve, slide, wipe, zoom, blur, light)
+- **Filters** with CSS filter pipeline (blur, brightness, contrast, saturation, etc.)
+- **Keyframe animation** with 8 easing curves (linear, easeIn, easeOut, easeInOut, easeOutBack, easeOutExpo, easeOutElastic, easeOutBounce)
+- **Timeline interaction system** with hit-testing, drag/trim/snap, multi-tool support
+- **Multi-tool editing** (select, blade, hand, zoom tools)
+- **Preview viewport controls** (zoom mode, pan, guide overlays, quality modes, playback speed)
 - Export with CapCut-style dimension presets (TikTok, YouTube, Instagram, 4K)
 - Hotkey-driven editing (J/K/L, I/O trim points, Space play/pause)
 - Project save/load (.ecp format)
+- Preset export/import (.ccpreset format)
 - SRT sidecar export alongside every MP4
 - Media library with deduplication and lazy-loaded thumbnails
 - Real-time canvas-based preview with caption rendering
+- LeftRail + RightRail navigation paradigm (CapCut-style)
 
 ## Tech Stack
 
@@ -30,6 +40,10 @@ Desktop video editor with offline Whisper transcription, caption styling, and mu
 | Video | fluent-ffmpeg (`child_process.spawn`, never blocking) |
 | Transcription | whisper-cli.exe (direct spawn, streaming pipeline) |
 | Audio | Web Audio API (AudioEngine, multi-track mixing) |
+| Effects | ModifierEngine + EffectRegistry + TransitionRegistry |
+| Filters | FilterPipeline (Modifier[] → CSS filter) |
+| Keyframes | KeyframeEvaluator (pure interpolation) |
+| Timeline | Canvas renderer + InteractionMachine |
 | DB/Cache | better-sqlite3 (native SQLite, thumbnail cache) |
 | Packaging | electron-builder |
 
@@ -256,7 +270,7 @@ capcut-killer/
 │   │   ├── services/                 # CPU-heavy services (child_process spawn)
 │   │   │   ├── FFmpegService.ts      # Video processing via child_process.spawn
 │   │   │   ├── WhisperService.ts     # whisper-cli.exe direct spawn (streaming + file-based)
-│   │   │   ├── ThumbnailService.ts   # sql.js frame cache with FFmpeg extraction
+│   │   │   ├── ThumbnailService.ts   # better-sqlite3 frame cache with FFmpeg extraction
 │   │   │   └── ExportQueue.ts        # Priority queue, 1 concurrent job, progress tracking
 │   │   └── workers/
 │   │       └── thumbnail.worker.ts   # Background thumbnail generation
@@ -266,15 +280,35 @@ capcut-killer/
 │   │   ├── app/
 │   │   │   ├── layout.tsx            # App shell wrapper
 │   │   │   ├── main.tsx              # React entry point
-│   │   │   └── page.tsx              # Main layout component (all panels)
+│   │   │   └── page.tsx              # Main layout component (all panels, LeftRail, RightRail)
 │   │   ├── components/
 │   │   │   ├── Preview/              # Canvas2D + rAF loop, video playback, caption rendering
-│   │   │   ├── Timeline/             # react-dnd tracks, Canvas renderer, multi-track
+│   │   │   │   ├── index.tsx         # Main preview component
+│   │   │   │   ├── CaptionStrip.tsx  # Caption overlay rendering
+│   │   │   │   ├── PlaybackControls.tsx # Play/pause, seek, speed controls
+│   │   │   │   ├── TransformOverlay.tsx # Clip transform handles
+│   │   │   │   └── GuideOverlay.tsx  # Grid, title safe, action safe guides
+│   │   │   ├── Timeline/             # Canvas-based timeline with InteractionMachine
 │   │   │   ├── CaptionEditor/        # SRT parser UI, inline editing, split/merge
+│   │   │   ├── CaptionPresetPanel/   # Caption style presets browser
 │   │   │   ├── AudioPanel/           # SFX library browser, drag-to-timeline
 │   │   │   ├── Inspector/            # Context-aware properties panel
+│   │   │   │   ├── index.tsx         # Main inspector component
+│   │   │   │   └── useCaptionStyleBinding.ts # Style binding hook
+│   │   │   ├── InspectorHeader/      # Inspector header with entity info
 │   │   │   ├── MediaPanel/           # Clips, audio, text library, drag-to-timeline
 │   │   │   ├── TextPanel/            # Text clip creation and management
+│   │   │   ├── EffectsPanel/         # Effects browser (blur, glow, camera, color, etc.)
+│   │   │   ├── FiltersPanel/         # Filters browser (CSS filter effects)
+│   │   │   ├── TransitionPicker/     # Transition selector (dissolve, slide, wipe, etc.)
+│   │   │   ├── KeyframeEditor/       # Keyframe timeline editor
+│   │   │   ├── StylePanel/           # Style & animation presets
+│   │   │   │   └── AnimationPresets.ts # Animation preset definitions
+│   │   │   ├── LeftRail/             # Left vertical icon rail (Media, Audio, Text, Effects, etc.)
+│   │   │   ├── RightRail/            # Right vertical icon rail (Basic, Background, Animation, etc.)
+│   │   │   ├── ComingSoonPanel/      # Placeholder for unimplemented tabs
+│   │   │   ├── ContextMenu/          # Right-click context menu
+│   │   │   ├── ErrorBoundary/        # React error boundary
 │   │   │   ├── ExportDialog/         # Preset picker, queue progress, codec selection
 │   │   │   │   ├── PresetPicker.tsx  # Export preset selector component
 │   │   │   │   └── index.tsx         # Main export dialog
@@ -282,43 +316,77 @@ capcut-killer/
 │   │   │   ├── ConfirmDialog/        # Confirmation dialog component
 │   │   │   ├── Toast/                # Toast notification component
 │   │   │   └── ShortcutsDialog/      # Keyboard shortcuts reference
+│   │   ├── effects/                  # Effects system (data-driven)
+│   │   │   ├── core/                 # Core engines
+│   │   │   │   ├── EffectRegistry.ts # Effect definition registry
+│   │   │   │   ├── ModifierEngine.ts # Modifier stack processor + validator
+│   │   │   │   ├── PresetRegistry.ts # Preset schema management (.ccpreset)
+│   │   │   │   └── TransitionRegistry.ts # Transition definition registry
+│   │   │   ├── definitions/          # Built-in effect/transition/animation definitions
+│   │   │   │   ├── builtinEffects.ts # Blur, brightness, contrast, saturation, etc.
+│   │   │   │   ├── captionPresets.ts # Caption animation presets
+│   │   │   │   └── transitions.ts    # Transition definitions
+│   │   │   ├── types/                # Type system
+│   │   │   │   ├── Animation.ts      # Animation definition types
+│   │   │   │   ├── Effect.ts         # Effect definition types
+│   │   │   │   ├── Keyframe.ts       # Keyframe + easing types
+│   │   │   │   ├── Modifier.ts       # Modifier domain types
+│   │   │   │   ├── Preset.ts         # Preset + .ccpreset file types
+│   │   │   │   └── Transition.ts     # Transition definition types
+│   │   │   ├── utils/
+│   │   │   │   └── easing.ts         # Easing functions (8 curves)
+│   │   │   ├── errors/
+│   │   │   │   └── EffectErrors.ts   # Effect system error types
+│   │   │   └── index.ts              # Public API barrel export
 │   │   ├── services/                 # Renderer-side services
 │   │   │   ├── AudioEngine.ts        # Web Audio API multi-track mixing engine
+│   │   │   ├── FilterPipeline.ts     # Modifier[] → CSS filter string (SSOT)
+│   │   │   ├── KeyframeEvaluator.ts  # Keyframe interpolation (SSOT)
 │   │   │   └── WaveformService.ts    # Audio waveform extraction for timeline
+│   │   ├── timeline/                 # Timeline interaction system
+│   │   │   ├── interaction.ts        # InteractionMachine, hit testing, snap, lane layout
+│   │   │   └── useTimelineInteraction.ts # React hook for timeline interactions
 │   │   ├── store/                    # Zustand stores with Immer middleware
-│   │   │   ├── useTimeline.ts        # clips, audioTracks, textClips, tracks, playhead, zoom, markers
+│   │   │   ├── useTimeline.ts        # clips, audioTracks, textClips, tracks, playhead, zoom, markers, focusedId, modifiers, keyframes
 │   │   │   ├── useCaption.ts         # entries, style, transcription, silence detection
 │   │   │   ├── useExport.ts          # preset, queue, upscale, codec, quality
 │   │   │   ├── useProject.ts         # name, fps, resolution, undo/redo via snapshots
 │   │   │   ├── useMediaLibrary.ts    # imported media items, lazy thumbnails
 │   │   │   ├── useStartup.ts         # Validation status, environment checks
 │   │   │   ├── useConfirm.ts         # Confirmation dialog state
-│   │   │   └── useToast.ts           # Toast notification state
+│   │   │   ├── useToast.ts           # Toast notification state
+│   │   │   ├── usePreviewView.ts     # Zoom mode, pan, guides, quality, playback speed (NOT persisted)
+│   │   │   └── useSelectedEntity.ts  # Derived hook: focusedId → selected entity type
 │   │   ├── utils/                    # Renderer utilities
+│   │   │   ├── audio.ts              # Audio utilities
 │   │   │   ├── format.ts             # Time formatting utilities
+│   │   │   ├── geometry.ts           # Geometry utilities
 │   │   │   ├── hooks.ts              # Custom React hooks
 │   │   │   └── wordActivation.ts     # Word-level caption timing logic
 │   │   ├── index.html                # Renderer HTML entry
 │   │   └── env.d.ts                  # TypeScript environment declarations
-│   └── shared/utils/
-│       └── srt.ts                    # SSOT: SRT parse/generate/format (pure functions)
-├── models/                           # Primary Whisper model (ggml-small-q5_1.bin)
-├── models-test/                      # Fallback models for validation testing
-│   ├── ggml-base-q8_0.bin           # Fast quantized base (~110MB)
-│   ├── ggml-base.bin                # Unquantized base (~142MB)
-│   ├── ggml-small-q8_0.bin          # Quantized small (~370MB)
-│   └── ggml-small.bin               # Full small (~465MB)
+│   └── shared/
+│       ├── types/
+│       │   └── caption.ts            # CaptionStyle interface (SSOT for caption visual properties)
+│       └── utils/
+│           ├── srt.ts                # SSOT: SRT parse/generate/format (pure functions)
+│           ├── timeline.ts           # Timeline timing utilities (recalcDuration, TextClip invariants)
+│           ├── color.ts              # Hex color conversion (ASS format, CSS alpha)
+│           ├── fonts.ts              # AVAILABLE_FONTS array (SSOT for font selection)
+│           └── renderGeometry.ts     # Caption layout geometry (canvas dims → pixel coords)
+├── models/                           # Primary Whisper model (ggml-small-q8_0.bin)
 ├── resources/
 │   ├── bin/                          # FFmpeg, ffprobe, whisper-cli binaries
 │   └── models/                       # Production model location
 ├── assets/
 │   ├── sfx/                          # 53 bundled SFX: whoosh, pop, ding, cheer, laugh, etc.
-│   └── fonts/                        # Inter, Poppins, Montserrat, Bebas Neue, etc.
+│   └── fonts/                        # Inter, Poppins, Montserrat, Bebas Neue, Oswald, Anton, Fredoka, etc.
 ├── out/                              # Build output
 ├── scripts/
 │   ├── setup-binaries.ps1            # Binary setup automation (FFmpeg + whisper.cpp)
 │   └── download-sfx*.js              # SFX download scripts
-└── test_file/                        # Test media and scripts
+└── test/                             # Test fixtures
+    └── export-fixture.json           # Export test fixture
 ```
 
 ## Export Presets

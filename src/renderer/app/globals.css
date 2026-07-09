@@ -89,22 +89,4 @@
   box-sizing: border-box;
 }
 
-::-webkit-scrollbar {
-  width: 6px;
-  height: 6px;
-}
-
-::-webkit-scrollbar-track {
-  background: #111114;
-}
-
-::-webkit-scrollbar-thumb {
-  background: #2a2a30;
-  border-radius: 3px;
-}
-
-::-webkit-scrollbar-thumb:hover {
-  background: #3a3a44;
-}
-
-/* Custom utility classes — canonical definitions are in editor.css */
+/* Scrollbar styles — canonical definition is in editor.css */

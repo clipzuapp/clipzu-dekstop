@@ -18,6 +18,10 @@ interface UndoSnapshot {
   audioTracks: import('./useTimeline').AudioTrack[]
   textClips: import('./useTimeline').TextClip[]
   captions: import('../../shared/utils/srt').CaptionEntry[]
+  /** Track lane state (mute, lock, hide, solo, name) */
+  tracks?: import('./useTimeline').Track[]
+  /** Timeline markers */
+  markers?: import('./useTimeline').TimelineMarker[]
 }
 
 export interface ProjectState {
@@ -25,6 +29,8 @@ export interface ProjectState {
   fps: 24 | 30 | 60
   resolution: { width: number; height: number }
   aspectRatio: AspectRatio
+  /** Canvas background color (CSS color string). Default '#000000'. */
+  backgroundColor: string
   projectFilePath: string | null
   isDirty: boolean
   undoStack: UndoSnapshot[]
@@ -36,6 +42,7 @@ export interface ProjectActions {
   setFps: (fps: 24 | 30 | 60) => void
   setResolution: (width: number, height: number) => void
   setAspectRatio: (ratio: AspectRatio) => void
+  setBackgroundColor: (color: string) => void
   setProjectFilePath: (path: string | null) => void
   markDirty: () => void
   markClean: () => void
@@ -46,13 +53,16 @@ export interface ProjectActions {
   pushUndo: (snapshot: UndoSnapshot) => void
 }
 
-const MAX_UNDO_STACK = 50
+const MAX_UNDO_STACK = 20
+/** Max serialized snapshot size (5 MB). Skip if larger to prevent memory blowup. */
+const MAX_SNAPSHOT_BYTES = 5 * 1024 * 1024
 
 const initialState: ProjectState = {
   name: 'Untitled Project',
   fps: 30,
   resolution: { width: 1080, height: 1920 },
   aspectRatio: '9:16',
+  backgroundColor: '#000000',
   projectFilePath: null,
   isDirty: false,
   undoStack: [],
@@ -94,6 +104,12 @@ export const useProject = create<ProjectState & ProjectActions>()(
         state.isDirty = true
       }),
 
+    setBackgroundColor: (color) =>
+      set((state) => {
+        state.backgroundColor = color
+        state.isDirty = true
+      }),
+
     setProjectFilePath: (path) =>
       set((state) => {
         state.projectFilePath = path
@@ -120,6 +136,7 @@ export const useProject = create<ProjectState & ProjectActions>()(
         if (data.fps !== undefined) state.fps = data.fps
         if (data.resolution) state.resolution = data.resolution
         if (data.aspectRatio) state.aspectRatio = data.aspectRatio
+        if (data.backgroundColor !== undefined) state.backgroundColor = data.backgroundColor
         if (data.projectFilePath !== undefined) state.projectFilePath = data.projectFilePath
         state.isDirty = false
         state.undoStack = []
@@ -150,6 +167,19 @@ export const useProject = create<ProjectState & ProjectActions>()(
 
     pushUndo: (snapshot) =>
       set((state) => {
+        // Size guard: skip snapshot if too large (prevents OOM on complex projects)
+        try {
+          const size = JSON.stringify(snapshot).length
+          if (size > MAX_SNAPSHOT_BYTES) {
+            // Still clear redo and mark dirty, just don't add to undo stack
+            state.redoStack = []
+            state.isDirty = true
+            return
+          }
+        } catch {
+          // If stringify fails (circular ref), skip undo
+          return
+        }
         state.undoStack.push(snapshot)
         if (state.undoStack.length > MAX_UNDO_STACK) {
           state.undoStack.shift()

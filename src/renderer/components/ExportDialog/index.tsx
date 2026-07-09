@@ -18,6 +18,12 @@ export function ExportDialog({ onClose, show = true }: { onClose: () => void; sh
     upscaleAlgorithm, setUpscaleAlgorithm,
     codec, setCodec,
     qualityPreset, setQualityPreset,
+    bitrateKbps, setBitrate,
+    bitrateMode, setBitrateMode,
+    exportFrameRange, setExportFrameRange,
+    audioOnly, setAudioOnly,
+    fps, setFps,
+    hardwareAccel, setHardwareAccel,
     queue, startExport, cancelExport, clearQueue
   } = useExport(useShallow((s) => ({
     preset: s.preset,
@@ -30,6 +36,18 @@ export function ExportDialog({ onClose, show = true }: { onClose: () => void; sh
     setCodec: s.setCodec,
     qualityPreset: s.qualityPreset,
     setQualityPreset: s.setQualityPreset,
+    bitrateKbps: s.bitrateKbps,
+    setBitrate: s.setBitrate,
+    bitrateMode: s.bitrateMode,
+    setBitrateMode: s.setBitrateMode,
+    exportFrameRange: s.exportFrameRange,
+    setExportFrameRange: s.setExportFrameRange,
+    audioOnly: s.audioOnly,
+    setAudioOnly: s.setAudioOnly,
+    fps: s.fps,
+    setFps: s.setFps,
+    hardwareAccel: s.hardwareAccel,
+    setHardwareAccel: s.setHardwareAccel,
     queue: s.queue,
     startExport: s.startExport,
     cancelExport: s.cancelExport,
@@ -75,49 +93,15 @@ export function ExportDialog({ onClose, show = true }: { onClose: () => void; sh
         const dims = useExport.getState().getOutputDimensions()
         const renderWidth = upscaleEnabled ? Math.round(dims.width / 2) : dims.width
         const renderHeight = upscaleEnabled ? Math.round(dims.height / 2) : dims.height
-        const fallbackStyle = {
-          fontFamily: captionStyle.fontFamily,
-          fontSize: captionStyle.fontSize,
-          fontWeight: captionStyle.fontWeight,
-          fontColor: captionStyle.color,
-          bgColor: captionStyle.bgColor,
-          bgOpacity: captionStyle.bgOpacity,
-          strokeColor: captionStyle.strokeColor,
-          strokeWidth: captionStyle.strokeWidth,
-          x: captionStyle.x,
-          y: captionStyle.y,
-          alignment: captionStyle.alignment,
-          position: captionStyle.position,
-          scale: captionStyle.scale ?? 1,
-          captionMode: captionStyle.captionMode,
-          animation: captionStyle.animation,
-          revealFadeMs: captionStyle.revealFadeMs
-        }
+        // fallbackStyle is CaptionStyle — pass it directly, no manual field projection needed
+        const fallbackStyle = captionStyle
         srtPath = await window.electron.ipcRenderer.invoke('project:createTempASS', textClips.map((clip) => ({
           startMs: clip.startMs,
           endMs: clip.endMs,
           text: clip.text,
           words: clip.words,
-          style: clip.style
-            ? {
-                fontFamily: clip.style.fontFamily,
-                fontSize: clip.style.fontSize,
-                fontWeight: clip.style.fontWeight,
-                fontColor: clip.style.color,
-                bgColor: clip.style.bgColor,
-                bgOpacity: clip.style.bgOpacity,
-                strokeColor: clip.style.strokeColor,
-                strokeWidth: clip.style.strokeWidth,
-                x: clip.style.x,
-                y: clip.style.y,
-                alignment: clip.style.alignment,
-                position: clip.style.position,
-                scale: clip.style.scale ?? 1,
-                captionMode: clip.style.captionMode,
-                animation: clip.style.animation,
-                revealFadeMs: clip.style.revealFadeMs
-              }
-            : undefined
+          // Per-clip style is already CaptionStyle — pass through without projection
+          style: clip.style ?? undefined
         })), {
           outputWidth: renderWidth,
           outputHeight: renderHeight,
@@ -156,33 +140,14 @@ export function ExportDialog({ onClose, show = true }: { onClose: () => void; sh
             fadeOutMs: t.fadeOutMs ?? 0
           })),
         srtPath,
-        captionStyle: textClips.length > 0
-          ? {
-              fontFamily: captionStyle.fontFamily,
-              fontSize: captionStyle.fontSize,
-              fontWeight: captionStyle.fontWeight,
-              fontColor: captionStyle.color,
-              bgColor: captionStyle.bgColor,
-              bgOpacity: captionStyle.bgOpacity,
-              strokeColor: captionStyle.strokeColor,
-              strokeWidth: captionStyle.strokeWidth,
-              x: captionStyle.x,
-              y: captionStyle.y,
-              alignment: captionStyle.alignment,
-              position: captionStyle.position,
-              scale: captionStyle.scale ?? 1,
-              captionMode: captionStyle.captionMode,
-              animation: captionStyle.animation,
-              revealFadeMs: captionStyle.revealFadeMs
-            }
-          : null,
+        // captionStyle is CaptionStyle — pass directly
+        captionStyle: textClips.length > 0 ? captionStyle : null,
         outputPath,
         totalDurationMs,
         projectWidth: projectResolution.width,
         projectHeight: projectResolution.height,
         fps: projectFps
       })
-
       // Export SRT sidecar (non-blocking — don't show error since video may still succeed)
       if (textClips.length > 0) {
         window.electron.ipcRenderer.invoke(
@@ -202,8 +167,7 @@ export function ExportDialog({ onClose, show = true }: { onClose: () => void; sh
   }
 
   return (
-    <div className={`export-drawer${show ? ' open' : ''}`} style={{ zIndex: 100 }}>
-      <div className="flex flex-col h-full">
+    <div className={`export-drawer${show ? ' open' : ''}`}>
         {/* Header */}
         <div className="flex items-center justify-between p-4 border-b border-editor-border shrink-0">
           <h2 className="text-lg font-semibold">Export</h2>
@@ -309,6 +273,118 @@ export function ExportDialog({ onClose, show = true }: { onClose: () => void; sh
             )}
           </div>
 
+          {/* Bitrate */}
+          <div className="space-y-1">
+            <label className="text-[10px] text-gray-500 uppercase tracking-wider">Bitrate</label>
+            <div className="flex gap-1">
+              {(['auto', 'cbr', 'vbr'] as const).map((m) => (
+                <button
+                  key={m}
+                  className={`btn flex-1 text-xs ${bitrateMode === m ? 'btn-primary' : 'btn-secondary'}`}
+                  onClick={() => setBitrateMode(m)}
+                >
+                  {m.toUpperCase()}
+                </button>
+              ))}
+            </div>
+            {bitrateMode !== 'auto' && (
+              <div className="flex items-center gap-2 mt-1">
+                <input
+                  type="number"
+                  value={bitrateKbps ?? 8000}
+                  onChange={(e) => setBitrate(Math.max(500, Number(e.target.value)))}
+                  className="w-24 bg-editor-surface border border-editor-border rounded px-2 py-1 text-xs text-white"
+                  min={500}
+                  step={500}
+                />
+                <span className="text-[10px] text-gray-500">kbps</span>
+              </div>
+            )}
+          </div>
+
+          {/* FPS */}
+          <div className="space-y-1">
+            <label className="text-[10px] text-gray-500 uppercase tracking-wider">Frame Rate</label>
+            <div className="flex gap-1">
+              {([24, 30, 60] as const).map((f) => (
+                <button
+                  key={f}
+                  className={`btn flex-1 text-xs ${fps === f ? 'btn-primary' : 'btn-secondary'}`}
+                  onClick={() => setFps(f)}
+                >
+                  {f} fps
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {/* Audio Only */}
+          <div className="space-y-1">
+            <div className="flex items-center gap-2">
+              <input
+                type="checkbox"
+                checked={audioOnly}
+                onChange={(e) => setAudioOnly(e.target.checked)}
+                className="accent-accent"
+              />
+              <label className="text-xs text-gray-300">Audio Only (no video)</label>
+            </div>
+          </div>
+
+          {/* Frame Range */}
+          <div className="space-y-1">
+            <label className="text-[10px] text-gray-500 uppercase tracking-wider">Frame Range</label>
+            <div className="flex gap-1">
+              <button
+                className={`btn flex-1 text-xs ${!exportFrameRange ? 'btn-primary' : 'btn-secondary'}`}
+                onClick={() => setExportFrameRange(null)}
+              >
+                Full Timeline
+              </button>
+              <button
+                className={`btn flex-1 text-xs ${exportFrameRange ? 'btn-primary' : 'btn-secondary'}`}
+                onClick={() => setExportFrameRange({ startMs: 0, endMs: totalDurationMs })}
+              >
+                Custom Range
+              </button>
+            </div>
+            {exportFrameRange && (
+              <div className="flex items-center gap-2 mt-1">
+                <input
+                  type="number"
+                  value={Math.round(exportFrameRange.startMs / 1000 * 100) / 100}
+                  onChange={(e) => setExportFrameRange({ ...exportFrameRange, startMs: Math.max(0, Number(e.target.value) * 1000) })}
+                  className="w-20 bg-editor-surface border border-editor-border rounded px-2 py-1 text-xs text-white"
+                  min={0}
+                  step={0.1}
+                />
+                <span className="text-[10px] text-gray-500">to</span>
+                <input
+                  type="number"
+                  value={Math.round(exportFrameRange.endMs / 1000 * 100) / 100}
+                  onChange={(e) => setExportFrameRange({ ...exportFrameRange, endMs: Math.min(totalDurationMs, Number(e.target.value) * 1000) })}
+                  className="w-20 bg-editor-surface border border-editor-border rounded px-2 py-1 text-xs text-white"
+                  min={0}
+                  step={0.1}
+                />
+                <span className="text-[10px] text-gray-500">sec</span>
+              </div>
+            )}
+          </div>
+
+          {/* Hardware Acceleration */}
+          <div className="space-y-1">
+            <div className="flex items-center gap-2">
+              <input
+                type="checkbox"
+                checked={hardwareAccel}
+                onChange={(e) => setHardwareAccel(e.target.checked)}
+                className="accent-accent"
+              />
+              <label className="text-xs text-gray-300">Hardware Acceleration (NVENC/QSV)</label>
+            </div>
+          </div>
+
           {/* Info */}
           <div className="p-2 bg-editor-surface rounded text-xs text-gray-400 space-y-1">
             <p>Clips: {clips.length} | Audio: {audioTracks.length} | Captions: {textClips.length}</p>
@@ -367,7 +443,6 @@ export function ExportDialog({ onClose, show = true }: { onClose: () => void; sh
             </div>
           )}
         </div>
-      </div>
     </div>
   )
 }

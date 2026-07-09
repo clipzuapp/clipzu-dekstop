@@ -1,5 +1,6 @@
 import { create } from 'zustand'
 import { immer } from 'zustand/middleware/immer'
+import type { CaptionStyle } from '../../shared/types/caption'
 
 const EXPORT_PRESETS = {
   'tiktok-reels': { label: '9:16 — TikTok / Reels', width: 1080, height: 1920 },
@@ -35,6 +36,18 @@ interface ExportState {
   codec: 'h264' | 'h265' | 'prores' | 'vp9'
   qualityPreset: 'fast' | 'slow'
   isExporting: boolean
+  /** Bitrate in kbps. null = auto (codec default). */
+  bitrateKbps: number | null
+  /** Bitrate mode: auto lets codec decide, cbr = constant, vbr = variable. */
+  bitrateMode: 'auto' | 'cbr' | 'vbr'
+  /** Custom frame range for export. null = full timeline. */
+  exportFrameRange: { startMs: number; endMs: number } | null
+  /** When true, export audio only (no video stream). */
+  audioOnly: boolean
+  /** Output frame rate. */
+  fps: 24 | 30 | 60
+  /** Enable hardware-accelerated encoding when available. */
+  hardwareAccel: boolean
 }
 
 interface ExportActions {
@@ -44,6 +57,12 @@ interface ExportActions {
   setUpscaleAlgorithm: (algorithm: 'lanczos' | 'bicubic') => void
   setCodec: (codec: 'h264' | 'h265' | 'prores' | 'vp9') => void
   setQualityPreset: (preset: 'fast' | 'slow') => void
+  setBitrate: (kbps: number | null) => void
+  setBitrateMode: (mode: 'auto' | 'cbr' | 'vbr') => void
+  setExportFrameRange: (range: { startMs: number; endMs: number } | null) => void
+  setAudioOnly: (enabled: boolean) => void
+  setFps: (fps: 24 | 30 | 60) => void
+  setHardwareAccel: (enabled: boolean) => void
   startExport: (params: {
     clipPaths: string[]
     clipTrackIndices: number[]
@@ -60,24 +79,7 @@ interface ExportActions {
     clipSpeeds?: number[]
     audioTracks: Array<{ path: string; startMs: number; volume: number; trimStart?: number; durationMs?: number; fadeInMs?: number; fadeOutMs?: number }>
     srtPath: string | null
-    captionStyle: {
-      fontFamily: string
-      fontSize: number
-      fontWeight: number
-      fontColor: string
-      bgColor: string
-      bgOpacity: number
-      strokeColor: string
-      strokeWidth: number
-      x: number
-      y: number
-      alignment: 'left' | 'center' | 'right'
-      position: 'top' | 'center' | 'bottom'
-      scale?: number
-      captionMode?: 'full-phrase' | 'word-reveal' | 'karaoke' | 'single-word'
-      animation?: 'none' | 'pop' | 'fade' | 'slide-up' | 'karaoke' | 'typewriter'
-      revealFadeMs?: number
-    } | null
+    captionStyle: CaptionStyle | null
     outputPath: string
     totalDurationMs: number
     projectWidth: number
@@ -100,7 +102,13 @@ const initialState: ExportState = {
   upscaleAlgorithm: 'lanczos',
   codec: 'h264',
   qualityPreset: 'slow',
-  isExporting: false
+  isExporting: false,
+  bitrateKbps: null,
+  bitrateMode: 'auto',
+  exportFrameRange: null,
+  audioOnly: false,
+  fps: 30,
+  hardwareAccel: false,
 }
 
 export const useExport = create<ExportState & ExportActions>()(
@@ -138,6 +146,36 @@ export const useExport = create<ExportState & ExportActions>()(
         state.qualityPreset = preset
       }),
 
+    setBitrate: (kbps) =>
+      set((state) => {
+        state.bitrateKbps = kbps
+      }),
+
+    setBitrateMode: (mode) =>
+      set((state) => {
+        state.bitrateMode = mode
+      }),
+
+    setExportFrameRange: (range) =>
+      set((state) => {
+        state.exportFrameRange = range
+      }),
+
+    setAudioOnly: (enabled) =>
+      set((state) => {
+        state.audioOnly = enabled
+      }),
+
+    setFps: (fps) =>
+      set((state) => {
+        state.fps = fps
+      }),
+
+    setHardwareAccel: (enabled) =>
+      set((state) => {
+        state.hardwareAccel = enabled
+      }),
+
     startExport: async (params) => {
       const state = get()
       const dims = state.getOutputDimensions()
@@ -154,7 +192,13 @@ export const useExport = create<ExportState & ExportActions>()(
           codec: state.codec,
           qualityPreset: state.qualityPreset,
           upscaleEnabled: state.upscaleEnabled,
-          upscaleAlgorithm: state.upscaleAlgorithm
+          upscaleAlgorithm: state.upscaleAlgorithm,
+          bitrateKbps: state.bitrateKbps,
+          bitrateMode: state.bitrateMode,
+          exportFrameRange: state.exportFrameRange,
+          audioOnly: state.audioOnly,
+          fps: state.fps,
+          hardwareAccel: state.hardwareAccel
         })
 
         set((s) => {

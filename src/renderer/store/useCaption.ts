@@ -3,30 +3,9 @@ import { immer } from 'zustand/middleware/immer'
 import { parseSRT, type CaptionEntry } from '../../shared/utils/srt'
 import { useTimeline, pushUndoSnapshot, type TextClip } from './useTimeline'
 import { useToast } from './useToast'
+import type { CaptionStyle } from '../../shared/types/caption'
 
-export interface CaptionStyle {
-  fontFamily: string
-  fontSize: number
-  fontWeight: number
-  color: string
-  strokeColor: string
-  strokeWidth: number
-  bgColor: string
-  bgOpacity: number
-  alignment: 'left' | 'center' | 'right'
-  position: 'top' | 'center' | 'bottom'
-  x: number
-  y: number
-  /** Rotation in degrees (0 = upright) */
-  rotation: number
-  /** Uniform scale multiplier (1.0 = native size) */
-  scale: number
-  animation: 'none' | 'pop' | 'fade' | 'slide-up' | 'karaoke' | 'typewriter'
-  /** Word-level caption display mode (independent from entry animation) */
-  captionMode: 'full-phrase' | 'word-reveal' | 'karaoke' | 'single-word'
-  /** Smooth fade-in for words in word-reveal mode (ms). 0 = instant (default). 80-120ms recommended. */
-  revealFadeMs?: number
-}
+export type { CaptionStyle }
 
 interface CaptionState {
   status: 'idle' | 'transcribing' | 'done' | 'error'
@@ -58,6 +37,12 @@ interface CaptionActions {
   mergeEntries: (id1: string, id2: string) => void
   reformatForShorts: () => void
   detectAndStoreSilences: (gapThresholdMs?: number) => Array<{ startMs: number; endMs: number; durationMs: number }>
+  /** Apply a named caption preset to all currently selected text clips. */
+  applyPresetToSelection: (presetStyle: Partial<CaptionStyle>) => void
+  /** Apply a named caption preset to ALL text clips on the timeline. */
+  applyPresetToAll: (presetStyle: Partial<CaptionStyle>) => void
+  /** Apply an arbitrary partial style to all currently selected text clips. */
+  applyStyleToSelection: (style: Partial<CaptionStyle>) => void
 }
 
 export const defaultStyle: CaptionStyle = {
@@ -77,7 +62,12 @@ export const defaultStyle: CaptionStyle = {
   scale: 1,
   animation: 'pop',
   captionMode: 'full-phrase',
-  revealFadeMs: 0
+  revealFadeMs: 0,
+  // Active State — undefined by default; renderers fall back to existing defaults.
+  // Set explicitly by the user via the Inspector "Active State" section.
+  activeHighlightColor: undefined,
+  activeTextColor: undefined,
+  activeScale: undefined,
 }
 
 const initialState: CaptionState = {
@@ -436,7 +426,7 @@ export const useCaption = create<CaptionState & CaptionActions>()(
     },
 
     splitEntryWithText: (id, firstText, secondText, splitAtMs) => {
-      pushUndoSnapshot()
+      // splitTextClip already pushes undo snapshot — no duplicate push here
       useTimeline.getState().splitTextClip(id, splitAtMs)
       // Re-read fresh state AFTER split — the previous snapshot is stale
       const timeline = useTimeline.getState()
@@ -603,6 +593,66 @@ export const useCaption = create<CaptionState & CaptionActions>()(
       }
 
       return silences
+    },
+
+    applyPresetToSelection: (presetStyle) => {
+      const timeline = useTimeline.getState()
+      const selectedIds = timeline.selectedIds.filter((id) =>
+        timeline.textClips.some((tc) => tc.id === id)
+      )
+      if (selectedIds.length === 0) {
+        useToast.getState().warning('No captions selected')
+        return
+      }
+      // Single undo snapshot for the entire batch operation
+      pushUndoSnapshot()
+      for (const id of selectedIds) {
+        const tc = timeline.textClips.find((t) => t.id === id)
+        if (tc) {
+          const merged = { ...defaultStyle, ...tc.style, ...presetStyle }
+          // Use Live variant to avoid N additional undo snapshots
+          timeline.updateTextClipLive(id, { style: merged })
+        }
+      }
+      useToast.getState().success(`Style applied to ${selectedIds.length} caption${selectedIds.length > 1 ? 's' : ''}`)
+    },
+
+    applyPresetToAll: (presetStyle) => {
+      const timeline = useTimeline.getState()
+      if (timeline.textClips.length === 0) {
+        useToast.getState().warning('No captions on timeline')
+        return
+      }
+      // Single undo snapshot for the entire batch operation
+      pushUndoSnapshot()
+      for (const tc of timeline.textClips) {
+        const merged = { ...defaultStyle, ...tc.style, ...presetStyle }
+        // Use Live variant to avoid N additional undo snapshots
+        timeline.updateTextClipLive(tc.id, { style: merged })
+      }
+      useToast.getState().success(`Style applied to all ${timeline.textClips.length} captions`)
+    },
+
+    applyStyleToSelection: (style) => {
+      const timeline = useTimeline.getState()
+      const selectedIds = timeline.selectedIds.filter((id) =>
+        timeline.textClips.some((tc) => tc.id === id)
+      )
+      if (selectedIds.length === 0) {
+        useToast.getState().warning('No captions selected')
+        return
+      }
+      // Single undo snapshot for the entire batch operation
+      pushUndoSnapshot()
+      for (const id of selectedIds) {
+        const tc = timeline.textClips.find((t) => t.id === id)
+        if (tc) {
+          const merged = { ...defaultStyle, ...tc.style, ...style }
+          // Use Live variant to avoid N additional undo snapshots
+          timeline.updateTextClipLive(id, { style: merged })
+        }
+      }
+      useToast.getState().success(`Style applied to ${selectedIds.length} caption${selectedIds.length > 1 ? 's' : ''}`)
     }
   }))
 )

@@ -33,6 +33,14 @@
     'Helvetica Neue', Arial, sans-serif;
   --font-mono: 'SF Mono', 'Monaco', 'Inconsolata', 'Roboto Mono', 'Courier New',
     monospace;
+
+  /* Brand identity */
+  --brand-gradient: linear-gradient(135deg, #4f7fff 0%, #7c5cfc 100%);
+
+  /* Glassmorphic surface — floating panels, overlays */
+  --glass-bg: rgba(26, 24, 22, 0.85);
+  --glass-blur: blur(12px);
+  --glass-border: rgba(255, 255, 255, 0.08);
 }
 
 /* ==========================================================================
@@ -74,16 +82,25 @@ button:focus:not(:focus-visible) {
   scrollbar-color: var(--bg4) transparent;
 }
 
+/* Rail scrollbars — hidden, scrollable via wheel only */
+.rail-scroll {
+  scrollbar-width: none;  /* Firefox */
+  -ms-overflow-style: none;  /* IE/Edge */
+}
+.rail-scroll::-webkit-scrollbar {
+  display: none;  /* Chrome/Safari/Opera */
+}
+
 /* ==========================================================================
    Typography scale — strict sizing for visual hierarchy
    ========================================================================== */
 
 /* Panel section titles */
 .section-title {
-  font-size: 12px;
+  font-size: 11px;
   font-weight: 500;
   text-transform: uppercase;
-  letter-spacing: 0.5px;
+  letter-spacing: 0.08em;
   color: var(--text3);
 }
 
@@ -118,7 +135,7 @@ button:focus:not(:focus-visible) {
 
 /* Tab labels */
 .tab-label {
-  font-size: 12px;
+  font-size: 11px;
   font-weight: 400;
   color: var(--text3);
   transition: all 0.2s var(--ease-spring-subtle);
@@ -135,7 +152,7 @@ button:focus:not(:focus-visible) {
 
 /* Toolbar buttons */
 .toolbar-btn {
-  font-size: 13px;
+  font-size: 12px;
   font-weight: 400;
   color: var(--text2);
   padding: 4px 8px;
@@ -185,8 +202,8 @@ button:focus:not(:focus-visible) {
 }
 
 .resize-handle:hover {
-  background: var(--accent);
-  box-shadow: 0 0 8px rgba(79, 127, 255, 0.4);
+  background: rgba(79, 127, 255, 0.3);
+  box-shadow: 0 0 8px rgba(79, 127, 255, 0.2);
 }
 
 .resize-handle-vertical {
@@ -210,6 +227,29 @@ button:focus:not(:focus-visible) {
   box-shadow:
     0 1px 0 rgba(255, 255, 255, 0.03) inset,
     0 2px 8px rgba(0, 0, 0, 0.6);
+}
+
+/* Inspector panel — distinct surface with subtle depth */
+.inspector-panel {
+  background: var(--bg1);
+  border-left: 0.5px solid var(--border);
+  box-shadow: -2px 0 8px rgba(0, 0, 0, 0.3);
+}
+
+/* Inspector content area — scrollable, no visible scrollbar */
+.inspector-scroll {
+  scrollbar-width: thin;
+  scrollbar-color: var(--bg4) transparent;
+}
+.inspector-scroll::-webkit-scrollbar {
+  width: 3px;
+}
+.inspector-scroll::-webkit-scrollbar-thumb {
+  background: var(--bg4);
+  border-radius: 2px;
+}
+.inspector-scroll::-webkit-scrollbar-thumb:hover {
+  background: var(--border2);
 }
 
 /* Input fields */
@@ -246,17 +286,20 @@ button:focus:not(:focus-visible) {
 }
 
 .btn:active {
-  transform: translateY(0);
+  transform: scale(0.97);
   box-shadow: 0 1px 2px rgba(0, 0, 0, 0.3);
 }
 
 .btn-primary {
-  background: var(--accent);
+  background: var(--brand-gradient);
   color: #fff;
+  font-weight: 500;
+  box-shadow: 0 2px 8px rgba(79, 127, 255, 0.3);
 }
 
 .btn-primary:hover {
-  background: color-mix(in srgb, var(--accent) 85%, #fff);
+  box-shadow: 0 4px 16px rgba(79, 127, 255, 0.45);
+  filter: brightness(1.1);
 }
 
 .btn-secondary {
@@ -383,25 +426,79 @@ button:focus:not(:focus-visible) {
 }
 
 /* ==========================================================================
-   Export drawer — slides in from right
+   Export drawer — fixed overlay, slides in from right edge of viewport.
+   Rendered outside the main layout flex tree to avoid overlapping panels.
    ========================================================================== */
 
 .export-drawer {
-  position: absolute;
+  position: fixed;
   right: 0;
-  top: 38px;
+  top: 0;
   bottom: 0;
-  width: 280px;
+  width: 300px;
   background: var(--bg1);
   border-left: 0.5px solid var(--border);
+  box-shadow: -4px 0 24px rgba(0, 0, 0, 0.5);
   transform: translateX(100%);
-  transition: transform 0.2s ease;
-  z-index: 100;
+  transition: transform 0.22s var(--ease-decelerate);
+  z-index: 500;
   overflow-y: auto;
+  display: flex;
+  flex-direction: column;
 }
 
 .export-drawer.open {
   transform: translateX(0);
+}
+
+/* ==========================================================================
+   Rail icon buttons (LeftRail / RightRail) — hover via CSS, not JS mutation
+   ========================================================================== */
+
+.rail-btn {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 3px;
+  width: 52px;
+  padding: 6px 4px;
+  border-radius: 6px;
+  border: none;
+  background: transparent;
+  color: var(--text3);
+  cursor: pointer;
+  transition: background 0.12s, color 0.12s;
+  font-size: 10px;
+  font-weight: 400;
+  line-height: 1.1;
+}
+
+.rail-btn:hover {
+  background: var(--bg3);
+  color: var(--text2);
+}
+
+.rail-btn[aria-pressed='true'] {
+  background: rgba(79, 127, 255, 0.15);
+  color: var(--accent);
+}
+
+.rail-btn[aria-pressed='true']:hover {
+  background: rgba(79, 127, 255, 0.22);
+  color: var(--accent);
+}
+
+/* Rail icon — slightly larger for better visual weight */
+.rail-btn svg {
+  opacity: 0.85;
+  transition: opacity 0.12s;
+}
+.rail-btn:hover svg {
+  opacity: 1;
+}
+.rail-btn[aria-pressed='true'] svg {
+  opacity: 1;
 }
 
 /* ==========================================================================
@@ -413,4 +510,358 @@ button:focus:not(:focus-visible) {
   color: var(--text3);
   text-align: center;
   padding: 20px;
+}
+
+/* ==========================================================================
+   SliderInputField — dual slider + numeric input (SSOT control)
+   ========================================================================== */
+
+.sif-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 12px;
+}
+
+.sif-label {
+  width: 90px;
+  font-size: 12px;
+  color: var(--text3);
+  flex-shrink: 0;
+  font-family: var(--font-mono);
+}
+
+.sif-slider {
+  flex: 1;
+  accent-color: var(--accent);
+  height: 4px;
+}
+
+.sif-input {
+  width: 52px;
+  padding: 1px 3px;
+  font-size: 12px;
+  border-radius: 3px;
+  background: var(--bg2);
+  color: var(--text1);
+  border: 0.5px solid var(--border);
+  font-family: var(--font-mono);
+  text-align: right;
+  outline: none;
+  transition: border-color 0.15s;
+}
+
+.sif-input:focus {
+  border-color: var(--accent);
+}
+
+/* Hide number input spin buttons — slider is the primary interaction */
+.sif-input::-webkit-inner-spin-button,
+.sif-input::-webkit-outer-spin-button {
+  -webkit-appearance: none;
+  appearance: none;
+  margin: 0;
+}
+.sif-input[type='number'] {
+  -moz-appearance: textfield;
+  appearance: textfield;
+}
+
+.sif-unit {
+  font-size: 11px;
+  color: var(--text3);
+  margin-left: 2px;
+  flex-shrink: 0;
+}
+
+/* Compact mode — for transport bar / toolbar contexts */
+.sif-compact {
+  padding: 0;
+  gap: 6px;
+}
+
+/* ==========================================================================
+   Micro-interactions — tactile feedback, depth, glow
+   ========================================================================== */
+
+/* Button press feedback — rail + toolbar buttons */
+.rail-btn:active,
+.toolbar-btn:active {
+  transform: scale(0.97);
+}
+
+/* Panel depth — inner top highlight for elevated surfaces */
+.panel-depth {
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04), 0 2px 8px rgba(0, 0, 0, 0.6);
+}
+
+/* Playhead glow — always findable on the timeline */
+.playhead-glow {
+  box-shadow: 0 0 6px var(--red), 0 0 12px rgba(239, 68, 68, 0.3);
+}
+
+/* Caption pill active glow */
+.cap-pill-glow {
+  box-shadow: 0 0 8px rgba(79, 127, 255, 0.3);
+}
+
+/* Smooth caption strip scroll */
+.caption-strip-smooth {
+  scroll-behavior: smooth;
+}
+
+/* ==========================================================================
+   Layout classes — page.tsx shell (extracted from inline styles)
+   ========================================================================== */
+
+.layout-shell {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  width: 100vw;
+  background: radial-gradient(ellipse at 50% 30%, #141210 0%, var(--bg0) 70%);
+  overflow: hidden;
+  position: relative;
+}
+
+.layout-toolbar {
+  height: 38px;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 16px;
+  background: linear-gradient(180deg, rgba(255,255,255,0.03) 0%, var(--bg1) 100%);
+  border-bottom: 0.5px solid var(--border);
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.4);
+}
+
+.layout-main-row {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.layout-preview-col {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.layout-preview-area {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--bg0);
+  padding: 16px;
+  min-height: 0;
+}
+
+/* ==========================================================================
+   Inspector body classes — extracted from inline styles
+   ========================================================================== */
+
+.inspector-body {
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  font-size: 13px;
+}
+
+.inspector-grid-2col {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+
+.inspector-anim-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr;
+  gap: 4px;
+  padding: 0 12px;
+}
+
+.inspector-anim-btn {
+  padding: 4px 2px;
+  font-size: 12px;
+  border-radius: 3px;
+  cursor: pointer;
+  background: var(--bg2);
+  color: var(--text3);
+  border: 0.5px solid var(--border);
+  text-transform: capitalize;
+  transition: all 0.15s;
+}
+
+.inspector-anim-btn.active {
+  background: rgba(79, 127, 255, 0.2);
+  color: var(--accent);
+  border-color: rgba(79, 127, 255, 0.4);
+}
+
+.inspector-action-btn {
+  width: 100%;
+  padding: 6px 8px;
+  font-size: 12px;
+  border-radius: 4px;
+  cursor: pointer;
+  background: rgba(79, 127, 255, 0.12);
+  color: var(--accent);
+  border: 0.5px solid rgba(79, 127, 255, 0.3);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  font-weight: 600;
+  transition: all 0.15s;
+}
+
+.inspector-action-btn:hover {
+  background: rgba(79, 127, 255, 0.2);
+}
+
+/* ==========================================================================
+   Toolbar classes — extracted from page.tsx inline styles
+   ========================================================================== */
+
+.toolbar-group {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.toolbar-group-right {
+  gap: 8px;
+}
+
+.toolbar-brand {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text1);
+  margin: 0;
+  letter-spacing: 0.04em;
+}
+
+/* Inspector header title — distinct panel label */
+.inspector-header-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text1);
+  margin: 0;
+  letter-spacing: 0.02em;
+}
+
+/* Inspector header bar — subtle top border for section separation */
+.inspector-header-bar {
+  border-bottom: 0.5px solid var(--border);
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  background: linear-gradient(180deg, rgba(255,255,255,0.02) 0%, transparent 100%);
+}
+
+.tool-btn {
+  width: 32px;
+  height: 28px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 4px;
+  font-size: 13px;
+  font-family: var(--font-mono);
+  color: var(--text3);
+  background: transparent;
+  border: 0.5px solid transparent;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.tool-btn:hover {
+  color: var(--text2);
+  background: var(--bg3);
+}
+
+.tool-btn-active {
+  color: var(--accent);
+  background: rgba(79, 127, 255, 0.15);
+  border-color: rgba(79, 127, 255, 0.3);
+}
+
+.tool-hint {
+  font-size: 12px;
+  color: var(--text3);
+}
+
+.toolbar-action-btn {
+  padding: 4px 10px;
+  background: var(--bg3);
+  border: 0.5px solid var(--border2);
+  border-radius: 5px;
+  color: var(--text2);
+  font-size: 13px;
+  cursor: pointer;
+  margin-right: 2px;
+  transition: all 0.15s;
+}
+
+.toolbar-action-btn:hover {
+  background: var(--bg4);
+  color: var(--text1);
+}
+
+.validation-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 16px;
+  background: rgba(245, 158, 11, 0.1);
+  border-bottom: 0.5px solid rgba(245, 158, 11, 0.3);
+  font-size: 11px;
+  color: var(--amber);
+  flex-shrink: 0;
+}
+
+.validation-banner-dismiss {
+  font-size: 11px;
+  color: var(--amber);
+  background: none;
+  border: none;
+  cursor: pointer;
+  margin-left: 16px;
+}
+
+.fullscreen-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 9999;
+  background: #000;
+  display: flex;
+  flex-direction: column;
+}
+
+.fullscreen-preview-area {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 0;
+  padding: 16px;
+}
+
+.fullscreen-exit-btn {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  background: rgba(0, 0, 0, 0.6);
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  border-radius: 4px;
+  color: #fff;
+  font-size: 11px;
+  padding: 4px 8px;
+  cursor: pointer;
+  z-index: 10;
 }

@@ -2,10 +2,27 @@
  * AudioEngine — Web Audio API mixing engine for multi-track audio playback.
  * Singleton AudioContext with per-track AudioBufferSourceNode + GainNode graph.
  * All overlapping audio tracks mix simultaneously via the shared destination.
+ *
+ * Audio buffers are managed via an LRU cache with a configurable memory ceiling
+ * (default 512 MB). When the ceiling is exceeded, least-recently-used buffers
+ * are evicted. This prevents unbounded memory growth when importing many audio
+ * files or working with large projects.
  */
 
 let _ctx: AudioContext | null = null
-const _buffers = new Map<string, AudioBuffer>()
+
+/** Memory ceiling in bytes. Default 512 MB. */
+const MAX_BUFFER_MEMORY = 512 * 1024 * 1024
+
+interface CacheEntry {
+  buffer: AudioBuffer
+  lastAccess: number
+  /** Approximate memory footprint in bytes (channels × length × 4 bytes per sample) */
+  sizeBytes: number
+}
+
+const _buffers = new Map<string, CacheEntry>()
+let _totalBufferBytes = 0
 const _preloading = new Set<string>()
 
 interface ActiveTrack {
@@ -55,9 +72,13 @@ export async function resumeAudio(): Promise<void> {
 
 /** Pre-decode an audio file into the buffer cache. Idempotent.
  *  Uses Electron IPC for local file:// paths (fetch to file:// is blocked
- *  in Electron renderer) and fetch for http:// / https:// URLs. */
+ *  in Electron renderer) and fetch for http:// / https:// URLs.
+ *  Evicts least-recently-used buffers when memory ceiling is exceeded. */
 export async function preloadBuffer(path: string): Promise<void> {
-  if (_buffers.has(path)) return
+  if (_buffers.has(path)) {
+    _buffers.get(path)!.lastAccess = Date.now()
+    return
+  }
   if (_preloading.has(path)) return
   _preloading.add(path)
   try {
@@ -74,7 +95,29 @@ export async function preloadBuffer(path: string): Promise<void> {
     }
     const ctx = getCtx()
     const buf = await ctx.decodeAudioData(ab)
-    _buffers.set(path, buf)
+    const sizeBytes = buf.numberOfChannels * buf.length * 4 // 4 bytes per Float32 sample
+
+    // Evict LRU entries until we have room for the new buffer
+    while (_totalBufferBytes + sizeBytes > MAX_BUFFER_MEMORY && _buffers.size > 0) {
+      let oldestKey: string | null = null
+      let oldestAccess = Infinity
+      for (const [key, entry] of _buffers) {
+        if (entry.lastAccess < oldestAccess) {
+          oldestAccess = entry.lastAccess
+          oldestKey = key
+        }
+      }
+      if (oldestKey) {
+        const evicted = _buffers.get(oldestKey)!
+        _totalBufferBytes -= evicted.sizeBytes
+        _buffers.delete(oldestKey)
+      } else {
+        break
+      }
+    }
+
+    _buffers.set(path, { buffer: buf, lastAccess: Date.now(), sizeBytes })
+    _totalBufferBytes += sizeBytes
   } catch (err) {
     console.warn('AudioEngine: preload failed for', path, err)
   } finally {
@@ -82,9 +125,24 @@ export async function preloadBuffer(path: string): Promise<void> {
   }
 }
 
-/** Check if a buffer is preloaded for the given path */
-export function hasBuffer(path: string): boolean {
-  return _buffers.has(path)
+/** Get a cached buffer by path (returns null if evicted/not loaded) */
+export function getBuffer(path: string): AudioBuffer | null {
+  const entry = _buffers.get(path)
+  if (entry) {
+    entry.lastAccess = Date.now()
+    return entry.buffer
+  }
+  return null
+}
+
+/** Get the shared AudioContext (for waveform extraction reuse) */
+export function getAudioContext(): AudioContext {
+  return getCtx()
+}
+
+/** Get current audio buffer memory usage in bytes (for diagnostics) */
+export function getBufferMemoryUsage(): { usedBytes: number; maxBytes: number; entryCount: number } {
+  return { usedBytes: _totalBufferBytes, maxBytes: MAX_BUFFER_MEMORY, entryCount: _buffers.size }
 }
 
 /**
@@ -113,7 +171,7 @@ export function playTracks(
   }
 
   for (const t of tracks) {
-    const buf = _buffers.get(t.path)
+    const buf = getBuffer(t.path)
     if (!buf) continue
 
     const source = ctx.createBufferSource()
@@ -255,7 +313,7 @@ export function playScrub(
 
   for (const t of tracks) {
     if (t.muted) continue
-    const buf = _buffers.get(t.path)
+    const buf = getBuffer(t.path)
     if (!buf) continue
 
     const offsetSec = Math.max(0, (timelineMs - t.startMs + t.trimStart) / 1000)
@@ -383,6 +441,7 @@ export function dispose(): void {
   _overlayAudios.clear()
 
   _buffers.clear()
+  _totalBufferBytes = 0
   _preloading.clear()
   if (_ctx) {
     _ctx.close().catch(() => {})

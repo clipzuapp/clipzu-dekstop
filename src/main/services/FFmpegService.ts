@@ -55,6 +55,14 @@ export class FFmpegService {
     private readonly ffprobePath: string = ffmpegPath.replace('ffmpeg', 'ffprobe')
   ) {}
 
+  /** Kill any tracked child processes to allow clean app exit */
+  killAll(): void {
+    if (this.lastExtractionProcess) {
+      try { this.lastExtractionProcess.kill('SIGKILL') } catch { /* already exited */ }
+      this.lastExtractionProcess = null
+    }
+  }
+
   /**
    * Resolve the bundled fonts directory for FFmpeg subtitles filter.
    * Returns null if the directory doesn't exist (subtitles will still render
@@ -171,7 +179,7 @@ export class FFmpegService {
 
   /** Get media info via ffprobe */
   getMediaInfo(filePath: string): Promise<{
-    durationMs: number; width: number; height: number; fps: number; codec: string; hasAudio: boolean
+    durationMs: number; width: number; height: number; fps: number; codec: string; hasAudio: boolean; fileSize: number
   }> {
     return new Promise((resolve, reject) => {
       const args = [
@@ -216,7 +224,8 @@ export class FFmpegService {
             height: videoStream?.height || 0,
             fps: Math.round(fps),
             codec: videoStream?.codec_name || audioStream?.codec_name || 'unknown',
-            hasAudio: !!audioStream
+            hasAudio: !!audioStream,
+            fileSize: Math.round(parseFloat(info.format?.size || '0'))
           })
         } catch (e) {
           reject(new Error(`Failed to parse ffprobe output: ${(e as Error).message}`))
@@ -224,6 +233,23 @@ export class FFmpegService {
       })
 
       probeProcess.on('error', (err) => reject(new Error(`ffprobe spawn error: ${err.message}`)))
+    })
+  }
+
+  /** Detect available hardware encoders */
+  detectHardwareAccel(): Promise<{ nvenc: boolean; qsv: boolean; amf: boolean }> {
+    return new Promise((resolve) => {
+      const proc = spawn(this.ffmpegPath, ['-encoders'], { stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true })
+      let stdout = ''
+      proc.stdout?.on('data', (data: Buffer) => { stdout += data.toString() })
+      proc.on('close', () => {
+        resolve({
+          nvenc: /h264_nvenc/.test(stdout),
+          qsv: /h264_qsv/.test(stdout),
+          amf: /h264_amf/.test(stdout)
+        })
+      })
+      proc.on('error', () => resolve({ nvenc: false, qsv: false, amf: false }))
     })
   }
 
@@ -458,7 +484,7 @@ export class FFmpegService {
         // (used only when createTempASS IPC is unavailable; ASS is always preferred)
         const scale = captionStyle.scale ?? 1
         const fontSize = Math.round(captionStyle.fontSize * (outputHeight / 1080) * scale)
-        const fColor = captionStyle.fontColor ?? captionStyle.color ?? '#ffffff'
+        const fColor = captionStyle.color ?? '#ffffff'
         const fontColor = toAssColor(fColor)
         const bgColor = toAssColor(captionStyle.bgColor, captionStyle.bgOpacity ?? 0.5)
         const strokeColor = toAssColor(captionStyle.strokeColor ?? '#000000')
@@ -896,5 +922,33 @@ export class FFmpegService {
         })
         .catch(reject)
     })
+  }
+
+  /**
+   * Generate a low-resolution proxy (proxy) file for smooth editing of large media.
+   * Scales to fit within 1280x720 while preserving aspect ratio.
+   * Uses H.264 fast preset for quick generation.
+   *
+   * Returns the output proxy path.
+   */
+  generateProxy(
+    inputPath: string,
+    outputPath: string,
+    totalDurationMs = 0,
+    onProgress?: ProgressCallback
+  ): { process: ChildProcess; promise: Promise<void> } {
+    // Scale to 720p max, preserving aspect ratio.
+    // scale=-2:720 means: height=720, width=auto-rounded-to-even.
+    // If source is already ≤720p, scale filter still runs but is near-instant.
+    const args = [
+      '-i', inputPath,
+      '-vf', 'scale=-2:720:flags=fast_bilinear',
+      '-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '28',
+      '-c:a', 'aac', '-b:a', '96k',
+      '-pix_fmt', 'yuv420p',
+      '-movflags', '+faststart',
+      '-y', outputPath
+    ]
+    return this.spawn(args, totalDurationMs, onProgress)
   }
 }

@@ -1,12 +1,16 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { useConfirm } from '../../store/useConfirm'
 import { useTimeline } from '../../store/useTimeline'
-import { useMediaLibrary, type MediaInfo } from '../../store/useMediaLibrary'
+import { useMediaLibrary, getThumbnail, type MediaInfo } from '../../store/useMediaLibrary'
 import { useToast } from '../../store/useToast'
 import { ContextMenu } from '../ContextMenu/index'
 import { formatDuration } from '../../utils/format'
 import type { ContextMenuItem } from '../ContextMenu/index'
-import { Trash2, Check } from 'lucide-react'
+import { Trash2, Check, Search, Film, Music as MusicIcon, X } from 'lucide-react'
+
+/** Module-level video element pool for hover preview (max 2) */
+const hoverVideoPool: HTMLVideoElement[] = []
+let hoverVideoInUse: HTMLVideoElement | null = null
 
 /** Media file extensions we accept for drag-and-drop import */
 const MEDIA_EXTS = /\.(mp4|mov|avi|mkv|webm|mp3|wav|aac|ogg|flac|m4a)$/i
@@ -24,14 +28,22 @@ const MEDIA_EXTS = /\.(mp4|mov|avi|mkv|webm|mp3|wav|aac|ogg|flac|m4a)$/i
  */
 export function MediaPanel(): JSX.Element {
   const mediaLibrary = useMediaLibrary((s) => s.mediaLibrary)
-  const thumbnails = useMediaLibrary((s) => s.thumbnails)
+  // Subscribe to version counter only — actual thumbnails live in LRU cache outside React
+  const thumbnailVersion = useMediaLibrary((s) => s.thumbnailVersion)
+  void thumbnailVersion // consumed in effect deps
   const selectedIds = useMediaLibrary((s) => s.selectedIds)
   const addToLibrary = useMediaLibrary((s) => s.addItem)
   const removeFromLibrary = useMediaLibrary((s) => s.removeItem)
   const setThumb = useMediaLibrary((s) => s.setThumbnail)
   const toggleSelect = useMediaLibrary((s) => s.toggleSelect)
   const deselectAll = useMediaLibrary((s) => s.deselectAll)
+  const searchQuery = useMediaLibrary((s) => s.searchQuery)
+  const filterType = useMediaLibrary((s) => s.filterType)
+  const setSearchQuery = useMediaLibrary((s) => s.setSearchQuery)
+  const setFilterType = useMediaLibrary((s) => s.setFilterType)
+  const getFilteredLibrary = useMediaLibrary((s) => s.getFilteredLibrary)
 
+  const filteredMedia = getFilteredLibrary()
   const selectedSet = new Set(selectedIds)
   const selectedCount = selectedIds.length
 
@@ -70,11 +82,11 @@ export function MediaPanel(): JSX.Element {
   // Load thumbnails whenever the library changes
   useEffect(() => {
     mediaLibrary.forEach((item) => {
-      if (!thumbnails[item.id] && !item.isAudio) {
+      if (!getThumbnail(item.id) && !item.isAudio) {
         loadThumbnail(item.id, item.path)
       }
     })
-  }, [mediaLibrary, thumbnails, loadThumbnail])
+  }, [mediaLibrary, thumbnailVersion, loadThumbnail])
 
   // ---- Import media (adds to library ONLY, not timeline) ----
   
@@ -335,8 +347,9 @@ export function MediaPanel(): JSX.Element {
         trackIndex: 0
       })
     } else {
+      const clipId = `clip_${ts}_${rand}`
       useTimeline.getState().addClip({
-        id: `clip_${ts}_${rand}`,
+        id: clipId,
         path: item.path,
         startMs: ph,
         sourceDurationMs: item.durationMs ?? 0,
@@ -350,6 +363,63 @@ export function MediaPanel(): JSX.Element {
         volume: 1,
         muted: false
       })
+
+      // Fire-and-forget proxy generation for video files
+      // Proxy is used for timeline preview; export always uses original path
+      void (async () => {
+        try {
+          const proxyPath = await window.electron.ipcRenderer.invoke(
+            'proxy:generate', item.path, item.durationMs ?? 0
+          ) as string
+          if (proxyPath) {
+            useTimeline.getState().setClipProxyPath(clipId, proxyPath)
+          }
+        } catch {
+          // Proxy generation is best-effort — timeline falls back to original
+        }
+      })()
+    }
+  }, [])
+
+  // ---- Hover preview ----
+  const startHoverPreview = useCallback((item: MediaInfo, cardEl: HTMLElement) => {
+    if (item.isAudio) return
+    let vid = hoverVideoPool.find((v) => v !== hoverVideoInUse)
+    if (!vid) {
+      if (hoverVideoPool.length >= 2) return
+      vid = document.createElement('video')
+      vid.muted = true
+      vid.loop = true
+      vid.playsInline = true
+      vid.style.cssText = 'position:absolute;z-index:10;pointer-events:none;border-radius:4px;object-fit:cover;'
+      hoverVideoPool.push(vid)
+    }
+    hoverVideoInUse = vid
+    const thumbEl = cardEl.querySelector('[data-thumb]') as HTMLElement | null
+    const target = thumbEl || cardEl
+    target.style.position = 'relative'
+    target.appendChild(vid)
+    const rect = target.getBoundingClientRect()
+    vid.style.width = rect.width + 'px'
+    vid.style.height = rect.height + 'px'
+    vid.style.left = '0'
+    vid.style.top = '0'
+    vid.src = `file:///${encodeURI(item.path.replace(/\\/g, '/'))}`
+    vid.onloadeddata = (): void => {
+      vid!.currentTime = (vid!.duration || 0) * 0.1
+      vid!.play().catch(() => {})
+    }
+  }, [])
+
+  const stopHoverPreview = useCallback(() => {
+    if (hoverVideoInUse) {
+      hoverVideoInUse.pause()
+      hoverVideoInUse.removeAttribute('src')
+      hoverVideoInUse.load()
+      if (hoverVideoInUse.parentElement) {
+        hoverVideoInUse.parentElement.removeChild(hoverVideoInUse)
+      }
+      hoverVideoInUse = null
     }
   }, [])
 
@@ -476,29 +546,80 @@ export function MediaPanel(): JSX.Element {
         </button>
       </div>
 
+      {/* Search + Filter */}
+      <div style={{ padding: '0 12px 8px', display: 'flex', flexDirection: 'column', gap: '6px' }}>
+        <div style={{ position: 'relative' }}>
+          <Search size={12} style={{ position: 'absolute', left: 8, top: '50%', transform: 'translateY(-50%)', color: 'var(--text3)' }} />
+          <input
+            type="text"
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            placeholder="Search media..."
+            style={{
+              width: '100%', background: 'var(--bg2)', color: 'var(--text2)',
+              border: '0.5px solid var(--border)', borderRadius: '4px',
+              padding: '4px 8px 4px 24px', fontSize: '11px', outline: 'none',
+              boxSizing: 'border-box'
+            }}
+          />
+          {searchQuery && (
+            <button
+              onClick={() => setSearchQuery('')}
+              style={{ position: 'absolute', right: 6, top: '50%', transform: 'translateY(-50%)', background: 'none', border: 'none', cursor: 'pointer', padding: 0 }}
+            >
+              <X size={12} style={{ color: 'var(--text3)' }} />
+            </button>
+          )}
+        </div>
+        <div style={{ display: 'flex', gap: '4px' }}>
+          {(['all', 'video', 'audio'] as const).map((t) => (
+            <button
+              key={t}
+              onClick={() => setFilterType(t)}
+              style={{
+                flex: 1, padding: '3px 0', fontSize: '10px', borderRadius: '3px',
+                background: filterType === t ? 'rgba(79, 127, 255, 0.2)' : 'var(--bg2)',
+                color: filterType === t ? 'var(--accent)' : 'var(--text3)',
+                border: filterType === t ? '1px solid rgba(79, 127, 255, 0.4)' : '0.5px solid var(--border)',
+                cursor: 'pointer', textTransform: 'capitalize'
+              }}
+            >
+              {t}
+            </button>
+          ))}
+        </div>
+      </div>
+
       {/* Media list */}
       <div
         ref={mediaListRef}
         onMouseDown={handleListMouseDown}
         style={{ flex: 1, overflowY: 'auto', padding: '8px', display: 'flex', flexDirection: 'column', gap: '4px', position: 'relative' }}
+        className="inspector-scroll"
       >
-        {mediaLibrary.length === 0 ? (
-          <div style={{ textAlign: 'center', paddingTop: '48px', color: 'var(--text3)' }}>
-            <svg
-              style={{ width: '40px', height: '40px', margin: '0 auto 8px', opacity: 0.3 }}
-              fill="none" viewBox="0 0 24 24" stroke="currentColor"
-            >
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5}
-                d="M7 4v16M17 4v16M3 8h4m10 0h4M3 12h18M3 16h4m10 0h4M4 20h16a1 1 0 001-1V5a1 1 0 00-1-1H4a1 1 0 00-1 1v14a1 1 0 001 1z" />
-            </svg>
-            <p style={{ fontSize: '12px', margin: 0 }}>No media imported</p>
-            <p style={{ fontSize: '11px', marginTop: '4px', opacity: 0.6 }}>
-              Click "+" or drop files here to get started
-            </p>
-          </div>
+        {filteredMedia.length === 0 ? (
+          mediaLibrary.length === 0 ? (
+            <div style={{ textAlign: 'center', paddingTop: '48px', color: 'var(--text3)' }}>
+              <svg
+                style={{ width: '40px', height: '40px', margin: '0 auto 8px', opacity: 0.3 }}
+                fill="none" viewBox="0 0 24 24" stroke="currentColor"
+              >
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5}
+                  d="M7 4v16M17 4v16M3 8h4m10 0h4M3 12h18M3 16h4m10 0h4M4 20h16a1 1 0 001-1V5a1 1 0 00-1-1H4a1 1 0 00-1 1v14a1 1 0 001 1z" />
+              </svg>
+              <p style={{ fontSize: '12px', margin: 0 }}>No media imported</p>
+              <p style={{ fontSize: '11px', marginTop: '4px', opacity: 0.6 }}>
+                Click "+" or drop files here to get started
+              </p>
+            </div>
+          ) : (
+            <div style={{ textAlign: 'center', paddingTop: '48px', color: 'var(--text3)' }}>
+              <p style={{ fontSize: '12px', margin: 0 }}>No results match your filter</p>
+            </div>
+          )
         ) : (
-          mediaLibrary.map((item) => {
-            const thumb = !item.isAudio ? thumbnails[item.id] : null
+          filteredMedia.map((item) => {
+            const thumb = !item.isAudio ? getThumbnail(item.id) ?? null : null
             const isSelected = selectedSet.has(item.id)
 
             return (
@@ -545,6 +666,10 @@ export function MediaPanel(): JSX.Element {
                   e.currentTarget.style.boxShadow = isSelected
                     ? '0 2px 10px rgba(79, 127, 255, 0.25)'
                     : '0 3px 10px rgba(0, 0, 0, 0.35)'
+                  // Hover preview for video items
+                  if (!item.isAudio && thumb) {
+                    startHoverPreview(item, e.currentTarget)
+                  }
                 }}
                 onMouseLeave={(e) => {
                   if (!isSelected) {
@@ -554,6 +679,7 @@ export function MediaPanel(): JSX.Element {
                   e.currentTarget.style.boxShadow = isSelected
                     ? '0 0 6px rgba(79, 127, 255, 0.15)'
                     : '0 1px 2px rgba(0, 0, 0, 0.25)'
+                  stopHoverPreview()
                 }}
               >
                 {/* Thumbnail or kind badge */}
@@ -618,9 +744,21 @@ export function MediaPanel(): JSX.Element {
                   >
                     {item.name}
                   </p>
-                  <p style={{ fontSize: '11px', color: 'var(--text3)', margin: 0, lineHeight: '1.3' }}>
-                    {formatDuration(item.durationMs)}
-                  </p>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '4px', marginTop: '2px' }}>
+                    <span style={{ fontSize: '10px', color: 'var(--text3)' }}>
+                      {formatDuration(item.durationMs)}
+                    </span>
+                    {item.width && item.height ? (
+                      <span style={{ fontSize: '9px', color: 'var(--text3)', background: 'rgba(255,255,255,0.06)', borderRadius: '2px', padding: '0 3px' }}>
+                        {item.width}x{item.height}
+                      </span>
+                    ) : null}
+                    {item.isAudio ? (
+                      <MusicIcon size={9} style={{ color: '#4ade80' }} />
+                    ) : (
+                      <Film size={9} style={{ color: 'var(--accent)', opacity: 0.6 }} />
+                    )}
+                  </div>
                 </div>
 
                 {/* Selection check or remove button */}

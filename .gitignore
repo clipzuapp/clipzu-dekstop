@@ -33,3 +33,8 @@ test_file/*
 # Logs
 *.log
 npm-debug.log*
+
+# Generated preset data (scraped/imported)
+data/raw/
+data/normalized/
+data/output/

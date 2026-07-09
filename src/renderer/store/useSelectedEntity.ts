@@ -1,5 +1,5 @@
 import { useMemo } from 'react'
-import { useTimeline, type TimelineState } from './useTimeline'
+import { useTimeline } from './useTimeline'
 
 export interface SelectedEntity {
   /** ID of the selected video clip, or null if none selected or a different entity type is selected */
@@ -10,27 +10,49 @@ export interface SelectedEntity {
   selectedAudioTrackId: string | null
 }
 
+const EMPTY: SelectedEntity = {
+  selectedClipId: null,
+  selectedTextClipId: null,
+  selectedAudioTrackId: null,
+}
+
 /**
  * Derives which entity type is currently selected from the unified focusedId.
- * Single source of truth — replaces duplicate useMemo blocks in Preview,
- * Inspector, and useCaptionStyleBinding.
+ *
+ * Performance: subscribes to a single primitive string (`"focusedId:exists"`).
+ * This avoids subscribing to the full clips/textClips/audioTracks arrays
+ * (which would re-render on every mutation).
+ *
+ * Single source of truth — used by Preview, Inspector, and useCaptionStyleBinding.
  */
 export function useSelectedEntity(): SelectedEntity {
-  const focusedId = useTimeline((s: TimelineState) => s.focusedId)
-  const clips = useTimeline((s: TimelineState) => s.clips)
-  const textClips = useTimeline((s: TimelineState) => s.textClips)
-  const audioTracks = useTimeline((s: TimelineState) => s.audioTracks)
+  // Returns a primitive string that only changes when focusedId or its existence changes.
+  // Format: "id:1" (exists) or "id:0" (not found) or ":" (no focus)
+  const key = useTimeline((s) => {
+    const fid = s.focusedId
+    if (!fid) return ':'
+    const inClips = s.clips.some((c) => c.id === fid)
+    const inText = inClips ? false : s.textClips.some((tc) => tc.id === fid)
+    const inAudio = inClips || inText ? false : s.audioTracks.some((a) => a.id === fid)
+    return `${fid}:${inClips || inText || inAudio ? 1 : 0}`
+  })
 
   return useMemo<SelectedEntity>(() => {
-    if (!focusedId) {
-      return { selectedClipId: null, selectedTextClipId: null, selectedAudioTrackId: null }
-    }
+    const sepIdx = key.lastIndexOf(':')
+    const fid = key.slice(0, sepIdx)
+    const exists = key.slice(sepIdx + 1) === '1'
+    if (!fid || !exists) return EMPTY
+
+    // Determine which array contains focusedId using getState() (no subscription)
+    const state = useTimeline.getState()
+    const inClips = state.clips.some((c) => c.id === fid)
+    const inText = inClips ? false : state.textClips.some((tc) => tc.id === fid)
     return {
-      selectedClipId: clips.some((c) => c.id === focusedId) ? focusedId : null,
-      selectedTextClipId: textClips.some((tc) => tc.id === focusedId) ? focusedId : null,
-      selectedAudioTrackId: audioTracks.some((a) => a.id === focusedId) ? focusedId : null,
+      selectedClipId: inClips ? fid : null,
+      selectedTextClipId: inText ? fid : null,
+      selectedAudioTrackId: inClips || inText ? null : fid,
     }
-  }, [focusedId, clips, textClips, audioTracks])
+  }, [key])
 }
 
 export default useSelectedEntity

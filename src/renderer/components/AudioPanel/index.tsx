@@ -174,7 +174,7 @@ export function AudioPanel(): JSX.Element {
       </div>
 
       {/* SFX list */}
-      <div style={{ flex: 1, overflowY: 'auto', padding: '8px' }}>
+      <div className="inspector-scroll" style={{ flex: 1, overflowY: 'auto', padding: '8px' }}>
         {loading ? (
           <div style={{ textAlign: 'center', paddingTop: '48px', color: 'var(--text3)' }}>
             <p style={{ fontSize: '11px', margin: 0 }}>Loading sound effects...</p>

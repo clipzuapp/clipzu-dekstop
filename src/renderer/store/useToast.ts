@@ -1,4 +1,5 @@
 import { create } from 'zustand'
+import { playNotification } from '../services/NotificationSound'
 
 export type ToastType = 'success' | 'error' | 'warning' | 'info'
 
@@ -37,6 +38,9 @@ export const useToast = create<ToastState>((set, get) => ({
         : s.toasts
       return { toasts: [...trimmed, item] }
     })
+
+    // Play notification sound (non-blocking, best-effort)
+    playNotification(type)
 
     setTimeout(() => {
       get().dismiss(id)

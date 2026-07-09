@@ -14,9 +14,13 @@ import { HotkeyManager } from '../components/HotkeyManager'
 import { LeftRail, type LeftTabId } from '../components/LeftRail/index'
 import { RightRail, type RightTabId } from '../components/RightRail/index'
 import { TextPanel } from '../components/TextPanel/index'
-import { CaptionEditor } from '../components/CaptionEditor/index'
+import { TranscriptPanel } from '../components/TranscriptPanel/index'
 import { AudioPanel } from '../components/AudioPanel/index'
 import { ComingSoonPanel } from '../components/ComingSoonPanel/index'
+import { EffectsPanel } from '../components/EffectsPanel/index'
+import { FiltersPanel } from '../components/FiltersPanel/index'
+import { ErrorBoundary } from '../components/ErrorBoundary/index'
+import { preloadSounds } from '../services/NotificationSound'
 import { Undo2, Redo2, Scissors, Hand, ZoomIn, MousePointer2 } from 'lucide-react'
 import { useExport } from '../store/useExport'
 import { useProject, type ProjectState, type ProjectActions } from '../store/useProject'
@@ -27,18 +31,8 @@ import { useToast } from '../store/useToast'
 import { usePreviewView } from '../store/usePreviewView'
 
 // ---------------------------------------------------------------------------
-// Layout defaults — percentage-based for responsive density
+// Layout constants
 // ---------------------------------------------------------------------------
-
-function getDefaultMediaPanelW(): number {
-  return Math.round(window.innerWidth * 0.18)
-}
-function getDefaultInspectorW(): number {
-  return Math.round(window.innerWidth * 0.20)
-}
-function getDefaultTimelineH(): number {
-  return Math.round(window.innerHeight * 0.25)
-}
 
 const MEDIA_PANEL_MIN = 160
 const MEDIA_PANEL_MAX_PCT = 0.30
@@ -46,6 +40,22 @@ const INSPECTOR_MIN = 200
 const INSPECTOR_MAX_PCT = 0.32
 const TIMELINE_MIN = 100
 const TIMELINE_MAX_PCT = 0.45
+
+// Default panel sizes — percentage of window at mount time
+function defaultMediaPanelW(): number { return Math.round(window.innerWidth * 0.18) }
+function defaultInspectorW(): number  { return Math.round(window.innerWidth * 0.20) }
+function defaultTimelineH(): number   { return Math.round(window.innerHeight * 0.25) }
+
+// Clamp a panel size against current window dimensions
+function clampMediaPanelW(v: number): number {
+  return Math.min(Math.round(window.innerWidth * MEDIA_PANEL_MAX_PCT), Math.max(MEDIA_PANEL_MIN, v))
+}
+function clampInspectorW(v: number): number {
+  return Math.min(Math.round(window.innerWidth * INSPECTOR_MAX_PCT), Math.max(INSPECTOR_MIN, v))
+}
+function clampTimelineH(v: number): number {
+  return Math.min(Math.round(window.innerHeight * TIMELINE_MAX_PCT), Math.max(TIMELINE_MIN, v))
+}
 
 type ActiveTool = 'select' | 'blade' | 'hand' | 'zoom'
 
@@ -65,33 +75,53 @@ export default function Page(): JSX.Element {
   const isFullscreen = usePreviewView((s) => s.isFullscreen)
   const toggleFullscreen = usePreviewView((s) => s.toggleFullscreen)
 
-  // Panel sizes (local state, computed from window dimensions)
-  const [mediaPanelW, setMediaPanelW] = useState(getDefaultMediaPanelW)
-  const [inspectorW, setInspectorW] = useState(getDefaultInspectorW)
-  const [timelineH, setTimelineH] = useState(getDefaultTimelineH)
+  // Panel sizes — initialized from window dimensions, clamped on window resize
+  const [mediaPanelW, setMediaPanelW] = useState(defaultMediaPanelW)
+  const [inspectorW, setInspectorW]   = useState(defaultInspectorW)
+  const [timelineH, setTimelineH]     = useState(defaultTimelineH)
 
-  // Resize handler factory
-  const makeResizeHandler = (
+  // Pre-load notification sound paths for instant playback
+  useEffect(() => { preloadSounds() }, [])
+
+  // Clamp panel sizes whenever the window is resized so they never exceed their
+  // percentage caps (which would crush the center preview area to zero).
+  useEffect(() => {
+    const onResize = (): void => {
+      setMediaPanelW((w) => clampMediaPanelW(w))
+      setInspectorW((w) => clampInspectorW(w))
+      setTimelineH((h) => clampTimelineH(h))
+    }
+    window.addEventListener('resize', onResize)
+    return () => window.removeEventListener('resize', onResize)
+  }, [])
+
+  // ---------------------------------------------------------------------------
+  // Resize handle factory — max is read from window at drag-start, not at render
+  // ---------------------------------------------------------------------------
+  const makeResizeHandler = useCallback((
     direction: 'horizontal-right' | 'horizontal-left' | 'vertical',
-    setter: (v: number) => void,
+    setter: React.Dispatch<React.SetStateAction<number>>,
     min: number,
-    max: number,
+    maxPct: number,
     getInitial: () => number
-  ) => (e: React.MouseEvent) => {
+  ) => (e: React.MouseEvent): void => {
     e.preventDefault()
     const startPos = direction === 'vertical' ? e.clientY : e.clientX
     const startVal = getInitial()
+    // Capture max at drag-start time so it reflects the current window size
+    const max = direction === 'vertical'
+      ? Math.round(window.innerHeight * maxPct)
+      : Math.round(window.innerWidth * maxPct)
 
     const onMove = (moveEvent: MouseEvent): void => {
       const currentPos = direction === 'vertical' ? moveEvent.clientY : moveEvent.clientX
       const delta =
         direction === 'horizontal-right'
-          ? startPos - currentPos // dragging right handle: moving left = bigger inspector
+          ? startPos - currentPos
           : direction === 'horizontal-left'
-            ? currentPos - startPos // dragging left handle: moving right = bigger media panel
-            : startPos - currentPos // vertical: moving UP = bigger timeline (handle is at top edge)
-      const newVal = Math.min(max, Math.max(min, startVal + delta))
-      setter(newVal)
+            ? currentPos - startPos
+            : startPos - currentPos
+      setter(Math.min(max, Math.max(min, startVal + delta)))
     }
 
     const onUp = (): void => {
@@ -101,7 +131,7 @@ export default function Page(): JSX.Element {
 
     window.addEventListener('mousemove', onMove)
     window.addEventListener('mouseup', onUp)
-  }
+  }, [])
 
   const { undo, redo } = useProject(
     useShallow((s: ProjectState & ProjectActions) => ({
@@ -209,41 +239,11 @@ export default function Page(): JSX.Element {
         activeLeftTab={activeLeftTab}
       />
 
-      <div
-        style={{
-          display: 'flex',
-          flexDirection: 'column',
-          height: '100vh',
-          width: '100vw',
-          background: 'radial-gradient(ellipse at 50% 30%, #141210 0%, var(--bg0) 70%)',
-          overflow: 'hidden',
-          position: 'relative'
-        }}
-      >
+      <div className="layout-shell">
         {/* TOOLBAR — 38px fixed */}
-        <header
-          style={{
-            height: '38px',
-            flexShrink: 0,
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'space-between',
-            padding: '0 16px',
-            background: 'var(--bg1)',
-            borderBottom: '0.5px solid var(--border)'
-          }}
-        >
-          <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
-            <h1
-              style={{
-                fontSize: '15px',
-                fontWeight: 500,
-                color: 'var(--text1)',
-                margin: 0
-              }}
-            >
-              CAPCRAFT
-            </h1>
+        <header className="layout-toolbar">
+          <div className="toolbar-group">
+            <h1 className="toolbar-brand">CAPCRAFT</h1>
 
             <div className="separator" />
 
@@ -252,24 +252,7 @@ export default function Page(): JSX.Element {
               <button
                 key={tool.id}
                 title={tool.title}
-                style={{
-                  width: '32px',
-                  height: '28px',
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  borderRadius: '4px',
-                  fontSize: '13px',
-                  fontFamily: 'var(--font-mono)',
-                  color: activeTool === tool.id ? 'var(--accent)' : 'var(--text2)',
-                  background: activeTool === tool.id ? 'rgba(79, 127, 255, 0.15)' : 'transparent',
-                  border:
-                    activeTool === tool.id
-                      ? '0.5px solid rgba(79, 127, 255, 0.3)'
-                      : '0.5px solid transparent',
-                  cursor: 'pointer',
-                  transition: 'all 0.15s'
-                }}
+                className={`tool-btn${activeTool === tool.id ? ' tool-btn-active' : ''}`}
                 onClick={() => setActiveTool(tool.id)}
               >
                 {tool.label}
@@ -279,7 +262,7 @@ export default function Page(): JSX.Element {
 
             <div className="separator" />
 
-            <span style={{ fontSize: '12px', color: 'var(--text3)' }}>
+            <span className="tool-hint">
               {activeTool === 'select' && 'Select & Move'}
               {activeTool === 'blade' && 'Click to split'}
               {activeTool === 'hand' && 'Click & drag to pan'}
@@ -287,7 +270,7 @@ export default function Page(): JSX.Element {
             </span>
           </div>
 
-          <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+          <div className="toolbar-group toolbar-group-right">
             <button className="toolbar-btn" onClick={undo} title="Undo (Ctrl+Z)">
               <Undo2 size={14} />
             </button>
@@ -300,16 +283,7 @@ export default function Page(): JSX.Element {
             <button
               onClick={handleToolbarTranscribe}
               title="Auto-generate captions with Whisper"
-              style={{
-                padding: '4px 10px',
-                background: 'var(--bg3)',
-                border: '0.5px solid var(--border2)',
-                borderRadius: '5px',
-                color: 'var(--text2)',
-                fontSize: '13px',
-                cursor: 'pointer',
-                marginRight: '2px'
-              }}
+              className="toolbar-action-btn"
             >
               CC ✦
             </button>
@@ -317,17 +291,8 @@ export default function Page(): JSX.Element {
             <button
               onClick={handleAddText}
               title="Add text overlay (T)"
-              style={{
-                padding: '4px 10px',
-                background: 'var(--bg3)',
-                border: '0.5px solid var(--border2)',
-                borderRadius: '5px',
-                color: 'var(--text2)',
-                fontSize: '13px',
-                cursor: 'pointer',
-                fontWeight: 700,
-                marginRight: '2px'
-              }}
+              className="toolbar-action-btn"
+              style={{ fontWeight: 700 }}
             >
               T
             </button>
@@ -345,17 +310,7 @@ export default function Page(): JSX.Element {
         {/* Startup validation banner */}
         {showBanner && (missingItems.length > 0 || validation?.modelWarning) && (
           <div
-            style={{
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'space-between',
-              padding: '6px 16px',
-              background: 'rgba(245, 158, 11, 0.1)',
-              borderBottom: '0.5px solid rgba(245, 158, 11, 0.3)',
-              fontSize: '11px',
-              color: 'var(--amber)',
-              flexShrink: 0
-            }}
+            className="validation-banner"
           >
             <span>
               {validation?.modelWarning
@@ -363,14 +318,7 @@ export default function Page(): JSX.Element {
                 : `Missing dependencies: ${missingItems.join(', ')}. Some features may not work.`}
             </span>
             <button
-              style={{
-                fontSize: '11px',
-                color: 'var(--amber)',
-                background: 'none',
-                border: 'none',
-                cursor: 'pointer',
-                marginLeft: '16px'
-              }}
+              className="validation-banner-dismiss"
               onClick={dismissBanner}
             >
               Dismiss
@@ -379,7 +327,7 @@ export default function Page(): JSX.Element {
         )}
 
         {/* Main content area — 4 columns: LeftRail + ContentPanel + Preview + Inspector */}
-        <div style={{ display: 'flex', flex: 1, minHeight: 0, overflow: 'hidden' }}>
+        <div className="layout-main-row">
           {/* Left Icon Rail — fixed 64px */}
           <LeftRail activeTab={activeLeftTab} onSelect={setActiveLeftTab} />
 
@@ -395,62 +343,45 @@ export default function Page(): JSX.Element {
           >
             {activeLeftTab === 'media' && <MediaPanel />}
             {activeLeftTab === 'text' && <TextPanel />}
-            {activeLeftTab === 'captions' && <CaptionEditor />}
+            {activeLeftTab === 'transcript' && <TranscriptPanel />}
             {activeLeftTab === 'templates' && <ComingSoonPanel label="Templates" />}
             {activeLeftTab === 'elements' && <ComingSoonPanel label="Elements" />}
             {activeLeftTab === 'audio' && <AudioPanel />}
-            {activeLeftTab === 'transcript' && <ComingSoonPanel label="Transcript" />}
-            {activeLeftTab === 'effects' && <ComingSoonPanel label="Effects" />}
+            {activeLeftTab === 'effects' && <EffectsPanel />}
             {activeLeftTab === 'transitions' && <ComingSoonPanel label="Transitions" />}
-            {activeLeftTab === 'filters' && <ComingSoonPanel label="Filters" />}
+            {activeLeftTab === 'filters' && <FiltersPanel />}
             {activeLeftTab === 'plugins' && <ComingSoonPanel label="Plugins" />}
           </div>
 
           {/* Resize handle: Media panel (right edge) */}
           <div
-            style={{ width: '4px', cursor: 'col-resize', flexShrink: 0, background: 'transparent' }}
-            onMouseEnter={(e) => (e.currentTarget.style.background = 'var(--accent)')}
-            onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
+            className="resize-handle resize-handle-vertical"
             onMouseDown={makeResizeHandler(
-              'horizontal-left', setMediaPanelW, MEDIA_PANEL_MIN, Math.round(window.innerWidth * MEDIA_PANEL_MAX_PCT),
+              'horizontal-left', setMediaPanelW, MEDIA_PANEL_MIN, MEDIA_PANEL_MAX_PCT,
               () => mediaPanelW
             )}
           />
 
-          {/* Center column: Preview */}
+          {/* Center column — Preview renders here when not fullscreen.
+              In fullscreen mode the Preview instance moves to the fixed overlay
+              (conditional render) so exactly one <video>/<canvas> is ever mounted. */}
           <div
-            style={{
-              flex: 1,
-              display: 'flex',
-              flexDirection: 'column',
-              minWidth: 0,
-              overflow: 'hidden'
-            }}
+            className="layout-preview-col"
           >
-            <div
-              style={{
-                flex: 1,
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                background: 'var(--bg0)',
-                padding: '16px',
-                minHeight: 0
-              }}
-            >
-              <Preview />
+            <div className="layout-preview-area">
+              {!isFullscreen && <ErrorBoundary label="Preview"><Preview /></ErrorBoundary>}
             </div>
-            <CaptionStrip />
-            <PlaybackControls />
+            <div style={{ flexShrink: 0 }}>
+              <CaptionStrip />
+              <PlaybackControls />
+            </div>
           </div>
 
           {/* Resize handle: Inspector (left edge) */}
           <div
-            style={{ width: '4px', cursor: 'col-resize', flexShrink: 0, background: 'transparent' }}
-            onMouseEnter={(e) => (e.currentTarget.style.background = 'var(--accent)')}
-            onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
+            className="resize-handle resize-handle-vertical"
             onMouseDown={makeResizeHandler(
-              'horizontal-right', setInspectorW, INSPECTOR_MIN, Math.round(window.innerWidth * INSPECTOR_MAX_PCT),
+              'horizontal-right', setInspectorW, INSPECTOR_MIN, INSPECTOR_MAX_PCT,
               () => inspectorW
             )}
           />
@@ -474,11 +405,9 @@ export default function Page(): JSX.Element {
 
         {/* Resize handle: Timeline (top edge) */}
         <div
-          style={{ height: '4px', cursor: 'row-resize', flexShrink: 0, background: 'transparent' }}
-          onMouseEnter={(e) => (e.currentTarget.style.background = 'var(--accent)')}
-          onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
+          className="resize-handle resize-handle-horizontal"
           onMouseDown={makeResizeHandler(
-            'vertical', setTimelineH, TIMELINE_MIN, Math.round(window.innerHeight * TIMELINE_MAX_PCT),
+            'vertical', setTimelineH, TIMELINE_MIN, TIMELINE_MAX_PCT,
             () => timelineH
           )}
         />
@@ -491,37 +420,33 @@ export default function Page(): JSX.Element {
             overflow: 'hidden'
           }}
         >
-          <Timeline activeTool={activeTool} />
+          <ErrorBoundary label="Timeline"><Timeline activeTool={activeTool} /></ErrorBoundary>
         </div>
-
-        <ExportDialog show={showExport} onClose={() => setShowExport(false)} />
       </div>
+
+      {/* ExportDialog — rendered outside the main layout div so it overlays as
+          position:fixed without being clipped by any stacking context */}
+      <ExportDialog show={showExport} onClose={() => setShowExport(false)} />
 
       {showShortcuts && <ShortcutsDialog onClose={() => setShowShortcuts(false)} />}
       <ConfirmDialog />
       <ToastContainer />
 
-      {/* Fullscreen preview overlay */}
+      {/* Fullscreen preview overlay — only renders the single Preview instance
+          when fullscreen is active. When not fullscreen, Preview renders in-layout
+          above. This guarantees exactly one <video> element is ever mounted. */}
       {isFullscreen && (
         <div
-          style={{
-            position: 'fixed', inset: 0, zIndex: 9999,
-            background: '#000', display: 'flex', flexDirection: 'column'
-          }}
+          className="fullscreen-overlay"
         >
-          <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', minHeight: 0, padding: 16 }}>
-            <Preview />
+          <div className="fullscreen-preview-area">
+            <ErrorBoundary label="Preview"><Preview /></ErrorBoundary>
           </div>
           <CaptionStrip />
           <PlaybackControls />
           <button
             onClick={toggleFullscreen}
-            style={{
-              position: 'absolute', top: 12, right: 12,
-              background: 'rgba(0,0,0,0.6)', border: '1px solid rgba(255,255,255,0.2)',
-              borderRadius: 4, color: '#fff', fontSize: 11, padding: '4px 8px',
-              cursor: 'pointer', zIndex: 10
-            }}
+            className="fullscreen-exit-btn"
           >
             Exit (Esc)
           </button>

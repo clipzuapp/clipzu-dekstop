@@ -29,6 +29,85 @@ interface HotkeyManagerProps {
   activeLeftTab?: LeftTabId
 }
 
+/**
+ * Serialize and save the current project to disk. SSOT — used by both
+ * Ctrl+S manual save and the auto-save interval.
+ * @param forceDialog - if true, always show save dialog (Save As behavior)
+ */
+function saveProjectToDisk(options?: { forceDialog?: boolean }): Promise<string | null> {
+  const project = useProject.getState()
+  const captionData = useCaption.getState()
+  const exportData = useExport.getState()
+  const timeline = useTimeline.getState()
+
+  // When forceDialog is true, pass undefined as filePath so the IPC handler
+  // always shows the save dialog (Save As behavior).
+  const ipcFilePath = options?.forceDialog ? undefined : project.projectFilePath
+
+  return window.electron.ipcRenderer.invoke('project:save', {
+    version: '1.0',
+    name: project.name,
+    fps: project.fps,
+    resolution: project.resolution,
+    aspectRatio: project.aspectRatio,
+    backgroundColor: project.backgroundColor,
+    clips: timeline.clips,
+    audioTracks: timeline.audioTracks,
+    textClips: timeline.textClips,
+    tracks: timeline.tracks,
+    markers: timeline.markers,
+    // Session state — restored on load so user picks up where they left off
+    playheadMs: timeline.playheadMs,
+    zoom: timeline.zoom,
+    masterVolume: timeline.masterVolume,
+    loopEnabled: timeline.loopEnabled,
+    captions: {
+      entries: timeline.textClips,
+      style: captionData.activeStyle,
+      language: captionData.language
+    },
+    exportPreset: exportData.preset
+  }, ipcFilePath)
+}
+
+// SSOT: Single project load function used by both Ctrl+O and menu:open-project
+function loadProjectFromDialog(): void {
+  window.electron.ipcRenderer.invoke('project:load')
+    .then((result: { data: Record<string, unknown>; filePath: string } | null) => {
+      if (!result) return
+      const { data, filePath } = result
+      useProject.getState().loadProject({
+        name: data.name as string,
+        fps: data.fps as 24 | 30 | 60,
+        resolution: data.resolution as { width: number; height: number },
+        aspectRatio: data.aspectRatio as import('../store/useProject').AspectRatio | undefined,
+        backgroundColor: data.backgroundColor as string | undefined,
+        projectFilePath: filePath
+      })
+      useTimeline.getState().loadTimeline({
+        clips: (data.clips || []) as import('../store/useTimeline').Clip[],
+        audioTracks: (data.audioTracks || []) as import('../store/useTimeline').AudioTrack[],
+        textClips: ((data.textClips || (data.captions as Record<string, unknown>)?.entries) || []) as TextClip[],
+        tracks: (data.tracks || []) as import('../store/useTimeline').Track[],
+        markers: (data.markers || []) as import('../store/useTimeline').TimelineMarker[],
+        playheadMs: data.playheadMs as number | undefined,
+        zoom: data.zoom as number | undefined,
+        masterVolume: data.masterVolume as number | undefined,
+        loopEnabled: data.loopEnabled as boolean | undefined
+      })
+      useCaption.getState().loadCaptions({
+        entries: ((data.captions as Record<string, unknown>)?.entries || []) as Array<{ id: string; text: string; startMs: number; endMs: number }>,
+        style: (data.captions as Record<string, unknown>)?.style as Record<string, unknown>,
+        language: ((data.captions as Record<string, unknown>)?.language || 'en') as string
+      })
+      useToast.getState().success('Project loaded')
+    })
+    .catch((err: Error) => {
+      console.error('Load failed:', err)
+      useToast.getState().error(`Load failed: ${err.message}`)
+    })
+}
+
 export function HotkeyManager({ onExport, onShortcuts, activeTool: _activeTool, setActiveTool, onUndo, onRedo, onAddText, activeLeftTab }: HotkeyManagerProps): null {
   const isPlaying = useTimeline((s) => s.isPlaying)
   const playheadMs = useTimeline((s) => s.playheadMs)
@@ -152,7 +231,9 @@ export function HotkeyManager({ onExport, onShortcuts, activeTool: _activeTool, 
           useTimeline.setState({
             clips: snapshot.clips,
             audioTracks: snapshot.audioTracks,
-            textClips: snapshot.textClips
+            textClips: snapshot.textClips,
+            ...(snapshot.tracks ? { tracks: snapshot.tracks } : {}),
+            ...(snapshot.markers ? { markers: snapshot.markers } : {})
           })
           useTimeline.getState().recalcTotalDuration()
         }
@@ -167,40 +248,37 @@ export function HotkeyManager({ onExport, onShortcuts, activeTool: _activeTool, 
           useTimeline.setState({
             clips: snapshot.clips,
             audioTracks: snapshot.audioTracks,
-            textClips: snapshot.textClips
+            textClips: snapshot.textClips,
+            ...(snapshot.tracks ? { tracks: snapshot.tracks } : {}),
+            ...(snapshot.markers ? { markers: snapshot.markers } : {})
           })
           useTimeline.getState().recalcTotalDuration()
         }
         return
       }
 
-      // Ctrl+S: save project
+      // Ctrl+Shift+S: save project as (always show dialog)
+      if (isMod && e.shiftKey && e.key === 'S') {
+        e.preventDefault()
+        saveProjectToDisk({ forceDialog: true })
+          .then((savedPath) => {
+            if (savedPath) useProject.getState().setProjectFilePath(savedPath)
+            useProject.getState().markClean()
+            useToast.getState().success('Project saved as ' + (savedPath?.split(/[\\/]/).pop() ?? ''))
+          })
+          .catch((err: Error) => {
+            console.error('Save As failed:', err)
+            useToast.getState().error(`Save As failed: ${err.message}`)
+          })
+        return
+      }
+
+      // Ctrl+S: save project (reuse existing path, or show dialog if first save)
       if (isMod && e.key === 's') {
         e.preventDefault()
-        const projectData = useProject.getState()
-        const captionData = useCaption.getState()
-        const exportData = useExport.getState()
-        window.electron.ipcRenderer.invoke('project:save', {
-          version: '1.0',
-          name: projectData.name,
-          fps: projectData.fps,
-          resolution: projectData.resolution,
-          clips: useTimeline.getState().clips,
-          audioTracks: useTimeline.getState().audioTracks,
-          captions: {
-            entries: useTimeline.getState().textClips.map((tc) => ({
-              id: tc.id, startMs: tc.startMs, endMs: tc.endMs, durationMs: tc.durationMs,
-              trackIndex: tc.trackIndex, text: tc.text,
-              style: tc.style, words: tc.words,
-              sourceId: tc.sourceId, sourceType: tc.sourceType,
-              transcriptionJobId: tc.transcriptionJobId
-            })),
-            style: captionData.activeStyle,
-            language: captionData.language
-          },
-          exportPreset: exportData.preset
-        }, projectData.projectFilePath)
-          .then(() => {
+        saveProjectToDisk()
+          .then((savedPath) => {
+            if (savedPath) useProject.getState().setProjectFilePath(savedPath)
             useProject.getState().markClean()
             useToast.getState().success('Project saved')
           })
@@ -211,36 +289,19 @@ export function HotkeyManager({ onExport, onShortcuts, activeTool: _activeTool, 
         return
       }
 
-      // Ctrl+O: load project
+      // Ctrl+N: new project
+      if (isMod && e.key === 'n') {
+        e.preventDefault()
+        useProject.getState().newProject()
+        useTimeline.getState().clearTimeline()
+        useToast.getState().success('New project created')
+        return
+      }
+
+      // Ctrl+O: load project (SSOT — delegates to shared function)
       if (isMod && e.key === 'o') {
         e.preventDefault()
-        window.electron.ipcRenderer.invoke('project:load')
-          .then((result: { data: any; filePath: string } | null) => {
-            if (!result) return
-            const { data, filePath } = result
-            useProject.getState().loadProject({
-              name: data.name,
-              fps: data.fps,
-              resolution: data.resolution,
-              projectFilePath: filePath
-            })
-            useTimeline.getState().loadTimeline({
-              clips: data.clips || [],
-              audioTracks: data.audioTracks || [],
-              // entries type expanded in project.handler.ts to match TextClip — cast is structurally truthful
-              textClips: (data.captions?.entries || []) as TextClip[]
-            })
-            useCaption.getState().loadCaptions({
-              entries: data.captions?.entries || [],
-              style: data.captions?.style,
-              language: data.captions?.language
-            })
-            useToast.getState().success('Project loaded')
-          })
-          .catch((err: Error) => {
-            console.error('Load failed:', err)
-            useToast.getState().error(`Load failed: ${err.message}`)
-          })
+        loadProjectFromDialog()
         return
       }
 
@@ -413,6 +474,94 @@ export function HotkeyManager({ onExport, onShortcuts, activeTool: _activeTool, 
     setPlaying, setPlayhead, splitClipAtPlayhead,
     undo, redo, onExport, onShortcuts, setActiveTool, onUndo, onRedo, onAddText, activeLeftTab
   ])
+
+  // ---------------------------------------------------------------------------
+  // Auto-save + close-guard globals + native menu IPC listeners
+  // ---------------------------------------------------------------------------
+  useEffect(() => {
+    // Expose dirty-state + save function so main process can query them via
+    // executeJavaScript() when intercepting the window close event.
+    ;(window as any).__capcraft_isDirty = (): boolean => useProject.getState().isDirty
+    ;(window as any).__capcraft_saveNow = (): Promise<string | null | false> => {
+      return saveProjectToDisk()
+        .then((savedPath) => {
+          if (savedPath) useProject.getState().setProjectFilePath(savedPath)
+          useProject.getState().markClean()
+          return savedPath
+        })
+        .catch(() => false as const)
+    }
+
+    // Auto-save every 30 seconds when project is dirty and has a file path
+    const autoSaveInterval = setInterval(() => {
+      const project = useProject.getState()
+      if (!project.isDirty || !project.projectFilePath) return
+
+      saveProjectToDisk()
+        .then((savedPath) => {
+          if (savedPath) useProject.getState().setProjectFilePath(savedPath)
+          useProject.getState().markClean()
+          useToast.getState().success('Auto-saved')
+        })
+        .catch((err: Error) => {
+          console.error('Auto-save failed:', err)
+        })
+    }, 30_000)
+
+    // ---- Native menu IPC listeners ----
+
+    const onMenuSave = (): void => {
+      saveProjectToDisk()
+        .then((savedPath) => {
+          if (savedPath) useProject.getState().setProjectFilePath(savedPath)
+          useProject.getState().markClean()
+          useToast.getState().success('Project saved')
+        })
+        .catch((err: Error) => {
+          console.error('Save failed:', err)
+          useToast.getState().error(`Save failed: ${err.message}`)
+        })
+    }
+
+    const onMenuSaveAs = (): void => {
+      saveProjectToDisk({ forceDialog: true })
+        .then((savedPath) => {
+          if (savedPath) useProject.getState().setProjectFilePath(savedPath)
+          useProject.getState().markClean()
+          useToast.getState().success('Project saved as ' + (savedPath?.split(/[\\/]/).pop() ?? ''))
+        })
+        .catch((err: Error) => {
+          console.error('Save As failed:', err)
+          useToast.getState().error(`Save As failed: ${err.message}`)
+        })
+    }
+
+    // SSOT: delegates to shared load function (same as Ctrl+O)
+    const onMenuOpen = (): void => {
+      loadProjectFromDialog()
+    }
+
+    const onMenuNew = (): void => {
+      useProject.getState().newProject()
+      useTimeline.getState().clearTimeline()
+      useToast.getState().success('New project created')
+    }
+
+    // Store cleanup functions returned by ipcRenderer.on()
+    const unsubscribers: Array<() => void> = []
+
+    unsubscribers.push(window.electron.ipcRenderer.on('menu:save', onMenuSave))
+    unsubscribers.push(window.electron.ipcRenderer.on('menu:save-as', onMenuSaveAs))
+    unsubscribers.push(window.electron.ipcRenderer.on('menu:open-project', onMenuOpen))
+    unsubscribers.push(window.electron.ipcRenderer.on('menu:new-project', onMenuNew))
+
+    return () => {
+      clearInterval(autoSaveInterval)
+      for (const unsub of unsubscribers) unsub()
+      delete (window as any).__capcraft_isDirty
+      delete (window as any).__capcraft_saveNow
+    }
+  }, [])
 
   return null
 }

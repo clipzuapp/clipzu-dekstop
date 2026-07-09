@@ -52,6 +52,7 @@ export function TextPanel(): JSX.Element {
         background: 'var(--bg1)',
         overflowY: 'auto'
       }}
+      className="inspector-scroll"
     >
       {/* Header */}
       <div
@@ -122,7 +123,7 @@ export function TextPanel(): JSX.Element {
         </button>
       </div>
 
-      {/* Style presets */}
+      {/* Style presets — visual previews */}
       <div style={{ padding: '4px 12px 12px', display: 'flex', flexDirection: 'column', gap: '6px' }}>
         <span style={{ fontSize: '10px', color: 'var(--text3)', textTransform: 'uppercase', letterSpacing: '0.06em' }}>
           Presets
@@ -133,16 +134,14 @@ export function TextPanel(): JSX.Element {
             onClick={() => handleAddPreset(preset)}
             style={{
               width: '100%',
-              padding: '10px 12px',
               borderRadius: '5px',
               background: 'var(--bg2)',
               border: '0.5px solid var(--border)',
               cursor: 'pointer',
-              display: 'flex',
-              flexDirection: 'column',
-              gap: '3px',
+              overflow: 'hidden',
               transition: 'border-color 0.12s, background 0.12s',
-              textAlign: 'left'
+              textAlign: 'left',
+              padding: 0,
             }}
             onMouseEnter={(e) => {
               e.currentTarget.style.borderColor = 'var(--accent)'
@@ -153,12 +152,34 @@ export function TextPanel(): JSX.Element {
               e.currentTarget.style.background = 'var(--bg2)'
             }}
           >
-            <span style={{ fontSize: '12px', fontWeight: 600, color: 'var(--text1)' }}>
-              {preset.label}
-            </span>
-            <span style={{ fontSize: '9px', color: 'var(--text3)' }}>
-              {preset.description}
-            </span>
+            {/* Visual text preview */}
+            <div style={{
+              height: '36px',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              background: 'linear-gradient(135deg, rgba(30,30,50,0.6), rgba(20,20,40,0.8))',
+              borderBottom: '0.5px solid var(--border)',
+            }}>
+              <span style={{
+                fontSize: `${Math.min(preset.fontSize * 0.4, 20)}px`,
+                fontWeight: preset.fontWeight,
+                color: 'var(--text1)',
+                lineHeight: 1,
+                letterSpacing: '-0.02em',
+              }}>
+                {preset.label}
+              </span>
+            </div>
+            {/* Label + description */}
+            <div style={{ padding: '6px 10px', display: 'flex', flexDirection: 'column', gap: '2px' }}>
+              <span style={{ fontSize: '11px', fontWeight: 600, color: 'var(--text1)' }}>
+                {preset.label}
+              </span>
+              <span style={{ fontSize: '9px', color: 'var(--text3)' }}>
+                {preset.description} · {preset.animation !== 'none' ? preset.animation : 'no anim'}
+              </span>
+            </div>
           </button>
         ))}
       </div>

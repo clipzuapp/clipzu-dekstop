@@ -21,6 +21,7 @@ const electronAPI = {
         'ffmpeg:mixTimelineAudio',
         'sfx:getLibrary',
         'sfx:openFileLocation',
+        'sfx:getNotificationSound',
         'file:readBuffer',
         'whisper:isModelAvailable',
         'whisper:transcribe',
@@ -37,7 +38,14 @@ const electronAPI = {
         'project:load',
         'project:exportSRT',
         'project:createTempSRT',
-        'project:createTempASS'
+        'project:createTempASS',
+        'waveform:readPeaks',
+        'waveform:writePeaks',
+        'waveform:getCacheDir',
+        'proxy:getPath',
+        'proxy:exists',
+        'proxy:generate',
+        'proxy:getDir'
       ]
       if (validChannels.includes(channel)) {
         return ipcRenderer.invoke(channel, ...args)
@@ -48,7 +56,8 @@ const electronAPI = {
       const validChannels = [
         'export:progress',
         'whisper:progress',
-        'startup:validation'
+        'startup:validation',
+        'proxy:progress'
       ]
       if (validChannels.includes(channel)) {
         const subscription = (_event: Electron.IpcRendererEvent, ...args: unknown[]): void => {

@@ -11,26 +11,13 @@ import {
   type ExportASSOptions,
   type ExportCaptionStyle
 } from '../../shared/utils/srt'
+import type { CaptionStyle } from '../../shared/types/caption'
 
-interface ProjectCaptionStyle {
-  fontFamily: string
-  fontSize: number
-  fontWeight: number
-  color: string
-  strokeColor: string
-  strokeWidth: number
-  bgColor: string
-  bgOpacity: number
-  alignment: 'left' | 'center' | 'right'
-  position: 'top' | 'center' | 'bottom'
-  x: number
-  y: number
-  rotation: number
-  scale: number
-  animation: string
-  captionMode: string
-  revealFadeMs?: number
-}
+/**
+ * ProjectCaptionStyle is CaptionStyle. The alias is kept so the ProjectFile
+ * interface below reads clearly in context. The compiler enforces consistency.
+ */
+type ProjectCaptionStyle = CaptionStyle
 
 interface ProjectFile {
   version: string
@@ -38,27 +25,58 @@ interface ProjectFile {
   fps: number
   resolution: { width: number; height: number }
   aspectRatio?: string
+  backgroundColor?: string
   clips: Array<{
     id: string
     path: string
     startMs: number
+    sourceDurationMs: number
     durationMs: number
-    sourceDurationMs?: number
     trackIndex: number
     trimStart: number
     trimEnd: number
     name?: string
     hasAudio?: boolean
+    speed: number
+    volume: number
+    muted: boolean
+    fadeInMs?: number
+    fadeOutMs?: number
+    transform?: {
+      x: number; y: number; scaleX: number; scaleY: number
+      rotation: number; opacity: number
+      cropLeft: number; cropRight: number; cropTop: number; cropBottom: number
+    }
+    keyframes?: Array<{
+      id: string; property: string
+      points: Array<{ timeMs: number; value: number; easing: string }>
+    }>
+    modifiers?: Array<{
+      id: string; type: string; params: Record<string, unknown>
+      enabled: boolean; order: number
+    }>
+    outTransition?: { type: string; durationMs: number }
+    blendMode?: string
   }>
   audioTracks: Array<{
     id: string
     path: string
     startMs: number
-    durationMs?: number
+    sourceDurationMs: number
+    durationMs: number
     volume: number
     muted: boolean
     name?: string
-    role?: 'voice' | 'music' | 'sfx' | 'ambient'
+    role: 'voice' | 'music' | 'sfx' | 'ambient'
+    trimStart: number
+    trimEnd: number
+    trackIndex: number
+    fadeInMs?: number
+    fadeOutMs?: number
+    keyframes?: Array<{
+      id: string; property: string
+      points: Array<{ timeMs: number; value: number; easing: string }>
+    }>
   }>
   textClips?: Array<{
     id: string
@@ -69,9 +87,35 @@ interface ProjectFile {
     text: string
     style?: ProjectCaptionStyle
     words?: Array<{ word: string; startMs: number; endMs: number }>
+    wordTimestampsSource?: 'whisper' | 'synthetic'
     sourceId?: string
     sourceType?: 'clip' | 'audioTrack' | 'timeline' | 'import'
     transcriptionJobId?: string
+    originalWords?: Array<{ word: string; startMs: number; endMs: number }>
+    originalStartMs?: number
+    originalEndMs?: number
+    fadeInMs?: number
+    fadeOutMs?: number
+    keyframes?: Array<{
+      id: string; property: string
+      points: Array<{ timeMs: number; value: number; easing: string }>
+    }>
+  }>
+  tracks?: Array<{
+    id: string
+    index: number
+    name: string
+    kind: 'video' | 'audio' | 'caption' | 'overlay'
+    muted: boolean
+    locked: boolean
+    hidden: boolean
+    solo: boolean
+  }>
+  markers?: Array<{
+    id: string
+    timeMs: number
+    label: string
+    color: string
   }>
   captions: {
     entries: Array<{
@@ -91,6 +135,11 @@ interface ProjectFile {
     language: string
   }
   exportPreset: string
+  /** Session state — persisted so user resumes where they left off */
+  playheadMs?: number
+  zoom?: number
+  masterVolume?: number
+  loopEnabled?: boolean
 }
 
 /** req 2.21 — Deterministic 8-char content hash for temp caption filenames */

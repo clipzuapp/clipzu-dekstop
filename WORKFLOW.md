@@ -47,6 +47,10 @@ Capcraft follows a **three-layer Electron architecture** with strict separation 
 3. **Heavy computation offloaded** — Whisper uses direct `child_process.spawn` (no worker_threads), FFmpeg uses `child_process.spawn`, thumbnails use dedicated workers
 4. **State flows one-way** — Zustand stores → React components → IPC invoke → Main process → Event back → Store update
 5. **Persistent validation cache** — WhisperService skips model validation when model+binary haven't changed across app launches
+6. **Effects system is data-driven** — Modifiers, Effects, Transitions, Animations are registered definitions with typed parameters and keyframes
+7. **SSOT for shared types** — CaptionStyle lives in `shared/types/caption.ts`, used by renderer, exporter, and serializer
+8. **Timeline interactions via state machine** — InteractionMachine handles hit testing, drag/trim/snap, multi-tool support
+9. **Preview viewport state is ephemeral** — usePreviewView (zoom, pan, guides) is NOT persisted in project files or undo stack
 
 ---
 
@@ -390,16 +394,17 @@ interface ModelCompatibilityInfo {
 ### Store Responsibilities
 
 #### `useTimeline`
-- **Domain**: Video/audio/text clips, tracks, playhead, zoom, selection
+- **Domain**: Video/audio/text clips, tracks, playhead, zoom, selection, focused entity, modifiers, keyframes
 - **Key State**:
-  - `clips: Clip[]` — Video clips with position, duration, transform, speed
-  - `audioTracks: AudioTrack[]` — Audio layers with volume, mute, role
-  - `textClips: TextClip[]` — Text/caption clips on timeline with styling
+  - `clips: Clip[]` — Video clips with position, duration, transform, speed, keyframes, modifiers
+  - `audioTracks: AudioTrack[]` — Audio layers with volume, mute, role, keyframes
+  - `textClips: TextClip[]` — Text/caption clips on timeline with styling, keyframes
   - `tracks: Track[]` — Track metadata (name, kind, mute, lock, hidden)
   - `playheadMs: number` — Current playback position
   - `totalDurationMs: number` — Timeline duration (auto-calculated)
   - `zoom: number` — Timeline zoom level (0.1–10)
-  - `selectedClipId: string | null`
+  - `focusedId: string | null` — Currently selected entity ID (unified across clips, textClips, audioTracks)
+  - `selectedClipId: string | null` — Derived from focusedId
   - `isPlaying: boolean`
   - `markers: TimelineMarker[]` — User/automation markers
 
@@ -410,6 +415,7 @@ interface ModelCompatibilityInfo {
   - `addTrack`, `deleteTrack`, `renameTrack`, `toggleMuteTrack`, `toggleLockTrack`
   - `addMarker`, `removeMarker`
   - `setPlayhead`, `setZoom`, `selectClip`, `setPlaying`
+  - `setClipKeyframes`, `setAudioKeyframes`, `setTextClipKeyframes`
   - `clearTimeline`, `loadTimeline`, `recalcTotalDuration`
 
 #### `useCaption`
@@ -439,26 +445,34 @@ interface ModelCompatibilityInfo {
   - `loadCaptions(data)` — Load captions from project file
   - `clearCaptions()` — Clear all captions
 
-- **CaptionStyle Properties**:
+- **CaptionStyle Properties** (from `shared/types/caption.ts` — SSOT):
   ```typescript
   interface CaptionStyle {
+    // Typography
     fontFamily: string
     fontSize: number
     fontWeight: number
+    // Colors
     color: string
     strokeColor: string
     strokeWidth: number
     bgColor: string
     bgOpacity: number
+    // Layout
     alignment: 'left' | 'center' | 'right'
     position: 'top' | 'center' | 'bottom'
     x: number
     y: number
     rotation: number
     scale: number
+    // Behavior
     animation: 'none' | 'pop' | 'fade' | 'slide-up' | 'karaoke' | 'typewriter'
     captionMode: 'full-phrase' | 'word-reveal' | 'karaoke' | 'single-word'
     revealFadeMs?: number
+    // Active State (visual overrides for active element)
+    activeHighlightColor?: string
+    activeTextColor?: string
+    activeScale?: number
   }
   ```
 
@@ -528,6 +542,27 @@ interface ModelCompatibilityInfo {
 - **Domain**: Toast notification state
 - **Key State**: Toast queue, auto-dismiss timers
 
+#### `usePreviewView`
+- **Domain**: Ephemeral preview viewport state (NOT persisted in project files, NOT in undo stack)
+- **Key State**:
+  - `zoomMode: 'fit' | 'fill' | number` — Preview zoom mode
+  - `panX: number`, `panY: number` — Preview pan offset
+  - `guides: { titleSafe: boolean, actionSafe: boolean, grid: GridMode }` — Guide overlays
+  - `quality: 'full' | 'half' | 'quarter'` — Render quality mode
+  - `playbackSpeed: number` — Playback speed multiplier
+  - `isFullscreen: boolean` — Fullscreen mode
+
+- **Key Actions**:
+  - `setZoomMode`, `zoomIn`, `zoomOut`, `resetZoom`
+  - `setPan`, `adjustPan`, `resetPan`
+  - `toggleGuide`, `cycleGrid`, `setGrid`
+  - `setQuality`, `setPlaybackSpeed`, `toggleFullscreen`
+
+#### `useSelectedEntity` (derived hook)
+- **Domain**: Derives which entity type is currently selected from unified `focusedId`
+- **Returns**: `{ selectedClipId, selectedTextClipId, selectedAudioTrackId }`
+- **Single source of truth** — replaces duplicate useMemo blocks in Preview, Inspector, and useCaptionStyleBinding
+
 ### Undo/Redo Mechanism
 
 **Snapshot-based** (not patch-based):
@@ -565,20 +600,29 @@ interface ModelCompatibilityInfo {
 | Workers | `thumbnail.worker.ts` | `{purpose}.worker.ts` |
 | Stores | `useTimeline.ts` | camelCase + "use" prefix (Zustand convention) |
 | Components | `MediaPanel/index.tsx` | PascalCase folder, `index.tsx` entry |
-| Shared utilities | `srt.ts` | lowercase, no suffix |
+| Effects core | `EffectRegistry.ts` | PascalCase + "Registry"/"Engine" suffix |
+| Effect types | `Effect.ts`, `Modifier.ts` | PascalCase domain types |
+| Effect definitions | `builtinEffects.ts`, `transitions.ts` | camelCase definitions |
+| Timeline interaction | `interaction.ts`, `useTimelineInteraction.ts` | camelCase |
+| Shared utilities | `srt.ts`, `timeline.ts`, `color.ts` | lowercase, no suffix |
+| Shared types | `caption.ts` | lowercase, domain name |
 | Test files | `test_ggml-small.srt` | `test_` prefix |
 
 ### Variables & Functions
 
 | Type | Convention | Example |
 |------|-----------|---------|
-| Zustand stores | `use{Domain}` | `useTimeline`, `useCaption` |
-| State interfaces | `{Domain}State` | `TimelineState`, `CaptionState` |
+| Zustand stores | `use{Domain}` | `useTimeline`, `useCaption`, `usePreviewView` |
+| State interfaces | `{Domain}State` | `TimelineState`, `CaptionState`, `PreviewViewState` |
 | Action interfaces | `{Domain}Actions` | `TimelineActions`, `CaptionActions` |
 | Event handlers | `handle{Event}` | `handleClick`, `handleDrop` |
 | IPC invoke calls | `domain:action` | `'ffmpeg:getMediaInfo'` |
 | Time variables | `{name}Ms` | `startMs`, `durationMs`, `playheadMs` |
 | Boolean flags | `is{State}`, `has{Feature}` | `isPlaying`, `hasAudio` |
+| Effect registries | `{Type}Registry` | `EffectRegistry`, `TransitionRegistry` |
+| Effect definitions | `{name}Definition` | `blurDefinition`, `fadeInTransition` |
+| Keyframe properties | camelCase | `opacity`, `scale`, `positionX` |
+| Easing types | camelCase | `easeIn`, `easeOutBack`, `easeOutElastic` |
 
 ### Component Props
 
@@ -627,6 +671,21 @@ renderer/
 │   └── {ComponentName}/
 │       ├── index.tsx           # Main component
 │       └── {SubComponent}.tsx  # Internal components (optional)
+├── effects/                    # Effects system (data-driven)
+│   ├── core/                   # Core engines (EffectRegistry, ModifierEngine, etc.)
+│   ├── definitions/            # Built-in effect/transition/animation definitions
+│   ├── types/                  # Type system (Animation, Effect, Keyframe, Modifier, Preset, Transition)
+│   ├── utils/                  # Easing functions
+│   ├── errors/                 # Effect system error types
+│   └── index.ts                # Public API barrel export
+├── services/                   # Renderer-side services
+│   ├── AudioEngine.ts          # Web Audio API multi-track mixing
+│   ├── FilterPipeline.ts      # Modifier[] → CSS filter (SSOT)
+│   ├── KeyframeEvaluator.ts   # Keyframe interpolation (SSOT)
+│   └── WaveformService.ts     # Audio waveform extraction
+├── timeline/                   # Timeline interaction system
+│   ├── interaction.ts          # InteractionMachine, hit testing, snap, lane layout
+│   └── useTimelineInteraction.ts # React hook for timeline interactions
 ├── store/                      # Zustand stores
 │   └── use{Domain}.ts
 ├── utils/                      # Renderer-only utilities
@@ -635,23 +694,32 @@ renderer/
 ```
 
 **Rules**:
-- Components import **only** from `store/`, `utils/`, `shared/`
+- Components import **only** from `store/`, `utils/`, `shared/`, `effects/`
 - No direct IPC calls in components — use stores as intermediaries
 - Stores handle IPC invocation and state updates
-- Shared utilities (like `srt.ts`) go in `shared/` if used by both main and renderer
+- Shared utilities (like `srt.ts`, `caption.ts`) go in `shared/` if used by both main and renderer
+- Effects system is self-contained in `effects/` with barrel export
+- FilterPipeline and KeyframeEvaluator are SSOT for their respective domains
 
 ### Shared (`src/shared/`)
 
 ```
 shared/
+├── types/
+│   └── caption.ts              # CaptionStyle interface (SSOT for caption visual properties)
 └── utils/
-    └── srt.ts                  # Pure functions, no Node/Electron imports
+    ├── srt.ts                  # Pure functions: SRT parse/generate/format
+    ├── timeline.ts             # Pure functions: timeline timing utilities
+    ├── color.ts                # Pure functions: hex color conversion
+    ├── fonts.ts                # AVAILABLE_FONTS array (SSOT for font selection)
+    └── renderGeometry.ts       # Pure functions: caption layout geometry
 ```
 
 **Rules**:
 - **Pure functions only** — no side effects, no imports from `electron` or `node:`
 - Used by **both** main and renderer processes
-- Examples: SRT parsing, time formatting, data validation
+- **SSOT for shared types** — CaptionStyle is the single source of truth for caption visual properties
+- Examples: SRT parsing, time formatting, data validation, color conversion, font lists, render geometry
 
 ---
 
@@ -742,6 +810,160 @@ shared/
 
 ---
 
+## Effects System Architecture
+
+### Overview
+
+The effects system is **data-driven** — effects, animations, and transitions are registered definitions with typed parameters and keyframes. This allows for composable, serializable, and extensible visual modifications.
+
+### Core Concepts
+
+**Modifier** — Base unit of the effects system:
+- `type`: 'effect' | 'animation' | 'transition'
+- `presetId`: Reference to a registered preset
+- `enabled`: Whether active in processing stack
+- `parameters`: Record of parameter overrides
+- `keyframes`: KeyframeTrack[] for animated properties
+- `version`: Schema version for forward compatibility
+
+**EffectRegistry** — Register and lookup effect definitions:
+- Effects are immutable after registration
+- Each effect has: id, category, displayName, parameters[], version
+- Categories: blur, glow, camera, color, distortion, style, noise, utility
+
+**TransitionRegistry** — Register and lookup transition definitions:
+- Transitions define how clips transition between each other
+- Each transition has: id, category, displayName, defaultDurationMs, parameters[], version
+- Categories: dissolve, slide, wipe, zoom, blur, light
+
+**PresetRegistry** — Manage preset schemas (.ccpreset file format):
+- Presets are reusable configurations for effects, animations, or transitions
+- Schema versioned for forward compatibility
+- Supports migration functions for schema evolution
+
+**ModifierEngine** — Process modifier stack + validation:
+- Takes a clip's modifier[] and produces final parameter values
+- Validates modifier parameters against definition schemas
+- Handles keyframe evaluation at specific time offsets
+
+### Keyframe System
+
+**Keyframe** — Single point in time with value and easing:
+- `time`: Offset in milliseconds
+- `value`: number | string | boolean
+- `easing`: EasingType (8 curves)
+
+**KeyframeTrack** — Sequence of keyframes targeting a property:
+- `property`: e.g., "opacity", "scale", "positionX"
+- `frames`: Keyframe[] (ordered by time)
+
+**Keyframe Properties (V1)**:
+- opacity, scale, rotation, positionX, positionY
+
+**Easing Curves**:
+- linear, easeIn, easeOut, easeInOut, easeOutBack, easeOutExpo, easeOutElastic, easeOutBounce
+
+**KeyframeEvaluator** — SSOT for keyframe interpolation:
+- Pure function: `(track, localTimeMs) → value`
+- Used by Preview (playback), Export (ffmpeg filters), Timeline (display)
+- Handles hold before first frame, hold after last frame, interpolation between frames
+
+### Filter Pipeline
+
+**FilterPipeline** — Modifier[] → CSS filter string (SSOT):
+- Converts clip's modifier stack into CSS `filter` for <video> element
+- GPU-accelerated by browser compositor
+- Maps effect IDs to CSS filter functions (blur, brightness, contrast, saturation, etc.)
+- Used by Preview (playback) and Export (ffmpeg filter generation)
+
+### Type System
+
+All types are defined in `renderer/effects/types/`:
+- `Animation.ts` — AnimationDefinition, AnimationCategory, KeyframeGenerator
+- `Effect.ts` — EffectDefinition, EffectCategory, EffectParameter
+- `Keyframe.ts` — Keyframe, KeyframeTrack, EasingType, KeyframeProperty
+- `Modifier.ts` — Modifier, ModifierType, ModifierParameterDescriptor
+- `Preset.ts` — Preset, PresetMetadata, PresetData, CcpresetFile
+- `Transition.ts` — TransitionDefinition, TransitionCategory, TransitionParameter
+
+### File Format: .ccpreset
+
+JSON-based preset file format for sharing effects/animations/transitions:
+```json
+{
+  "version": 1,
+  "type": "effect" | "animation" | "transition",
+  "name": "My Preset",
+  "author": "Author",
+  "category": "blur",
+  "description": "Optional description",
+  "tags": ["tag1", "tag2"],
+  // Effect/transition:
+  "parameters": { "amount": 10, "radius": 5 },
+  // Animation:
+  "duration": 1000,
+  "keyframes": [{ "property": "opacity", "frames": [...] }]
+}
+```
+
+---
+
+## Timeline Interaction System
+
+### Overview
+
+The timeline uses a **state machine** (InteractionMachine) for all user interactions. This provides predictable behavior and clean separation between input handling and state mutations.
+
+### InteractionMachine
+
+**State Machine** — Manages interaction modes and transitions:
+- Modes: idle, dragging, trimming, selecting, boxing
+- Transitions based on mouse events, tool selection, modifier keys
+
+**Hit Testing** — Determine what user clicked:
+- Clip body (move), trim handles (left/right edge), text clips, audio tracks
+- Returns HitTarget with type, id, and position info
+
+**Snap to Edges** — Magnetic alignment:
+- Snaps to playhead, clip edges, timeline boundaries
+- Configurable snap threshold
+- Visual feedback during drag
+
+**Lane Layout** — Vertical stacking for overlapping clips:
+- `buildLaneLayout()` computes vertical positions
+- Prevents visual overlap in timeline display
+
+### Tools
+
+**Select Tool** — Default interaction mode:
+- Click to select entity (sets `focusedId`)
+- Drag clip body to move
+- Drag edge to trim
+- Multi-select with box selection
+
+**Blade Tool** — Split clips:
+- Click on clip to split at playhead position
+- Visual indicator shows split point
+
+**Hand Tool** — Pan timeline:
+- Drag to pan timeline horizontally
+- Useful for navigating long timelines
+
+**Zoom Tool** — Zoom timeline:
+- Click to zoom in
+- Alt+click to zoom out
+- Adjusts `useTimeline.zoom`
+
+### React Hook: useTimelineInteraction
+
+Coordinates InteractionMachine + Store + Canvas:
+- Manages refs for machine, canvas, container
+- Handles mouse events (down, move, up)
+- Updates store based on interaction results
+- Manages cursor styles based on hit targets
+
+---
+
 ## Key Workflows
 
 ### Workflow 1: New Project → Import → Transcribe → Export
@@ -761,12 +983,14 @@ shared/
    → ThumbnailService.extract() → timeline thumbnails
 
 3. Arrange Timeline
-   → Drag clips on Timeline (react-dnd)
-   → Trim edges, split at playhead (S key)
+   → Drag clips on Timeline (InteractionMachine + useTimelineInteraction)
+   → Trim edges, split at playhead (S key or Blade tool)
    → Add audio tracks (background music, SFX) with role classification
    → Add text clips manually
-   → Adjust clip transforms (TransformPanel)
+   → Adjust clip transforms (TransformOverlay)
    → Adjust clip speed (0.25x – 4.0x)
+   → Apply effects via EffectsPanel (Modifier stack)
+   → Animate properties with keyframes (KeyframeEditor)
 
 4. Transcribe Audio
    → CaptionEditor → "Transcribe" button
@@ -1100,19 +1324,33 @@ useTimeline.subscribe((state) => {
 
 | Term | Definition |
 |------|-----------|
-| **SSOT** | Single Source of Truth — e.g., `srt.ts` is the only file that parses/generates SRT |
+| **SSOT** | Single Source of Truth — e.g., `srt.ts` is the only file that parses/generates SRT, `caption.ts` is SSOT for CaptionStyle |
 | **IPC** | Inter-Process Communication — Electron mechanism for main ↔ renderer communication |
 | **OOP DI** | Object-Oriented Dependency Injection — Services instantiated in `index.ts`, passed to handlers |
 | **rAF** | `requestAnimationFrame` — Browser API for smooth 60fps rendering |
 | **ffprobe** | FFmpeg probe tool — extracts media metadata (codecs, duration, fps) |
 | **whisper-cli** | Command-line Whisper binary — performs offline speech-to-text |
 | **.ecp** | Electron Capcraft Project — JSON-based project file format |
+| **.ccpreset** | Capcraft Preset File — JSON-based preset exchange format (effects, animations, transitions) |
 | **filter_complex** | FFmpeg advanced filter graph — used for video compositing during export |
 | **Immer** | Immutability library — allows "mutable" syntax in Zustand while keeping state immutable |
 | **contextBridge** | Electron API — safely exposes IPC to renderer with context isolation |
-| **TextClip** | Timeline text/caption clip with styling, track position, and timing |
+| **TextClip** | Timeline text/caption clip with styling, track position, timing, keyframes |
 | **CaptionEntry** | Raw SRT entry from Whisper (id, startMs, endMs, text, words) |
 | **Role Classification** | Audio track categorization (voice, music, sfx, ambient) for transcription filtering |
+| **Modifier** | Base unit of effects system — type + presetId + parameters + keyframes |
+| **EffectRegistry** | Registry for effect definitions (blur, glow, camera, color, etc.) |
+| **TransitionRegistry** | Registry for transition definitions (dissolve, slide, wipe, zoom, etc.) |
+| **PresetRegistry** | Registry for preset schemas (.ccpreset file format) |
+| **ModifierEngine** | Processes modifier stack + validation |
+| **KeyframeEvaluator** | SSOT for keyframe interpolation (pure function) |
+| **FilterPipeline** | Modifier[] → CSS filter string (SSOT for effect → CSS mapping) |
+| **InteractionMachine** | State machine for timeline interactions (hit test, drag, trim, snap) |
+| **HitTarget** | Result of hit testing — type, id, position info |
+| **LaneLayout** | Vertical stacking for overlapping clips in timeline |
+| **focusedId** | Unified selected entity ID in useTimeline (replaces separate selectedClipId, etc.) |
+| **usePreviewView** | Ephemeral preview viewport state (zoom, pan, guides) — NOT persisted |
+| **useSelectedEntity** | Derived hook: focusedId → selectedClipId/selectedTextClipId/selectedAudioTrackId |
 
 ---
 
@@ -1163,12 +1401,66 @@ useTimeline.subscribe((state) => {
 4. **Import stores** (not IPC directly)
 5. **Export as default**
 
+### Adding a New Effect
+
+1. **Define effect** in `renderer/effects/definitions/builtinEffects.ts`:
+   ```typescript
+   const myEffectDefinition: EffectDefinition = {
+     id: 'my-effect',
+     category: 'blur', // or glow, camera, color, distortion, style, noise, utility
+     displayName: 'My Effect',
+     parameters: [
+       { name: 'amount', displayName: 'Amount', descriptor: { valueType: 'number', default: 10, min: 0, max: 100, step: 1 } }
+     ],
+     version: 1
+   }
+   ```
+
+2. **Register effect** in `EffectRegistry`:
+   ```typescript
+   EffectRegistry.register(myEffectDefinition)
+   ```
+
+3. **Add to FilterPipeline** (if CSS-mappable):
+   ```typescript
+   // In FilterPipeline.ts
+   const FILTER_MAPPERS: Record<string, CssFilterMapper> = {
+     'my-effect': (p) => {
+       const amount = typeof p['amount'] === 'number' ? p['amount'] : 0
+       return amount > 0 ? `my-css-filter(${amount}px)` : ''
+     }
+   }
+   ```
+
+4. **Add to EffectsPanel** for user browsing
+
+### Adding a New Transition
+
+1. **Define transition** in `renderer/effects/definitions/transitions.ts`:
+   ```typescript
+   const myTransition: TransitionDefinition = {
+     id: 'my-transition',
+     category: 'dissolve', // or slide, wipe, zoom, blur, light
+     displayName: 'My Transition',
+     defaultDurationMs: 500,
+     parameters: [],
+     version: 1
+   }
+   ```
+
+2. **Register transition** in `TransitionRegistry`:
+   ```typescript
+   TransitionRegistry.register(myTransition)
+   ```
+
+3. **Add to TransitionPicker** for user selection
+
 ---
 
 ## Related Files
 
 - `README.md` — Project overview, setup, build instructions, minimum requirements
-- `blueprint.txt` — Original project requirements
+- `blueprint.txt` — Original project requirements + current implementation status
 - `electron.vite.config.ts` — Build configuration
 - `electron-builder.yml` — Packaging configuration
 - `package.json` — Dependencies, scripts
@@ -1176,6 +1468,6 @@ useTimeline.subscribe((state) => {
 
 ---
 
-**Last Updated**: June 19, 2026
-**Version**: 1.2.0
-**Changes**: Updated to reflect streaming transcription pipeline, model fallback chain, SFX integration, deferred undo infrastructure, CaptionStyle enhancements (captionMode, revealFadeMs), and current IPC channels
+**Last Updated**: July 9, 2026
+**Version**: 1.3.0
+**Changes**: Added effects system documentation (ModifierEngine, EffectRegistry, TransitionRegistry, PresetRegistry), timeline interaction system (InteractionMachine, hit testing, snap, multi-tool), new stores (usePreviewView, useSelectedEntity), shared types (CaptionStyle SSOT), shared utilities (timeline, color, fonts, renderGeometry), new components (LeftRail, RightRail, EffectsPanel, FiltersPanel, TransitionPicker, KeyframeEditor, CaptionPresetPanel, etc.), updated CaptionStyle with active state fields

@@ -5,6 +5,14 @@
  */
 
 import { computeCaptionLayout } from './renderGeometry'
+import type { CaptionStyle } from '../types/caption'
+
+/**
+ * ExportCaptionStyle is CaptionStyle. The alias is kept so existing call sites
+ * (`type ExportCaptionStyle`, `ExportASSOptions.fallbackStyle`) compile without
+ * changes to project.handler.ts and ExportDialog.
+ */
+export type ExportCaptionStyle = CaptionStyle
 
 export interface CaptionEntry {
   id: string
@@ -90,26 +98,6 @@ function pad(num: number, width: number = 2): string {
 // ---------------------------------------------------------------------------
 
 export interface ExportSRTOptions {
-  captionMode?: 'full-phrase' | 'word-reveal' | 'karaoke' | 'single-word'
-  animation?: 'none' | 'pop' | 'fade' | 'slide-up' | 'karaoke' | 'typewriter'
-  revealFadeMs?: number
-}
-
-export interface ExportCaptionStyle {
-  fontFamily: string
-  fontSize: number
-  fontWeight: number
-  fontColor?: string
-  color?: string
-  bgColor: string
-  bgOpacity: number
-  strokeColor: string
-  strokeWidth: number
-  x: number
-  y: number
-  alignment: 'left' | 'center' | 'right'
-  position: 'top' | 'center' | 'bottom'
-  scale?: number
   captionMode?: 'full-phrase' | 'word-reveal' | 'karaoke' | 'single-word'
   animation?: 'none' | 'pop' | 'fade' | 'slide-up' | 'karaoke' | 'typewriter'
   revealFadeMs?: number
@@ -203,17 +191,17 @@ export function generateExportSRT(
     }
 
     if (mode === 'karaoke' && hasWords) {
-      // Active word highlighted with color override, rest shown normally
+      // Active element highlighted — use same default gold as renderer and ASS exporter
       const words = clip.words!
       const fullText = clip.text
       for (let i = 0; i < words.length; i++) {
         const wordStart = clip.startMs + words[i].startMs
         const wordEnd = clip.startMs + words[i].endMs
-        // Highlight active word with yellow, rest white
         const parts: string[] = []
         for (let j = 0; j < words.length; j++) {
           if (j === i) {
-            parts.push(`{\\c&H00FFFF&}${words[j].word}{\\c&HFFFFFF&}`)
+            // &H0000D7FF& = #FFD700 in ASS BGR order, fully opaque
+            parts.push(`{\\c&H0000D7FF&}${words[j].word}{\\c&H00FFFFFF&}`)
           } else {
             parts.push(words[j].word)
           }
@@ -354,11 +342,18 @@ function expandExportClip(clip: ExportClip, style: ExportCaptionStyle): SRTOutpu
   }
 
   if (mode === 'karaoke' && hasWords) {
+    // activeHighlightColor drives the active element's text color in ASS (primary color override).
+    // The canvas renderer uses it as a background fill + draws activeTextColor on top — a richer
+    // visual not representable in plain ASS \c tags. Using it as text color is the best mapping.
+    const activeHighlight = toAssColorLocal(style.activeHighlightColor ?? '#FFD700')
+    const normalColor = toAssColorLocal(style.color ?? '#ffffff')
     return clip.words!.map((word, i, words) => {
       const startMs = clip.startMs + word.startMs
       const endMs = clip.startMs + word.endMs
       const text = words
-        .map((w, j) => j === i ? `{\\c&H00FFFF&}${escapeASS(w.word)}{\\c&HFFFFFF&}` : escapeASS(w.word))
+        .map((w, j) => j === i
+          ? `{\\c${activeHighlight}}${escapeASS(w.word)}{\\c${normalColor}}`
+          : escapeASS(w.word))
         .join(' ')
       return { startMs, endMs, text: buildAnimationTags(animation, startMs, endMs) + text }
     })
@@ -401,7 +396,7 @@ export function generateExportASS(clips: ExportClip[], options: ExportASSOptions
       fontFamily: style.fontFamily,
       fontSize,
       fontWeight: style.fontWeight,
-      color: style.fontColor ?? style.color ?? '#ffffff',
+      color: style.color ?? '#ffffff',
       bgColor: style.bgColor,
       bgOpacity: style.bgOpacity,
       strokeColor: style.strokeColor,
@@ -417,7 +412,7 @@ export function generateExportASS(clips: ExportClip[], options: ExportASSOptions
       name,
       style.fontFamily,
       fontSize,
-      toAssColorLocal(style.fontColor ?? style.color ?? '#ffffff'),
+      toAssColorLocal(style.color ?? '#ffffff'),
       '&H00000000',
       toAssColorLocal(style.strokeColor ?? '#000000'),
       toAssColorLocal(style.bgColor ?? '#000000', style.bgOpacity ?? 0),

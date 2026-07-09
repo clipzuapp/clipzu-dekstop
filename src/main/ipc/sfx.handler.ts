@@ -106,4 +106,31 @@ export function registerSFXHandler(): void {
     const buffer = await readFile(filePath)
     return buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + buffer.byteLength)
   })
+
+  /** Resolve a notification sound name to its absolute file path.
+   *  Used by the renderer NotificationSound service. */
+  ipcMain.handle('sfx:getNotificationSound', async (_event, soundName: string): Promise<string | null> => {
+    const sfxDir = app.isPackaged
+      ? join(process.resourcesPath, 'assets', 'sfx')
+      : join(app.getAppPath(), 'assets', 'sfx')
+
+    // Whitelist of notification sound mappings
+    const SOUND_MAP: Record<string, string> = {
+      success: 'success-chime.mp3',
+      error: 'glitch-1.mp3',
+      warning: 'notification-1.mp3',
+      info: 'pop-1.mp3',
+      click: 'click-1.mp3',
+      delete: 'swoosh-impact.mp3',
+      save: 'ding-1.mp3'
+    }
+
+    const filename = SOUND_MAP[soundName]
+    if (!filename) return null
+
+    const filePath = join(sfxDir, filename)
+    if (!existsSync(filePath)) return null
+
+    return filePath
+  })
 }

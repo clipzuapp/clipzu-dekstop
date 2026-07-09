@@ -1,4 +1,4 @@
-import { useMemo, useCallback, useState, useEffect } from 'react'
+import { useMemo, useCallback, useEffect } from 'react'
 import { useTimeline, DEFAULT_TRANSFORM, type ClipTransform } from '../../store/useTimeline'
 import { useProject, type AspectRatio } from '../../store/useProject'
 import { formatTime } from '../../utils/format'
@@ -7,9 +7,12 @@ import type { RightTabId } from '../RightRail/index'
 import { ComingSoonPanel } from '../ComingSoonPanel/index'
 import { useCaptionStyleBinding } from './useCaptionStyleBinding'
 import * as AudioEngine from '../../services/AudioEngine'
-import { linearToDb, dbToLinear, formatDb } from '../../utils/audio'
+import { linearToDb, dbToLinear } from '../../utils/audio'
 import { useSelectedEntity } from '../../store/useSelectedEntity'
 import { AlignLeft, AlignCenter, AlignRight, Volume2, VolumeX } from 'lucide-react'
+import { KeyframeEditor } from '../KeyframeEditor/index'
+import { SliderInputField } from '../SliderInputField/index'
+import { AVAILABLE_FONTS } from '../../../shared/utils/fonts'
 
 /**
  * Inspector — context-sensitive property editor.
@@ -17,45 +20,13 @@ import { AlignLeft, AlignCenter, AlignRight, Volume2, VolumeX } from 'lucide-rea
  */
 
 // ---------------------------------------------------------------------------
-// Debounce helper
-// ---------------------------------------------------------------------------
-
-function debounce<T extends (...args: any[]) => void>(fn: T, ms: number): T {
-  let timer: ReturnType<typeof setTimeout> | null = null
-  return ((...args: any[]) => {
-    if (timer) clearTimeout(timer)
-    timer = setTimeout(() => fn(...args), ms)
-  }) as T
-}
-
-// ---------------------------------------------------------------------------
 // Sub-components
 // ---------------------------------------------------------------------------
 
 function SectionHeader({ title }: { title: string }): JSX.Element {
   return (
-    <div style={{
-      fontSize: '12px', color: 'var(--text3)', textTransform: 'uppercase',
-      letterSpacing: '0.06em', padding: '10px 12px 4px'
-    }}>
+    <div className="section-title" style={{ padding: '10px 12px 4px' }}>
       {title}
-    </div>
-  )
-}
-
-function SliderRow({ label, min, max, step, value, onChange }: {
-  label: string; min: number; max: number; step: number; value: number; onChange: (v: number) => void
-}): JSX.Element {
-  return (
-    <div style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '0 12px' }}>
-      <span style={{ width: '90px', fontSize: '12px', color: 'var(--text3)', flexShrink: 0, fontFamily: 'monospace' }}>
-        {label}
-      </span>
-      <input
-        type="range" min={min} max={max} step={step} value={value}
-        onChange={(e) => onChange(parseFloat(e.target.value))}
-        style={{ flex: 1, accentColor: 'var(--accent)', height: '4px' }}
-      />
     </div>
   )
 }
@@ -111,17 +82,19 @@ function ProjectSettings(): JSX.Element {
   const resolution = useProject((s) => s.resolution)
   const fps = useProject((s) => s.fps)
   const aspectRatio = useProject((s) => s.aspectRatio)
+  const backgroundColor = useProject((s) => s.backgroundColor)
   const setResolution = useProject((s) => s.setResolution)
   const setFps = useProject((s) => s.setFps)
   const setAspectRatio = useProject((s) => s.setAspectRatio)
+  const setBackgroundColor = useProject((s) => s.setBackgroundColor)
   const totalDurationMs = useTimeline((s) => s.totalDurationMs)
 
   return (
     <div style={{ padding: '12px', display: 'flex', flexDirection: 'column', gap: '16px', fontSize: '13px' }}>
-      <h3 style={{ fontSize: '15px', fontWeight: 600, color: 'var(--text1)', margin: 0 }}>Project Settings</h3>
+      <h3 className="inspector-header-title" style={{ marginBottom: '4px' }}>Project Settings</h3>
 
       <section>
-        <div style={{ fontSize: '12px', color: 'var(--text3)', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: '4px' }}>
+        <div className="section-title" style={{ marginBottom: '4px' }}>
           Aspect Ratio
         </div>
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: '4px' }}>
@@ -141,12 +114,46 @@ function ProjectSettings(): JSX.Element {
       </section>
 
       <section>
-        <div style={{ fontSize: '12px', color: 'var(--text3)', marginBottom: '2px' }}>Resolution</div>
-        <div style={{ color: 'var(--text2)' }}>{resolution.width} × {resolution.height}</div>
+        <div className="section-title" style={{ marginBottom: '4px' }}>Resolution (W × H)</div>
+        <div style={{ display: 'flex', gap: '6px', alignItems: 'center' }}>
+          <input
+            type="number"
+            value={resolution.width}
+            min={100}
+            max={7680}
+            onChange={(e) => {
+              const w = Math.max(100, Math.min(7680, parseInt(e.target.value) || 1080))
+              setResolution(w, resolution.height)
+              setAspectRatio('custom')
+            }}
+            style={{
+              width: '70px', fontSize: '12px', background: 'var(--bg2)', color: 'var(--text2)',
+              border: '0.5px solid var(--border)', borderRadius: '3px', padding: '3px 6px',
+              fontFamily: 'monospace'
+            }}
+          />
+          <span style={{ color: 'var(--text3)' }}>×</span>
+          <input
+            type="number"
+            value={resolution.height}
+            min={100}
+            max={7680}
+            onChange={(e) => {
+              const h = Math.max(100, Math.min(7680, parseInt(e.target.value) || 1080))
+              setResolution(resolution.width, h)
+              setAspectRatio('custom')
+            }}
+            style={{
+              width: '70px', fontSize: '12px', background: 'var(--bg2)', color: 'var(--text2)',
+              border: '0.5px solid var(--border)', borderRadius: '3px', padding: '3px 6px',
+              fontFamily: 'monospace'
+            }}
+          />
+        </div>
       </section>
 
       <section>
-        <div style={{ fontSize: '12px', color: 'var(--text3)', marginBottom: '4px' }}>FPS</div>
+        <div className="section-title" style={{ marginBottom: '4px' }}>FPS</div>
         <div style={{ display: 'flex', gap: '4px' }}>
           {([24, 30, 60] as const).map((f) => (
             <button key={f}
@@ -160,6 +167,31 @@ function ProjectSettings(): JSX.Element {
               {f}
             </button>
           ))}
+        </div>
+      </section>
+
+      <section>
+        <div className="section-title" style={{ marginBottom: '4px' }}>Background Color</div>
+        <div style={{ display: 'flex', gap: '6px', alignItems: 'center' }}>
+          <input
+            type="color"
+            value={backgroundColor}
+            onChange={(e) => setBackgroundColor(e.target.value)}
+            style={{
+              width: '28px', height: '28px', border: 'none', borderRadius: '3px',
+              cursor: 'pointer', background: 'transparent', padding: 0
+            }}
+          />
+          <input
+            type="text"
+            value={backgroundColor}
+            onChange={(e) => setBackgroundColor(e.target.value)}
+            style={{
+              flex: 1, fontSize: '12px', background: 'var(--bg2)', color: 'var(--text2)',
+              border: '0.5px solid var(--border)', borderRadius: '3px', padding: '3px 6px',
+              fontFamily: 'monospace'
+            }}
+          />
         </div>
       </section>
 
@@ -208,61 +240,34 @@ function ClipBasicTab(): JSX.Element {
   }
 
   return (
-    <div style={{ padding: '12px', display: 'flex', flexDirection: 'column', gap: '14px', fontSize: '13px', overflowY: 'auto' }}>
+    <div style={{ padding: '12px', display: 'flex', flexDirection: 'column', gap: '14px', fontSize: '13px' }}>
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
         <button style={{ fontSize: '12px', color: 'var(--text3)', background: 'none', border: 'none', cursor: 'pointer' }}
           onClick={resetTransform}>Reset</button>
       </div>
 
       <SectionHeader title="Transform" />
-      <SliderRow label={`${Math.round(t.scaleX * 100)}%`} min={5} max={400} step={1}
-        value={Math.round(t.scaleX * 100)}
+      <SliderInputField label="Scale" value={Math.round(t.scaleX * 100)} min={5} max={400} step={1} unit="%"
         onChange={(v) => update({ scaleX: v / 100, scaleY: v / 100 })} />
-      <SliderRow label={`Rot ${t.rotation.toFixed(1)}°`} min={-180} max={180} step={0.5}
-        value={t.rotation} onChange={(v) => update({ rotation: v })} />
-      <SliderRow label={`Opacity ${Math.round(t.opacity * 100)}%`} min={0} max={100} step={1}
-        value={Math.round(t.opacity * 100)} onChange={(v) => update({ opacity: v / 100 })} />
+      <SliderInputField label="Rotation" value={t.rotation} min={-180} max={180} step={0.5} unit="°"
+        onChange={(v) => update({ rotation: v })} />
+      <SliderInputField label="Opacity" value={Math.round(t.opacity * 100)} min={0} max={100} step={1} unit="%"
+        onChange={(v) => update({ opacity: v / 100 })} />
 
       <SectionHeader title="Crop" />
-      <SliderRow label={`Top ${Math.round(t.cropTop * 100)}%`} min={0} max={50} step={1}
-        value={Math.round(t.cropTop * 100)} onChange={(v) => update({ cropTop: v / 100 })} />
-      <SliderRow label={`Bot ${Math.round(t.cropBottom * 100)}%`} min={0} max={50} step={1}
-        value={Math.round(t.cropBottom * 100)} onChange={(v) => update({ cropBottom: v / 100 })} />
-      <SliderRow label={`Left ${Math.round(t.cropLeft * 100)}%`} min={0} max={50} step={1}
-        value={Math.round(t.cropLeft * 100)} onChange={(v) => update({ cropLeft: v / 100 })} />
-      <SliderRow label={`Right ${Math.round(t.cropRight * 100)}%`} min={0} max={50} step={1}
-        value={Math.round(t.cropRight * 100)} onChange={(v) => update({ cropRight: v / 100 })} />
+      <SliderInputField label="Crop Top" value={Math.round(t.cropTop * 100)} min={0} max={50} step={1} unit="%"
+        onChange={(v) => update({ cropTop: v / 100 })} />
+      <SliderInputField label="Crop Bottom" value={Math.round(t.cropBottom * 100)} min={0} max={50} step={1} unit="%"
+        onChange={(v) => update({ cropBottom: v / 100 })} />
+      <SliderInputField label="Crop Left" value={Math.round(t.cropLeft * 100)} min={0} max={50} step={1} unit="%"
+        onChange={(v) => update({ cropLeft: v / 100 })} />
+      <SliderInputField label="Crop Right" value={Math.round(t.cropRight * 100)} min={0} max={50} step={1} unit="%"
+        onChange={(v) => update({ cropRight: v / 100 })} />
 
       {/* Audio section — per-clip volume + mute for video clips with embedded audio */}
       <SectionHeader title="Audio" />
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '0 12px' }}>
-        <span style={{ fontSize: '12px', color: 'var(--text3)' }}>Volume</span>
-        <span style={{ fontSize: '12px', color: 'var(--text1)', fontFamily: 'monospace' }}>
-          {clipMuted ? 'Muted' : formatDb(clipDb)}
-        </span>
-      </div>
-      <div style={{ padding: '0 12px', display: 'flex', alignItems: 'center', gap: '6px' }}>
-        <input
-          type="range" min={-30} max={6} step={0.5}
-          value={clipDb}
-          onChange={(e) => {
-            if (selectedClipId) setClipVolume(selectedClipId, dbToLinear(parseFloat(e.target.value)))
-          }}
-          style={{ flex: 1, accentColor: 'var(--accent)', height: '4px' }}
-        />
-        <input
-          type="number" min={-30} max={6} step={0.5}
-          value={clipDb}
-          onChange={(e) => {
-            if (selectedClipId) setClipVolume(selectedClipId, dbToLinear(Math.max(-30, Math.min(6, parseFloat(e.target.value) || -30))))
-          }}
-          style={{
-            width: '52px', padding: '1px 3px', fontSize: '12px', borderRadius: '3px',
-            background: 'var(--bg2)', color: 'var(--text1)', border: '0.5px solid var(--border)',
-            fontFamily: 'monospace', textAlign: 'right'
-          }}
-        />
-      </div>
+      <SliderInputField label="Volume" value={clipDb} min={-30} max={6} step={0.5} unit="dB"
+        onChange={(v) => { if (selectedClipId) setClipVolume(selectedClipId, dbToLinear(v)) }} />
       <div style={{ display: 'flex', alignItems: 'center', gap: '6px', padding: '0 12px' }}>
         <button
           onClick={() => {
@@ -322,6 +327,11 @@ function ClipBasicTab(): JSX.Element {
           <span style={{ fontSize: '11px', color: 'var(--text3)' }}>s</span>
         </div>
       </div>
+
+      {/* Keyframe Editor */}
+      <div style={{ borderTop: '0.5px solid var(--border)', paddingTop: '8px' }}>
+        <KeyframeEditor />
+      </div>
     </div>
   )
 }
@@ -330,39 +340,13 @@ function ClipBasicTab(): JSX.Element {
 // Caption Style Tab (rightTab='basic' + caption/textClip selected)
 // ---------------------------------------------------------------------------
 
-const FONT_OPTIONS = [
-  'Inter', 'Bebas Neue', 'Montserrat', 'Poppins', 'Anton', 'Oswald', 'Fredoka',
-  'Arial', 'Roboto', 'Impact'
-]
+const FONT_OPTIONS = AVAILABLE_FONTS
 const ANIM_PRESETS: Array<'none' | 'pop' | 'fade' | 'slide-up' | 'karaoke' | 'typewriter'> = [
   'pop', 'fade', 'slide-up', 'karaoke', 'typewriter', 'none'
 ]
 
 function CaptionStyleTab(): JSX.Element {
   const { effectiveStyle, applyStyleToSelected, applyStyleToAllOnLayer } = useCaptionStyleBinding()
-
-  // Debounced sliders — local state for immediate feedback, debounced store write
-  const [localFontSize, setLocalFontSize] = useState(effectiveStyle.fontSize)
-  const [localFontWeight, setLocalFontWeight] = useState(effectiveStyle.fontWeight)
-  const [localStrokeWidth, setLocalStrokeWidth] = useState(effectiveStyle.strokeWidth)
-  const [localBgOpacity, setLocalBgOpacity] = useState(Math.round(effectiveStyle.bgOpacity * 100))
-  const [localX, setLocalX] = useState(effectiveStyle.x)
-  const [localY, setLocalY] = useState(effectiveStyle.y)
-
-  // Sync local state when effective style changes (clip selection change, external edits)
-  useEffect(() => { setLocalFontSize(effectiveStyle.fontSize) }, [effectiveStyle.fontSize])
-  useEffect(() => { setLocalFontWeight(effectiveStyle.fontWeight) }, [effectiveStyle.fontWeight])
-  useEffect(() => { setLocalStrokeWidth(effectiveStyle.strokeWidth) }, [effectiveStyle.strokeWidth])
-  useEffect(() => { setLocalBgOpacity(Math.round(effectiveStyle.bgOpacity * 100)) }, [effectiveStyle.bgOpacity])
-  useEffect(() => { setLocalX(effectiveStyle.x) }, [effectiveStyle.x])
-  useEffect(() => { setLocalY(effectiveStyle.y) }, [effectiveStyle.y])
-
-  const debouncedFontSize = useMemo(() => debounce((v: number) => applyStyleToSelected({ fontSize: v }), 50), [applyStyleToSelected])
-  const debouncedFontWeight = useMemo(() => debounce((v: number) => applyStyleToSelected({ fontWeight: v }), 50), [applyStyleToSelected])
-  const debouncedStrokeWidth = useMemo(() => debounce((v: number) => applyStyleToSelected({ strokeWidth: v }), 50), [applyStyleToSelected])
-  const debouncedBgOpacity = useMemo(() => debounce((v: number) => applyStyleToSelected({ bgOpacity: v / 100 }), 50), [applyStyleToSelected])
-  const debouncedX = useMemo(() => debounce((v: number) => applyStyleToSelected({ x: v }), 50), [applyStyleToSelected])
-  const debouncedY = useMemo(() => debounce((v: number) => applyStyleToSelected({ y: v }), 50), [applyStyleToSelected])
 
   return (
     <div style={{ padding: '12px', display: 'flex', flexDirection: 'column', gap: '12px', fontSize: '13px' }}>
@@ -381,51 +365,17 @@ function CaptionStyleTab(): JSX.Element {
         </select>
       </div>
 
-      <div style={{ padding: '0 12px' }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '2px' }}>
-          <span style={{ fontSize: '12px', color: 'var(--text3)' }}>Font Size</span>
-          <span style={{ fontSize: '12px', color: 'var(--text1)', fontFamily: 'monospace' }}>{localFontSize}px</span>
-        </div>
-        <input type="range" min={12} max={120} value={localFontSize}
-          onInput={(e) => {
-            const v = Number((e.target as HTMLInputElement).value)
-            setLocalFontSize(v)
-            debouncedFontSize(v)
-          }}
-          style={{ width: '100%', accentColor: 'var(--accent)' }} />
-      </div>
-
-      <div style={{ padding: '0 12px' }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '2px' }}>
-          <span style={{ fontSize: '12px', color: 'var(--text3)' }}>Font Weight</span>
-          <span style={{ fontSize: '12px', color: 'var(--text1)', fontFamily: 'monospace' }}>{localFontWeight}</span>
-        </div>
-        <input type="range" min={300} max={900} step={100} value={localFontWeight}
-          onInput={(e) => {
-            const v = Number((e.target as HTMLInputElement).value)
-            setLocalFontWeight(v)
-            debouncedFontWeight(v)
-          }}
-          style={{ width: '100%', accentColor: 'var(--accent)' }} />
-      </div>
+      <SliderInputField label="Font Size" value={effectiveStyle.fontSize} min={12} max={120} step={1} unit="px"
+        debounceMs={50} onChange={(v) => applyStyleToSelected({ fontSize: v })} />
+      <SliderInputField label="Font Weight" value={effectiveStyle.fontWeight} min={300} max={900} step={100}
+        debounceMs={50} onChange={(v) => applyStyleToSelected({ fontWeight: v })} />
 
       {/* Colors */}
       <SwatchRow label="Text Color" value={effectiveStyle.color} onChange={(c) => applyStyleToSelected({ color: c })} />
       <SwatchRow label="Stroke Color" value={effectiveStyle.strokeColor} onChange={(c) => applyStyleToSelected({ strokeColor: c })} />
 
-      <div style={{ padding: '0 12px' }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '2px' }}>
-          <span style={{ fontSize: '12px', color: 'var(--text3)' }}>Stroke Width</span>
-          <span style={{ fontSize: '12px', color: 'var(--text1)', fontFamily: 'monospace' }}>{localStrokeWidth}px</span>
-        </div>
-        <input type="range" min={0} max={10} step={0.5} value={localStrokeWidth}
-          onInput={(e) => {
-            const v = Number((e.target as HTMLInputElement).value)
-            setLocalStrokeWidth(v)
-            debouncedStrokeWidth(v)
-          }}
-          style={{ width: '100%', accentColor: 'var(--accent)' }} />
-      </div>
+      <SliderInputField label="Stroke Width" value={effectiveStyle.strokeWidth} min={0} max={10} step={0.5} unit="px"
+        debounceMs={50} onChange={(v) => applyStyleToSelected({ strokeWidth: v })} />
 
       {/* Alignment */}
       <div style={{ padding: '0 12px' }}>
@@ -448,19 +398,8 @@ function CaptionStyleTab(): JSX.Element {
 
       {/* Background */}
       <SectionHeader title="Background" />
-      <div style={{ padding: '0 12px' }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '2px' }}>
-          <span style={{ fontSize: '12px', color: 'var(--text3)' }}>BG Opacity</span>
-          <span style={{ fontSize: '12px', color: 'var(--text1)', fontFamily: 'monospace' }}>{localBgOpacity}%</span>
-        </div>
-        <input type="range" min={0} max={100} value={localBgOpacity}
-          onInput={(e) => {
-            const v = Number((e.target as HTMLInputElement).value)
-            setLocalBgOpacity(v)
-            debouncedBgOpacity(v)
-          }}
-          style={{ width: '100%', accentColor: 'var(--accent)' }} />
-      </div>
+      <SliderInputField label="BG Opacity" value={Math.round(effectiveStyle.bgOpacity * 100)} min={0} max={100} step={1} unit="%"
+        debounceMs={50} onChange={(v) => applyStyleToSelected({ bgOpacity: v / 100 })} />
 
       {/* Caption Mode */}
       <SectionHeader title="Caption Mode" />
@@ -488,49 +427,42 @@ function CaptionStyleTab(): JSX.Element {
       {effectiveStyle.captionMode === 'word-reveal' && (
         <>
           <SectionHeader title="Reveal Fade" />
-          <div style={{ padding: '0 12px' }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '2px' }}>
-              <span style={{ fontSize: '12px', color: 'var(--text3)' }}>Fade Duration</span>
-              <span style={{ fontSize: '12px', color: 'var(--text1)', fontFamily: 'monospace' }}>{effectiveStyle.revealFadeMs ?? 0}ms</span>
-            </div>
-            <input type="range" min={0} max={200} step={10} value={effectiveStyle.revealFadeMs ?? 0}
-              onChange={(e) => applyStyleToSelected({ revealFadeMs: parseInt(e.target.value) })}
-              style={{ width: '100%', accentColor: 'var(--accent)' }} />
-            <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '11px', color: 'var(--text3)', marginTop: '2px' }}>
-              <span>Instant</span><span>Smooth</span>
-            </div>
-          </div>
+          <SliderInputField label="Fade Duration" value={effectiveStyle.revealFadeMs ?? 0} min={0} max={200} step={10} unit="ms"
+            onChange={(v) => applyStyleToSelected({ revealFadeMs: v })} />
+        </>
+      )}
+
+      {/* Active State — visible only for modes that have an active element */}
+      {(effectiveStyle.captionMode === 'karaoke' || effectiveStyle.captionMode === 'single-word') && (
+        <>
+          <SectionHeader title="Active State" />
+
+          {/* Highlight Color */}
+          <SwatchRow
+            label="Highlight Color"
+            value={effectiveStyle.activeHighlightColor ?? '#FFD700'}
+            onChange={(c) => applyStyleToSelected({ activeHighlightColor: c })}
+          />
+
+          {/* Text Color */}
+          <SwatchRow
+            label="Text Color"
+            value={effectiveStyle.activeTextColor ?? '#000000'}
+            onChange={(c) => applyStyleToSelected({ activeTextColor: c })}
+          />
+
+          {/* Scale */}
+          <SliderInputField label="Active Scale" value={Math.round((effectiveStyle.activeScale ?? 1) * 100)} min={50} max={200} step={5} unit="%"
+            onChange={(v) => applyStyleToSelected({ activeScale: v / 100 })} />
         </>
       )}
 
       {/* Position */}
       <SectionHeader title="Position" />
-      <div style={{ padding: '0 12px' }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '2px' }}>
-          <span style={{ fontSize: '12px', color: 'var(--text3)' }}>X</span>
-          <span style={{ fontSize: '12px', color: 'var(--text1)', fontFamily: 'monospace' }}>{localX}%</span>
-        </div>
-        <input type="range" min={0} max={100} value={localX}
-          onInput={(e) => {
-            const v = Number((e.target as HTMLInputElement).value)
-            setLocalX(v)
-            debouncedX(v)
-          }}
-          style={{ width: '100%', accentColor: 'var(--accent)' }} />
-      </div>
-      <div style={{ padding: '0 12px' }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '2px' }}>
-          <span style={{ fontSize: '12px', color: 'var(--text3)' }}>Y</span>
-          <span style={{ fontSize: '12px', color: 'var(--text1)', fontFamily: 'monospace' }}>{localY}%</span>
-        </div>
-        <input type="range" min={0} max={100} value={localY}
-          onInput={(e) => {
-            const v = Number((e.target as HTMLInputElement).value)
-            setLocalY(v)
-            debouncedY(v)
-          }}
-          style={{ width: '100%', accentColor: 'var(--accent)' }} />
-      </div>
+      <SliderInputField label="Position X" value={effectiveStyle.x} min={0} max={100} step={1} unit="%"
+        debounceMs={50} onChange={(v) => applyStyleToSelected({ x: v })} />
+      <SliderInputField label="Position Y" value={effectiveStyle.y} min={0} max={100} step={1} unit="%"
+        debounceMs={50} onChange={(v) => applyStyleToSelected({ y: v })} />
 
       {/* Apply to All on Layer */}
       <div style={{ padding: '0 12px' }}>
@@ -648,27 +580,8 @@ function AudioTab(): JSX.Element {
               {track.muted ? <><VolumeX size={12} /> Muted</> : <><Volume2 size={12} /> M</>}
             </button>
           </div>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-            <span style={{ fontSize: '12px', color: 'var(--text3)', width: '48px', fontFamily: 'monospace' }}>
-              {formatDb(trackDb)}
-            </span>
-            <input
-              type="range" min={-30} max={6} step={0.5}
-              value={trackDb}
-              onChange={(e) => setAudioVolume(track.id, dbToLinear(parseFloat(e.target.value)))}
-              style={{ flex: 1, accentColor: 'var(--accent)', height: '4px' }}
-            />
-            <input
-              type="number" min={-30} max={6} step={0.5}
-              value={trackDb}
-              onChange={(e) => setAudioVolume(track.id, dbToLinear(Math.max(-30, Math.min(6, parseFloat(e.target.value) || -30))))}
-              style={{
-                width: '52px', padding: '1px 3px', fontSize: '12px', borderRadius: '3px',
-                background: 'var(--bg2)', color: 'var(--text1)', border: '0.5px solid var(--border)',
-                fontFamily: 'monospace', textAlign: 'right'
-              }}
-            />
-          </div>
+          <SliderInputField label={track.name || 'Audio Track'} value={trackDb} min={-30} max={6} step={0.5} unit="dB"
+            onChange={(v) => setAudioVolume(track.id, dbToLinear(v))} />
         </div>
         )
       })}
@@ -706,23 +619,8 @@ function SpeedTab(): JSX.Element {
     <div style={{ padding: '12px', display: 'flex', flexDirection: 'column', gap: '14px', fontSize: '13px' }}>
       <SectionHeader title="Clip Speed" />
 
-      <div style={{ padding: '0 12px', display: 'flex', flexDirection: 'column', gap: '8px' }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline' }}>
-          <span style={{ fontSize: '12px', color: 'var(--text3)' }}>Speed</span>
-          <span style={{ fontSize: '13px', fontWeight: 600, color: 'var(--text1)', fontFamily: 'monospace' }}>
-            {speed.toFixed(2)}×
-          </span>
-        </div>
-        <input
-          type="range" min={25} max={400} step={1}
-          value={Math.round(speed * 100)}
-          onChange={(e) => setClipSpeed(selectedClipId!, parseInt(e.target.value) / 100)}
-          style={{ width: '100%', accentColor: 'var(--accent)', height: '4px' }}
-        />
-        <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '11px', color: 'var(--text3)' }}>
-          <span>0.25×</span><span>1.0×</span><span>2.0×</span><span>4.0×</span>
-        </div>
-      </div>
+      <SliderInputField label="Speed" value={Math.round(speed * 100)} min={25} max={400} step={1} unit="%"
+        onChange={(v) => setClipSpeed(selectedClipId!, v / 100)} />
 
       <div style={{ padding: '0 12px', display: 'flex', gap: '4px' }}>
         {[0.5, 1.0, 1.5, 2.0].map((preset) => (
@@ -795,30 +693,8 @@ function AudioTrackBasicTab({ trackId }: { trackId: string }): JSX.Element {
       </div>
 
       <SectionHeader title="Audio" />
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '0 12px' }}>
-        <span style={{ fontSize: '12px', color: 'var(--text3)' }}>Volume</span>
-        <span style={{ fontSize: '12px', color: 'var(--text1)', fontFamily: 'monospace' }}>
-          {track.muted ? 'Muted' : formatDb(trackDb)}
-        </span>
-      </div>
-      <div style={{ padding: '0 12px', display: 'flex', alignItems: 'center', gap: '6px' }}>
-        <input
-          type="range" min={-30} max={6} step={0.5}
-          value={trackDb}
-          onChange={(e) => handleVolumeChange(dbToLinear(parseFloat(e.target.value)))}
-          style={{ flex: 1, accentColor: 'var(--accent)', height: '4px' }}
-        />
-        <input
-          type="number" min={-30} max={6} step={0.5}
-          value={trackDb}
-          onChange={(e) => handleVolumeChange(dbToLinear(Math.max(-30, Math.min(6, parseFloat(e.target.value) || -30))))}
-          style={{
-            width: '52px', padding: '1px 3px', fontSize: '12px', borderRadius: '3px',
-            background: 'var(--bg2)', color: 'var(--text1)', border: '0.5px solid var(--border)',
-            fontFamily: 'monospace', textAlign: 'right'
-          }}
-        />
-      </div>
+      <SliderInputField label="Volume" value={trackDb} min={-30} max={6} step={0.5} unit="dB"
+        onChange={(v) => handleVolumeChange(dbToLinear(v))} />
       <div style={{ display: 'flex', alignItems: 'center', gap: '6px', padding: '0 12px' }}>
         <button
           onClick={handleMuteToggle}
@@ -902,7 +778,8 @@ export function Inspector({ rightTab }: InspectorProps): JSX.Element {
 
       case 'animation':
         if (hasCaption || hasTextClip) return <CaptionAnimationTab />
-        return <ComingSoonPanel label="Animation" />
+        if (hasClip || hasAudioTrack) return <KeyframeEditor />
+        return <div className="px-3 py-4 text-center text-[11px] text-gray-500">Select a clip to edit keyframes</div>
 
       case 'audio':
         return <AudioTab />
@@ -922,9 +799,9 @@ export function Inspector({ rightTab }: InspectorProps): JSX.Element {
   }
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', height: '100%', overflow: 'hidden' }}>
+    <div className="inspector-panel" style={{ display: 'flex', flexDirection: 'column', height: '100%', overflow: 'hidden' }}>
       <InspectorHeader />
-      <div style={{ flex: 1, overflowY: 'auto' }}>
+      <div className="inspector-scroll" style={{ flex: 1, overflowY: 'auto' }}>
         {renderTabContent()}
       </div>
     </div>

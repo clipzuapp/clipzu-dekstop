@@ -1,0 +1,247 @@
+**Iterasi 1** — mapping semua kebutuhan dari request lu:
+- Video stitch + trim + reorder
+- SFX & audio layering
+- Text styling + animation
+- Auto caption (Whisper offline)
+- Export dengan dimension presets CapCut-style
+- Production-grade = scalable, maintainable, tidak akan jebol di edge cases
+
+**Iterasi 2** — identifikasi masalah arsitektur yang sering bikin proyek video editor gagal:
+- **Main process blocking** → FFmpeg harus di worker thread, bukan main process Electron
+- **Preview performance** → Canvas render harus pakai requestAnimationFrame + frame caching, bukan re-render tiap state change
+- **Whisper memory leak** → harus spawn child process terpisah, bukan di-load di main thread
+- **Timeline sync** → audio/video sync drift kalau tidak pakai master clock
+- **Export queue** → kalau export langsung di UI thread, app freeze
+
+**Iterasi 3** — structure folder, state management, IPC architecture
+
+**Iterasi 4** — UI/UX layout dengan semua panel
+
+**Iterasi 5** — Effects system, keyframes, modifiers, transitions, filters
+
+---
+
+## Status Implementasi Saat Ini
+
+### Tech stack (final, no ambiguity)
+
+| Layer | Pilihan | Alasan |
+|---|---|---|
+| Shell | `electron-vite` + Electron 30 | build tooling terbaik untuk Electron 2024+ |
+| UI | React 18 + TypeScript | ecosystem terluas |
+| State | Zustand + Immer | ringan, undo/redo via snapshots |
+| Styling | Tailwind CSS | dark theme editor gampang |
+| Timeline | custom Canvas renderer + InteractionMachine | Canvas untuk render, hit-testing, drag/trim/snap |
+| Preview | Canvas 2D + `requestAnimationFrame` | tidak butuh WebGL, cukup untuk 1080p preview |
+| Video proc | `fluent-ffmpeg` (child_process.spawn) | mature, well-documented, non-blocking |
+| Transcription | `whisper-cli.exe` (direct spawn, streaming pipeline) | Whisper.cpp binding, offline, no worker_threads |
+| Audio | Web Audio API (AudioEngine, multi-track mixing) | Native browser audio processing |
+| DB/cache | `better-sqlite3` (native SQLite) | thumbnail cache + project metadata |
+| Packaging | `electron-builder` | auto-update, NSIS installer Windows, DMG macOS |
+| Effects | ModifierEngine + EffectRegistry + TransitionRegistry | Data-driven effect system dengan keyframe animation |
+| Filters | FilterPipeline (Modifier[] → CSS filter) | GPU-accelerated browser compositor |
+| Keyframes | KeyframeEvaluator (pure interpolation) | SSOT untuk semua keyframe interpolation |
+
+### Arsitektur UI (CapCut-style)
+
+Layout mengikuti paradigma CapCut:
+- **LeftRail** (64px) — vertical icon rail dengan tabbed panels: Media, Templates, Elements, Audio, Text, Captions, Transcript, Effects, Transitions, Filters, Plugins
+- **Preview** (center) — Canvas2D + rAF loop dengan sub-components: CaptionStrip, PlaybackControls, TransformOverlay, GuideOverlay
+- **RightRail** (64px) — vertical icon rail untuk inspector tabs: Basic, Background, Smart Tools, Audio, Animation, Speed
+- **Inspector** — context-aware properties panel antara Preview dan RightRail
+- **Timeline** (bottom) — Canvas-based dengan InteractionMachine, multi-track, drag/trim/snap
+
+### Effects System (Data-Driven)
+
+**Core Architecture:**
+- **Modifier** — base unit untuk effect, animation, transition
+- **EffectRegistry** — register dan lookup effect definitions
+- **TransitionRegistry** — register dan lookup transition definitions
+- **PresetRegistry** — manage preset schemas (.ccpreset file format)
+- **ModifierEngine** — process modifier stack + validation
+
+**Type System:**
+- **Keyframe** — time + value + easing (8 easing curves)
+- **KeyframeTrack** — sequence of keyframes targeting a property
+- **Modifier** — type (effect|animation|transition) + presetId + parameters + keyframes
+- **Effect** — id + category + parameters + version
+- **Animation** — id + category + generateKeyframes function
+- **Transition** — id + category + defaultDurationMs + parameters
+- **Preset** — metadata + data (effect|animation|transition variants)
+
+**Keyframe Properties (V1):**
+- opacity, scale, rotation, positionX, positionY
+
+**Easing Curves:**
+- linear, easeIn, easeOut, easeInOut, easeOutBack, easeOutExpo, easeOutElastic, easeOutBounce
+
+**Services:**
+- **FilterPipeline** — Modifier[] → CSS filter string (SSOT untuk effect → CSS mapping)
+- **KeyframeEvaluator** — pure interpolation (SSOT untuk keyframe evaluation)
+
+### Timeline Interaction System
+
+**InteractionMachine** — state machine untuk timeline interactions:
+- **Hit testing** — determine what user clicked (clip body, trim handle, text clip, audio track)
+- **Modes** — select, blade, hand, zoom tools
+- **Drag & drop** — clip move, trim, multi-select box
+- **Snap to edges** — magnetic alignment dengan playhead, clip edges, timeline boundaries
+- **Lane layout** — vertical stacking untuk overlapping clips
+
+**Tools:**
+- **Select** — click to select, drag to move, edge drag to trim
+- **Blade** — click to split clip at playhead
+- **Hand** — pan timeline horizontally
+- **Zoom** — zoom in/out timeline
+
+### Shared Utilities (SSOT)
+
+**shared/types/caption.ts** — CaptionStyle interface (single source of truth):
+- Typography: fontFamily, fontSize, fontWeight
+- Colors: color, strokeColor, strokeWidth, bgColor, bgOpacity
+- Layout: alignment, position, x, y, rotation, scale
+- Behavior: animation, captionMode, revealFadeMs
+- Active State: activeHighlightColor, activeTextColor, activeScale
+
+**shared/utils/srt.ts** — SRT parse/generate/format (pure functions)
+**shared/utils/timeline.ts** — Timeline timing utilities (recalcDuration, TextClip invariants)
+**shared/utils/color.ts** — Hex color conversion (ASS format, CSS alpha)
+**shared/utils/fonts.ts** — AVAILABLE_FONTS array (SSOT untuk font selection)
+**shared/utils/renderGeometry.ts** — Caption layout geometry (canvas dims → pixel coords)
+
+### State Management
+
+**Zustand Stores:**
+- **useTimeline** — clips, audioTracks, textClips, tracks, playhead, zoom, markers, focusedId, modifiers, keyframes
+- **useCaption** — entries, style, transcription, silence detection
+- **useExport** — preset, queue, upscale, codec, quality
+- **useProject** — name, fps, resolution, undo/redo via snapshots
+- **useMediaLibrary** — imported media items, lazy thumbnails
+- **useStartup** — validation status, environment checks
+- **useConfirm** — confirmation dialog state
+- **useToast** — toast notification state
+- **usePreviewView** — zoom mode, pan, guides, quality, playback speed, fullscreen (NOT persisted)
+- **useSelectedEntity** — derived hook: focusedId → selectedClipId/selectedTextClipId/selectedAudioTrackId
+
+**Undo/Redo:**
+- Snapshot-based (deep clone)
+- Captures: clips, audioTracks, textClips, captions
+- Max 50 entries
+- Stored in useProject.undoStack/redoStack
+
+### Production Killers (Solved)
+
+`FFmpegService` harus spawn sebagai `child_process`, bukan `execSync`. Kalau blocking, seluruh main process freeze dan app hang. ✅ Implemented
+
+Whisper harus di `child_process.spawn` terpisah — model 233MB tidak boleh di-load di main thread karena initial load ~2 detik akan freeze UI. ✅ Implemented (streaming pipeline: FFmpeg stdout → whisper stdin)
+
+Timeline zoom state harus terpisah dari project state. Zoom bukan bagian dari file `.ecp`, ini UI-only state jadi jangan di-persist. ✅ Implemented (usePreviewView is NOT persisted)
+
+Export progress harus di-stream via `ipcMain.emit` tiap 1 detik, bukan nunggu selesai. User harus bisa lihat progress bar realtime. ✅ Implemented
+
+Thumbnail cache pakai SQLite dengan key `${clipPath}:${frameMs}` → base64 PNG. Tanpa cache ini, setiap kali user scroll timeline akan trigger FFmpeg extract frame dan app terasa lambat. ✅ Implemented
+
+SRT harus selalu di-export sebagai sidecar file `.srt` bersamaan dengan MP4 — gratis, dan user tidak perlu re-transcribe kalau mau ubah platform. ✅ Implemented
+
+### File Format Extensions
+
+**.ecp** — Electron Capcraft Project (JSON):
+- version, name, fps, resolution, aspectRatio
+- clips[], audioTracks[], textClips[]
+- captions: { entries[], style, language }
+- exportPreset
+
+**.ccpreset** — Capcraft Preset File (JSON):
+- version, type, name, author, category
+- parameters (effect/transition) or keyframes (animation)
+- Schema versioned for forward compatibility
+
+### Hal yang sering dilupakan (production killers) — SOLVED
+
+✅ FFmpeg spawn sebagai child_process (non-blocking)
+✅ Whisper direct spawn dengan streaming pipeline
+✅ Timeline zoom terpisah dari project state (usePreviewView)
+✅ Export progress streaming via IPC events
+✅ Thumbnail cache dengan SQLite
+✅ SRT sidecar export alongside MP4
+✅ Effects system dengan keyframe animation
+✅ Modifier stack untuk composable effects
+✅ Transition system dengan registry
+✅ Filter pipeline (Modifier[] → CSS filter)
+✅ Keyframe evaluator (pure interpolation)
+✅ Timeline interaction machine (hit test, drag, trim, snap)
+✅ Multi-tool support (select, blade, hand, zoom)
+✅ Shared types untuk CaptionStyle (SSOT)
+✅ Shared utilities untuk timeline, color, fonts, render geometry
+**Iterasi 1** — mapping semua kebutuhan dari request lu:
+- Video stitch + trim + reorder
+- SFX & audio layering
+- Text styling + animation
+- Auto caption (Whisper offline)
+- Export dengan dimension presets CapCut-style
+- Production-grade = scalable, maintainable, tidak akan jebol di edge cases
+
+**Iterasi 2** — identifikasi masalah arsitektur yang sering bikin proyek video editor gagal:
+- **Main process blocking** → FFmpeg harus di worker thread, bukan main process Electron
+- **Preview performance** → Canvas render harus pakai requestAnimationFrame + frame caching, bukan re-render tiap state change
+- **Whisper memory leak** → harus spawn child process terpisah, bukan di-load di main thread
+- **Timeline sync** → audio/video sync drift kalau tidak pakai master clock
+- **Export queue** → kalau export langsung di UI thread, app freeze
+
+**Iterasi 3** — structure folder, state management, IPC architecture
+
+**Iterasi 4** — UI/UX layout dengan semua panel
+
+Sekarang gw tuangkan semua ini ke blueprint final.Oke. Gw akan deliver ini dalam 4 bagian visual terpisah supaya tidak ada yang di-skip:
+
+1. **Process architecture** — IPC + worker thread diagram
+2. **Folder structure + state management** blueprint
+3. **UI/UX Editor layout** — full mockup dengan semua panel
+4. **Export system** — queue, presets, upscale pipeline
+
+---
+
+## Bagian 1 — Process & IPC Architecture
+
+Ini adalah bagian yang paling sering bikin video editor Electron jebol. Main process harus tidak pernah blocking.---
+
+## Bagian 2 — Folder Structure & State Management---
+
+## Bagian 3 — Editor UI/UX Layout
+
+Layout mengikuti paradigma CapCut: preview center, media kiri, properties kanan, timeline bawah.---
+
+## Bagian 4 — Export System + Dimension Presets + Upscale Pipeline---
+
+## Blueprint Final — Semua Keputusan Teknis
+
+### Tech stack (final, no ambiguity)
+
+| Layer | Pilihan | Alasan |
+|---|---|---|
+| Shell | `electron-vite` + Electron 30 | build tooling terbaik untuk Electron 2024+ |
+| UI | React 18 + TypeScript | ecosystem terluas |
+| State | Zustand + Immer | ringan, undo/redo via patches |
+| Styling | Tailwind CSS | dark theme editor gampang |
+| Timeline | custom Canvas renderer | react-dnd untuk drag, Canvas untuk render track |
+| Preview | Canvas 2D + `requestAnimationFrame` | tidak butuh WebGL, cukup untuk 1080p preview |
+| Video proc | `fluent-ffmpeg` (Node main process) | mature, well-documented |
+| Transcription | `nodejs-whisper` (worker_threads) | Whisper.cpp binding, offline |
+| Upscale | `realesrgan-ncnn-vulkan` (child_process) | binary 10MB, GPU-accelerated via Vulkan |
+| DB/cache | `better-sqlite3` | thumbnail cache + project metadata |
+| Packaging | `electron-builder` | auto-update, NSIS installer Windows, DMG macOS |
+
+### Hal yang sering dilupakan (production killers)
+
+`FFmpegService` harus spawn sebagai `child_process`, bukan `execSync`. Kalau blocking, seluruh main process freeze dan app hang.
+
+Whisper harus di `worker_threads` terpisah — model 233MB tidak boleh di-load di main thread karena initial load ~2 detik akan freeze UI.
+
+Timeline zoom state harus terpisah dari project state. Zoom bukan bagian dari file `.ecp`, ini UI-only state jadi jangan di-persist.
+
+Export progress harus di-stream via `ipcMain.emit` tiap 1 detik, bukan nunggu selesai. User harus bisa lihat progress bar realtime.
+
+Thumbnail cache pakai SQLite dengan key `${clipPath}:${frameMs}` → base64 PNG. Tanpa cache ini, setiap kali user scroll timeline akan trigger FFmpeg extract frame dan app terasa lambat.
+
+SRT harus selalu di-export sebagai sidecar file `.srt` bersamaan dengan MP4 — gratis, dan user tidak perlu re-transcribe kalau mau ubah platform.
+

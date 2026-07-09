@@ -10,6 +10,8 @@ import {
   getTextClipEnd,
   shiftTextClipStart
 } from '../../shared/utils/timeline'
+import type { KeyframeTrack } from '../effects/types/Keyframe'
+import type { Modifier, ModifierPatch } from '../effects/types/Modifier'
 
 export {
   recalcTimelineDuration,
@@ -38,28 +40,45 @@ function deepCloneWords(w?: TextClip['words']): TextClip['words'] {
   return w ? w.map((wd) => ({ ...wd })) : undefined
 }
 
+function deepCloneKeyframes(kf?: KeyframeTrack[]): KeyframeTrack[] | undefined {
+  return kf ? kf.map((t) => ({ property: t.property, frames: t.frames.map((f) => ({ ...f })) })) : undefined
+}
+
+function deepCloneModifiers(mods?: Modifier[]): Modifier[] | undefined {
+  return mods ? mods.map((m) => ({ ...m, parameters: { ...m.parameters }, keyframes: deepCloneKeyframes(m.keyframes) ?? [] })) : undefined
+}
+
 function deepCloneClip(c: Clip): Clip {
-  return { ...c, transform: deepCloneTransform(c.transform), volume: c.volume ?? 1, muted: c.muted ?? false }
+  return {
+    ...c, transform: deepCloneTransform(c.transform), volume: c.volume ?? 1, muted: c.muted ?? false,
+    keyframes: deepCloneKeyframes(c.keyframes), modifiers: deepCloneModifiers(c.modifiers),
+    outTransition: c.outTransition ? { ...c.outTransition } : undefined
+  }
 }
 
 function deepCloneAudioTrack(a: AudioTrack): AudioTrack {
-  return { ...a }
+  return { ...a, keyframes: deepCloneKeyframes(a.keyframes) }
 }
 
 function deepCloneTextClip(tc: TextClip): TextClip {
-  return { ...tc, style: tc.style ? { ...tc.style } : undefined, words: deepCloneWords(tc.words) }
+  return {
+    ...tc, style: tc.style ? { ...tc.style } : undefined, words: deepCloneWords(tc.words),
+    keyframes: deepCloneKeyframes(tc.keyframes)
+  }
 }
 
 /** Capture current timeline + caption state for undo (deep clone) */
 export function pushUndoSnapshot(): void {
-  const { clips, audioTracks, textClips } = useTimeline.getState()
+  const { clips, audioTracks, textClips, tracks, markers } = useTimeline.getState()
   useProject.getState().pushUndo({
     clips: clips.map(deepCloneClip),
     audioTracks: audioTracks.map(deepCloneAudioTrack),
     textClips: textClips.map(deepCloneTextClip),
     captions: textClips.map((tc) => ({
       id: tc.id, startMs: tc.startMs, endMs: getTextClipEnd(tc), text: tc.text
-    }))
+    })),
+    tracks: tracks.map((t) => ({ ...t })),
+    markers: markers.map((m) => ({ ...m }))
   })
 }
 
@@ -70,6 +89,8 @@ export function pushUndoSnapshot(): void {
 let _dragPreClips: Clip[] | null = null
 let _dragPreAudioTracks: AudioTrack[] | null = null
 let _dragPreTextClips: TextClip[] | null = null
+let _dragPreTracks: Track[] | null = null
+let _dragPreMarkers: TimelineMarker[] | null = null
 
 // ---------------------------------------------------------------------------
 // Clipboard — module-level (ephemeral, not persisted in undo stack)
@@ -158,7 +179,23 @@ export interface Clip {
   fadeInMs?: number
   /** Fade-out duration in milliseconds (0 = no fade). Rendered as edge triangle on timeline. */
   fadeOutMs?: number
+  /** Keyframe animation tracks for property-level animation. */
+  keyframes?: KeyframeTrack[]
+  /** Active modifiers (effects/filters) on this clip. */
+  modifiers?: Modifier[]
+  /** Transition applied at the OUT point of this clip (overlap with next clip on same track). */
+  outTransition?: { type: string; durationMs: number }
+  /** CSS blend mode for multi-layer compositing. Only effective on tracks above index 0. */
+  blendMode?: BlendMode
+  /** Path to low-res proxy file (720p). Used for timeline preview; export always uses `path`. */
+  proxyPath?: string
 }
+
+/** Supported CSS blend modes for clip compositing. */
+export type BlendMode =
+  | 'normal' | 'multiply' | 'screen' | 'overlay'
+  | 'darken' | 'lighten' | 'color-dodge' | 'color-burn'
+  | 'soft-light' | 'difference'
 
 export interface AudioTrack {
   id: string
@@ -183,6 +220,8 @@ export interface AudioTrack {
   fadeInMs?: number
   /** Fade-out duration in milliseconds (0 = no fade). Applied via AudioParam scheduling. */
   fadeOutMs?: number
+  /** Keyframe animation tracks for volume/pan automation. */
+  keyframes?: KeyframeTrack[]
 }
 
 /**
@@ -261,6 +300,8 @@ export interface TextClip {
   fadeInMs?: number
   /** Fade-out duration in milliseconds (0 = no fade). Rendered as edge triangle on timeline. */
   fadeOutMs?: number
+  /** Keyframe animation tracks for position/scale/opacity animation. */
+  keyframes?: KeyframeTrack[]
 }
 
 export function createTextClip(overrides: Partial<TextClip> & Pick<TextClip, 'text'>): TextClip {
@@ -319,6 +360,7 @@ interface TimelineActions {
   setClipSpeed: (clipId: string, speed: number) => void
   setClipVolume: (clipId: string, volume: number) => void
   setClipMute: (clipId: string, muted: boolean) => void
+  setClipName: (clipId: string, name: string) => void
   setClipFade: (clipId: string, fadeInMs: number, fadeOutMs: number) => void
 
   addAudioTrack: (track: AudioTrack) => void
@@ -387,8 +429,31 @@ interface TimelineActions {
   setPlaying: (playing: boolean) => void
   toggleLoop: () => void
   clearTimeline: () => void
-  loadTimeline: (data: { clips: Clip[]; audioTracks: AudioTrack[]; textClips?: TextClip[] }) => void
+  loadTimeline: (data: { clips: Clip[]; audioTracks: AudioTrack[]; textClips?: TextClip[]; tracks?: Track[]; markers?: TimelineMarker[]; playheadMs?: number; zoom?: number; masterVolume?: number; loopEnabled?: boolean }) => void
   recalcTotalDuration: () => void
+
+  // Keyframe actions
+  setClipKeyframes: (clipId: string, keyframes: KeyframeTrack[]) => void
+  removeClipKeyframeTrack: (clipId: string, property: string) => void
+  addKeyframeAtPlayhead: (entityId: string, property: string, value: number) => void
+  setAudioKeyframes: (trackId: string, keyframes: KeyframeTrack[]) => void
+  setTextClipKeyframes: (textClipId: string, keyframes: KeyframeTrack[]) => void
+
+  // Modifier actions (effects/filters)
+  addClipModifier: (clipId: string, modifier: Modifier) => void
+  removeClipModifier: (clipId: string, modifierId: string) => void
+  updateClipModifier: (clipId: string, modifierId: string, patch: ModifierPatch) => void
+  reorderClipModifier: (clipId: string, fromIndex: number, toIndex: number) => void
+
+  // Transition actions
+  setClipOutTransition: (clipId: string, transition: { type: string; durationMs: number } | null) => void
+
+  // Blend mode
+  setClipBlendMode: (clipId: string, mode: BlendMode) => void
+
+  // Proxy
+  /** Set proxy path for a clip (called asynchronously after proxy generation). No undo snapshot. */
+  setClipProxyPath: (clipId: string, proxyPath: string) => void
 }
 
 // ---------------------------------------------------------------------------
@@ -397,6 +462,15 @@ interface TimelineActions {
 
 function syncTotalDuration(state: TimelineState): void {
   state.totalDurationMs = recalcTimelineDuration(state)
+}
+
+/**
+ * O(1) total-duration update for operations that can only GROW the timeline
+ * (addClip, duplicate, addAudioTrack, split). If the new end exceeds the
+ * current total, update; otherwise the total is unchanged.
+ */
+function growTotalDuration(state: TimelineState, endMs: number): void {
+  if (endMs > state.totalDurationMs) state.totalDurationMs = endMs
 }
 
 function makeDefaultTracks(): Track[] {
@@ -448,7 +522,7 @@ export const useTimeline = create<TimelineState & TimelineActions>()(
         if (clip.volume === undefined) clip.volume = 1.0
         if (clip.muted === undefined) clip.muted = false
         state.clips.push(clip)
-        syncTotalDuration(state)
+        growTotalDuration(state, clip.startMs + clip.durationMs)
         const exists = state.tracks.some((t) => t.kind === 'video' && t.index === clip.trackIndex)
         if (!exists) {
           state.tracks.push({
@@ -557,7 +631,7 @@ export const useTimeline = create<TimelineState & TimelineActions>()(
           name: clip.name ? `${clip.name} (copy)` : 'Clip (copy)'
         }
         state.clips.push(newClip)
-        syncTotalDuration(state)
+        growTotalDuration(state, newClip.startMs + newClip.durationMs)
         state.selectedIds = [newClip.id]
         state.focusedId = newClip.id
         state.anchorId = newClip.id
@@ -582,7 +656,13 @@ export const useTimeline = create<TimelineState & TimelineActions>()(
           state.clips.push(newClip)
           newIds.push(newClip.id)
         }
-        syncTotalDuration(state)
+        // O(1) grow: duplicates always extend the timeline
+        let maxEnd = state.totalDurationMs
+        for (const id of newIds) {
+          const c = state.clips.find((x) => x.id === id)
+          if (c) maxEnd = Math.max(maxEnd, c.startMs + c.durationMs)
+        }
+        state.totalDurationMs = maxEnd
         state.selectedIds = newIds
         state.focusedId = newIds[0] ?? null
         state.anchorId = newIds[0] ?? null
@@ -726,6 +806,7 @@ export const useTimeline = create<TimelineState & TimelineActions>()(
     },
 
     setClipTransform: (clipId, transform) => {
+      pushUndoSnapshot()
       set((state) => {
         const clip = state.clips.find((c) => c.id === clipId)
         if (clip) {
@@ -736,6 +817,7 @@ export const useTimeline = create<TimelineState & TimelineActions>()(
     },
 
     setClipSpeed: (clipId, speed) => {
+      pushUndoSnapshot()
       set((state) => {
         const clip = state.clips.find((c) => c.id === clipId)
         if (clip) clip.speed = Math.max(0.25, Math.min(4.0, speed))
@@ -743,6 +825,7 @@ export const useTimeline = create<TimelineState & TimelineActions>()(
     },
 
     setClipVolume: (clipId, volume) => {
+      pushUndoSnapshot()
       set((state) => {
         const clip = state.clips.find((c) => c.id === clipId)
         if (clip) clip.volume = Math.max(0, Math.min(2.0, volume))
@@ -750,20 +833,31 @@ export const useTimeline = create<TimelineState & TimelineActions>()(
     },
 
     setClipMute: (clipId, muted) => {
+      pushUndoSnapshot()
       set((state) => {
         const clip = state.clips.find((c) => c.id === clipId)
         if (clip) clip.muted = muted
       })
     },
 
-    setClipFade: (clipId, fadeInMs, fadeOutMs) =>
+    setClipName: (clipId, name) => {
+      pushUndoSnapshot()
+      set((state) => {
+        const clip = state.clips.find((c) => c.id === clipId)
+        if (clip) clip.name = name
+      })
+    },
+
+    setClipFade: (clipId, fadeInMs, fadeOutMs) => {
+      pushUndoSnapshot()
       set((state) => {
         const clip = state.clips.find((c) => c.id === clipId)
         if (clip) {
           clip.fadeInMs = Math.max(0, fadeInMs)
           clip.fadeOutMs = Math.max(0, fadeOutMs)
         }
-      }),
+      })
+    },
 
     // -- Audio tracks (Phase 5: first-class citizens) --
 
@@ -785,7 +879,8 @@ export const useTimeline = create<TimelineState & TimelineActions>()(
             kind: 'audio', muted: false, locked: false, hidden: false, solo: false
           })
         }
-        syncTotalDuration(state)
+        // O(1) grow: adding audio track
+        growTotalDuration(state, track.startMs + track.durationMs)
       })
     },
 
@@ -825,7 +920,11 @@ export const useTimeline = create<TimelineState & TimelineActions>()(
             })
           }
         }
-        syncTotalDuration(state)
+        // O(1) grow: batch add only extends timeline
+        let batchMax = state.totalDurationMs
+        for (const c of clips) batchMax = Math.max(batchMax, c.startMs + c.durationMs)
+        for (const a of audioTracks) batchMax = Math.max(batchMax, a.startMs + a.durationMs)
+        state.totalDurationMs = batchMax
       })
     },
 
@@ -839,7 +938,8 @@ export const useTimeline = create<TimelineState & TimelineActions>()(
       })
     },
 
-    trimAudioTrack: (trackId, trimStart, trimEnd) =>
+    trimAudioTrack: (trackId, trimStart, trimEnd) => {
+      pushUndoSnapshot()
       set((state) => {
         const track = state.audioTracks.find((t) => t.id === trackId)
         if (track) {
@@ -848,37 +948,46 @@ export const useTimeline = create<TimelineState & TimelineActions>()(
           track.durationMs = Math.max(100, track.sourceDurationMs - trimStart - trimEnd)
           syncTotalDuration(state)
         }
-      }),
+      })
+    },
 
-    moveAudioTrack: (trackId, startMs) =>
+    moveAudioTrack: (trackId, startMs) => {
+      pushUndoSnapshot()
       set((state) => {
         const track = state.audioTracks.find((t) => t.id === trackId)
         if (track) {
           track.startMs = Math.max(0, startMs)
           syncTotalDuration(state)
         }
-      }),
+      })
+    },
 
-    setAudioVolume: (trackId, volume) =>
+    setAudioVolume: (trackId, volume) => {
+      pushUndoSnapshot()
       set((state) => {
         const track = state.audioTracks.find((t) => t.id === trackId)
         if (track) track.volume = Math.max(0, Math.min(2.0, volume))
-      }),
+      })
+    },
 
-    toggleAudioMute: (trackId) =>
+    toggleAudioMute: (trackId) => {
+      pushUndoSnapshot()
       set((state) => {
         const track = state.audioTracks.find((t) => t.id === trackId)
         if (track) track.muted = !track.muted
-      }),
+      })
+    },
 
-    setAudioFade: (trackId, fadeInMs, fadeOutMs) =>
+    setAudioFade: (trackId, fadeInMs, fadeOutMs) => {
+      pushUndoSnapshot()
       set((state) => {
         const track = state.audioTracks.find((t) => t.id === trackId)
         if (track) {
           track.fadeInMs = Math.max(0, fadeInMs)
           track.fadeOutMs = Math.max(0, fadeOutMs)
         }
-      }),
+      })
+    },
 
     // -- Text Clips --
 
@@ -961,14 +1070,16 @@ export const useTimeline = create<TimelineState & TimelineActions>()(
       })
     },
 
-    setTextFade: (id, fadeInMs, fadeOutMs) =>
+    setTextFade: (id, fadeInMs, fadeOutMs) => {
+      pushUndoSnapshot()
       set((state) => {
         const tc = state.textClips.find((t) => t.id === id)
         if (tc) {
           tc.fadeInMs = Math.max(0, fadeInMs)
           tc.fadeOutMs = Math.max(0, fadeOutMs)
         }
-      }),
+      })
+    },
 
     splitTextClip: (id, splitAtMs) => {
       pushUndoSnapshot()
@@ -1017,16 +1128,19 @@ export const useTimeline = create<TimelineState & TimelineActions>()(
 
     // -- Track management --
 
-    addTrack: (kind) => set((state) => {
-      const existingOfKind = state.tracks.filter((t) => t.kind === kind)
-      const maxIndex = existingOfKind.reduce((m, t) => Math.max(m, t.index), -1)
-      const newIndex = maxIndex + 1
-      const label = kind.charAt(0).toUpperCase() + kind.slice(1)
-      state.tracks.push({
-        id: `track_${kind}_${uuid().slice(0, 8)}`, index: newIndex,
-        name: `${label} ${newIndex + 1}`, kind, muted: false, locked: false, hidden: false, solo: false
+    addTrack: (kind) => {
+      pushUndoSnapshot()
+      set((state) => {
+        const existingOfKind = state.tracks.filter((t) => t.kind === kind)
+        const maxIndex = existingOfKind.reduce((m, t) => Math.max(m, t.index), -1)
+        const newIndex = maxIndex + 1
+        const label = kind.charAt(0).toUpperCase() + kind.slice(1)
+        state.tracks.push({
+          id: `track_${kind}_${uuid().slice(0, 8)}`, index: newIndex,
+          name: `${label} ${newIndex + 1}`, kind, muted: false, locked: false, hidden: false, solo: false
+        })
       })
-    }),
+    },
 
     deleteTrack: (trackId) => {
       pushUndoSnapshot()
@@ -1041,35 +1155,59 @@ export const useTimeline = create<TimelineState & TimelineActions>()(
       })
     },
 
-    renameTrack: (trackId, name) => set((state) => {
-      const track = state.tracks.find((t) => t.id === trackId)
-      if (track) track.name = name
-    }),
+    renameTrack: (trackId, name) => {
+      pushUndoSnapshot()
+      set((state) => {
+        const track = state.tracks.find((t) => t.id === trackId)
+        if (track) track.name = name
+      })
+    },
 
-    toggleMuteTrack: (trackId) => set((state) => {
-      const track = state.tracks.find((t) => t.id === trackId)
-      if (track) track.muted = !track.muted
-    }),
+    toggleMuteTrack: (trackId) => {
+      pushUndoSnapshot()
+      set((state) => {
+        const track = state.tracks.find((t) => t.id === trackId)
+        if (track) track.muted = !track.muted
+      })
+    },
 
-    toggleLockTrack: (trackId) => set((state) => {
-      const track = state.tracks.find((t) => t.id === trackId)
-      if (track) track.locked = !track.locked
-    }),
+    toggleLockTrack: (trackId) => {
+      pushUndoSnapshot()
+      set((state) => {
+        const track = state.tracks.find((t) => t.id === trackId)
+        if (track) track.locked = !track.locked
+      })
+    },
 
-    toggleHideTrack: (trackId) => set((state) => {
-      const track = state.tracks.find((t) => t.id === trackId)
-      if (track) track.hidden = !track.hidden
-    }),
+    toggleHideTrack: (trackId) => {
+      pushUndoSnapshot()
+      set((state) => {
+        const track = state.tracks.find((t) => t.id === trackId)
+        if (track) track.hidden = !track.hidden
+      })
+    },
 
-    toggleSoloTrack: (trackId) => set((state) => {
-      const track = state.tracks.find((t) => t.id === trackId)
-      if (track) track.solo = !track.solo
-    }),
+    toggleSoloTrack: (trackId) => {
+      pushUndoSnapshot()
+      set((state) => {
+        const track = state.tracks.find((t) => t.id === trackId)
+        if (track) track.solo = !track.solo
+      })
+    },
 
     // -- Markers --
-    addMarker: (marker) => set((state) => { state.markers.push({ ...marker, id: `marker_${Date.now()}` }) }),
-    removeMarker: (markerId) => set((state) => { state.markers = state.markers.filter((m) => m.id !== markerId) }),
-    clearMarkers: () => set((state) => { state.markers = [] }),
+    addMarker: (marker) => {
+      pushUndoSnapshot()
+      set((state) => { state.markers.push({ ...marker, id: `marker_${Date.now()}` }) })
+    },
+    removeMarker: (markerId) => {
+      pushUndoSnapshot()
+      set((state) => { state.markers = state.markers.filter((m) => m.id !== markerId) })
+    },
+    clearMarkers: () => {
+      pushUndoSnapshot()
+      set((state) => { state.markers = [] })
+    },
 
     // -- Playback --
     setPlayhead: (ms) => set((state) => { state.playheadMs = Math.max(0, ms) }),
@@ -1194,10 +1332,12 @@ export const useTimeline = create<TimelineState & TimelineActions>()(
     // -- Deferred undo --
 
     beginDragCapture: () => {
-      const { clips, audioTracks, textClips } = useTimeline.getState()
+      const { clips, audioTracks, textClips, tracks, markers } = useTimeline.getState()
       _dragPreClips = clips.map(deepCloneClip)
       _dragPreAudioTracks = audioTracks.map(deepCloneAudioTrack)
       _dragPreTextClips = textClips.map(deepCloneTextClip)
+      _dragPreTracks = tracks.map((t) => ({ ...t }))
+      _dragPreMarkers = markers.map((m) => ({ ...m }))
     },
 
     commitDrag: () => {
@@ -1206,9 +1346,12 @@ export const useTimeline = create<TimelineState & TimelineActions>()(
         clips: _dragPreClips, audioTracks: _dragPreAudioTracks!, textClips: _dragPreTextClips!,
         captions: _dragPreTextClips!.map((tc) => ({
           id: tc.id, startMs: tc.startMs, endMs: getTextClipEnd(tc), text: tc.text
-        }))
+        })),
+        tracks: _dragPreTracks ?? undefined,
+        markers: _dragPreMarkers ?? undefined
       })
       _dragPreClips = null; _dragPreAudioTracks = null; _dragPreTextClips = null
+      _dragPreTracks = null; _dragPreMarkers = null
     },
 
     cancelDrag: () => {
@@ -1228,35 +1371,245 @@ export const useTimeline = create<TimelineState & TimelineActions>()(
     clearTimeline: () => {
       _clipboard = null; _inPointMs = null; _outPointMs = null
       clearWaveformCache()
+      // Reset undo/redo stacks to prevent cross-project corruption
+      useProject.setState({ undoStack: [], redoStack: [] })
       set(() => ({ ...initialState, tracks: makeDefaultTracks() }))
     },
 
-    loadTimeline: (data) => set((state) => {
-      // Forward-compatible migration: ensure volume/muted/speed defaults
-      // for .ecp files saved before these fields existed.
-      state.clips = (data.clips || []).map((c) => ({
-        ...c,
-        volume: c.volume ?? 1,
-        muted: c.muted ?? false,
-        hasAudio: c.hasAudio ?? true,
-        speed: c.speed ?? 1,
-        fadeInMs: c.fadeInMs ?? 0,
-        fadeOutMs: c.fadeOutMs ?? 0
-      }))
-      state.audioTracks = (data.audioTracks || []).map((t) => ({
-        ...t,
-        fadeInMs: t.fadeInMs ?? 0,
-        fadeOutMs: t.fadeOutMs ?? 0,
-        sourceDurationMs: t.sourceDurationMs ?? t.durationMs
-      }))
-      state.textClips = (data.textClips || []).map((tc) => normalizeTextClip({
-        ...tc,
-        fadeInMs: tc.fadeInMs ?? 0,
-        fadeOutMs: tc.fadeOutMs ?? 0
-      }))
-      syncTotalDuration(state)
-    }),
+    loadTimeline: (data) => {
+      // Reset undo/redo stacks to prevent cross-project corruption
+      useProject.setState({ undoStack: [], redoStack: [] })
+      set((state) => {
+        // Forward-compatible migration: ensure volume/muted/speed defaults
+        // for .ecp files saved before these fields existed.
+        state.clips = (data.clips || []).map((c) => ({
+          ...c,
+          volume: c.volume ?? 1,
+          muted: c.muted ?? false,
+          hasAudio: c.hasAudio ?? true,
+          speed: c.speed ?? 1,
+          fadeInMs: c.fadeInMs ?? 0,
+          fadeOutMs: c.fadeOutMs ?? 0
+        }))
+        state.audioTracks = (data.audioTracks || []).map((t) => ({
+          ...t,
+          fadeInMs: t.fadeInMs ?? 0,
+          fadeOutMs: t.fadeOutMs ?? 0,
+          sourceDurationMs: t.sourceDurationMs ?? t.durationMs
+        }))
+        state.textClips = (data.textClips || []).map((tc) => normalizeTextClip({
+          ...tc,
+          fadeInMs: tc.fadeInMs ?? 0,
+          fadeOutMs: tc.fadeOutMs ?? 0
+        }))
+        // Restore track lane state if present (new projects); fallback to defaults
+        if (data.tracks && data.tracks.length > 0) {
+          state.tracks = data.tracks
+        }
+        // Restore markers if present
+        if (data.markers) {
+          state.markers = data.markers
+        }
+        // Restore session state (playhead, zoom, volume, loop)
+        if (data.playheadMs !== undefined) state.playheadMs = data.playheadMs
+        if (data.zoom !== undefined) state.zoom = data.zoom
+        if (data.masterVolume !== undefined) state.masterVolume = data.masterVolume
+        if (data.loopEnabled !== undefined) state.loopEnabled = data.loopEnabled
+        syncTotalDuration(state)
+      })
+    },
 
-    recalcTotalDuration: () => set((state) => { syncTotalDuration(state) })
+    recalcTotalDuration: () => set((state) => { syncTotalDuration(state) }),
+
+    // ---------------------------------------------------------------------------
+    // Keyframe actions
+    // ---------------------------------------------------------------------------
+
+    setClipKeyframes: (clipId, keyframes) => {
+      pushUndoSnapshot()
+      set((state) => {
+        const clip = state.clips.find((c) => c.id === clipId)
+        if (clip) clip.keyframes = keyframes
+      })
+    },
+
+    removeClipKeyframeTrack: (clipId, property) => {
+      pushUndoSnapshot()
+      set((state) => {
+        const clip = state.clips.find((c) => c.id === clipId)
+        if (clip?.keyframes) {
+          clip.keyframes = clip.keyframes.filter((t) => t.property !== property)
+          if (clip.keyframes.length === 0) clip.keyframes = undefined
+        }
+      })
+    },
+
+    addKeyframeAtPlayhead: (entityId, property, value) => {
+      pushUndoSnapshot()
+      set((state) => {
+        const playhead = state.playheadMs
+        // Try clip first
+        const clip = state.clips.find((c) => c.id === entityId)
+        if (clip) {
+          const localMs = playhead - clip.startMs
+          if (!clip.keyframes) clip.keyframes = []
+          let track = clip.keyframes.find((t) => t.property === property)
+          if (!track) {
+            track = { property, frames: [] }
+            clip.keyframes.push(track)
+          }
+          // Replace existing frame at same time or insert sorted
+          const existing = track.frames.findIndex((f) => f.time === localMs)
+          if (existing >= 0) {
+            track.frames[existing].value = value
+          } else {
+            track.frames.push({ time: localMs, value, easing: 'linear' })
+            track.frames.sort((a, b) => a.time - b.time)
+          }
+          return
+        }
+        // Try text clip
+        const tc = state.textClips.find((t) => t.id === entityId)
+        if (tc) {
+          const localMs = playhead - tc.startMs
+          if (!tc.keyframes) tc.keyframes = []
+          let track = tc.keyframes.find((t) => t.property === property)
+          if (!track) {
+            track = { property, frames: [] }
+            tc.keyframes.push(track)
+          }
+          const existing = track.frames.findIndex((f) => f.time === localMs)
+          if (existing >= 0) {
+            track.frames[existing].value = value
+          } else {
+            track.frames.push({ time: localMs, value, easing: 'linear' })
+            track.frames.sort((a, b) => a.time - b.time)
+          }
+          return
+        }
+        // Try audio track
+        const at = state.audioTracks.find((a) => a.id === entityId)
+        if (at) {
+          const localMs = playhead - at.startMs
+          if (!at.keyframes) at.keyframes = []
+          let track = at.keyframes.find((t) => t.property === property)
+          if (!track) {
+            track = { property, frames: [] }
+            at.keyframes.push(track)
+          }
+          const existing = track.frames.findIndex((f) => f.time === localMs)
+          if (existing >= 0) {
+            track.frames[existing].value = value
+          } else {
+            track.frames.push({ time: localMs, value, easing: 'linear' })
+            track.frames.sort((a, b) => a.time - b.time)
+          }
+        }
+      })
+    },
+
+    setAudioKeyframes: (trackId, keyframes) => {
+      pushUndoSnapshot()
+      set((state) => {
+        const track = state.audioTracks.find((t) => t.id === trackId)
+        if (track) track.keyframes = keyframes
+      })
+    },
+
+    setTextClipKeyframes: (textClipId, keyframes) => {
+      pushUndoSnapshot()
+      set((state) => {
+        const tc = state.textClips.find((t) => t.id === textClipId)
+        if (tc) tc.keyframes = keyframes
+      })
+    },
+
+    // ---------------------------------------------------------------------------
+    // Modifier actions (effects/filters)
+    // ---------------------------------------------------------------------------
+
+    addClipModifier: (clipId, modifier) => {
+      pushUndoSnapshot()
+      set((state) => {
+        const clip = state.clips.find((c) => c.id === clipId)
+        if (clip) {
+          if (!clip.modifiers) clip.modifiers = []
+          clip.modifiers.push(modifier)
+        }
+      })
+    },
+
+    removeClipModifier: (clipId, modifierId) => {
+      pushUndoSnapshot()
+      set((state) => {
+        const clip = state.clips.find((c) => c.id === clipId)
+        if (clip?.modifiers) {
+          clip.modifiers = clip.modifiers.filter((m) => m.id !== modifierId)
+          if (clip.modifiers.length === 0) clip.modifiers = undefined
+        }
+      })
+    },
+
+    updateClipModifier: (clipId, modifierId, patch) => {
+      pushUndoSnapshot()
+      set((state) => {
+        const clip = state.clips.find((c) => c.id === clipId)
+        const mod = clip?.modifiers?.find((m) => m.id === modifierId)
+        if (mod) {
+          if (patch.enabled !== undefined) mod.enabled = patch.enabled
+          if (patch.parameters) mod.parameters = { ...mod.parameters, ...patch.parameters }
+          if (patch.keyframes) mod.keyframes = patch.keyframes
+        }
+      })
+    },
+
+    reorderClipModifier: (clipId, fromIndex, toIndex) => {
+      pushUndoSnapshot()
+      set((state) => {
+        const clip = state.clips.find((c) => c.id === clipId)
+        if (clip?.modifiers && fromIndex >= 0 && toIndex >= 0 && toIndex < clip.modifiers.length) {
+          const [moved] = clip.modifiers.splice(fromIndex, 1)
+          clip.modifiers.splice(toIndex, 0, moved)
+        }
+      })
+    },
+
+    // ---------------------------------------------------------------------------
+    // Transition actions
+    // ---------------------------------------------------------------------------
+
+    setClipOutTransition: (clipId, transition) => {
+      pushUndoSnapshot()
+      set((state) => {
+        const clip = state.clips.find((c) => c.id === clipId)
+        if (clip) {
+          if (transition) {
+            clip.outTransition = transition
+          } else {
+            clip.outTransition = undefined
+          }
+        }
+      })
+    },
+
+    // ---------------------------------------------------------------------------
+    // Blend mode
+    // ---------------------------------------------------------------------------
+
+    setClipBlendMode: (clipId, mode) => {
+      pushUndoSnapshot()
+      set((state) => {
+        const clip = state.clips.find((c) => c.id === clipId)
+        if (clip) clip.blendMode = mode
+      })
+    },
+
+    // No undo snapshot — this is a background async operation
+    setClipProxyPath: (clipId, proxyPath) => {
+      set((state) => {
+        const clip = state.clips.find((c) => c.id === clipId)
+        if (clip) clip.proxyPath = proxyPath
+      })
+    }
   }))
 )

@@ -35,6 +35,7 @@ interface Props {
 export function RightRail({ activeTab, onSelect }: Props): JSX.Element {
   return (
     <div
+      className="rail-scroll"
       style={{
         width: '64px',
         flexShrink: 0,
@@ -59,38 +60,10 @@ export function RightRail({ activeTab, onSelect }: Props): JSX.Element {
             title={tab.label}
             aria-label={tab.label}
             aria-pressed={isActive}
-            style={{
-              width: '52px',
-              display: 'flex',
-              flexDirection: 'column',
-              alignItems: 'center',
-              justifyContent: 'center',
-              gap: '3px',
-              padding: '6px 4px',
-              borderRadius: '6px',
-              border: 'none',
-              background: isActive ? 'rgba(79, 127, 255, 0.15)' : 'transparent',
-              color: isActive ? 'var(--accent)' : 'var(--text3)',
-              cursor: 'pointer',
-              transition: 'all 0.12s'
-            }}
-            onMouseEnter={(e) => {
-              if (!isActive) {
-                e.currentTarget.style.background = 'var(--bg3)'
-                e.currentTarget.style.color = 'var(--text2)'
-              }
-            }}
-            onMouseLeave={(e) => {
-              if (!isActive) {
-                e.currentTarget.style.background = 'transparent'
-                e.currentTarget.style.color = 'var(--text3)'
-              }
-            }}
+            className="rail-btn"
           >
             <tab.Icon size={20} />
-            <span style={{ fontSize: '10px', fontWeight: 400, lineHeight: '1.1' }}>
-              {tab.label}
-            </span>
+            <span>{tab.label}</span>
           </button>
         )
       })}

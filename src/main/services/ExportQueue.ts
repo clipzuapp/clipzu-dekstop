@@ -266,6 +266,27 @@ class ExportQueueManager {
   }
 
   /**
+   * Kill all active and pending jobs — called during app shutdown to prevent
+   * zombie child processes from blocking exit.
+   */
+  destroy(): void {
+    for (const [id, entry] of this.activeJobs) {
+      entry.controller.abort()
+      try { entry.process.kill('SIGKILL') } catch { /* already exited */ }
+      entry.job.status = 'cancelled'
+      this.completedJobs.set(id, { ...entry.job })
+    }
+    this.activeJobs.clear()
+    // Mark all pending jobs as cancelled
+    for (const { job } of this.queue) {
+      job.status = 'cancelled'
+      job.completedAt = Date.now()
+      this.completedJobs.set(job.id, job)
+    }
+    this.queue = []
+  }
+
+  /**
    * Send progress update to renderer via IPC.
    * @param eventLabel — speed string like "1.5x", upscale status "upscaling", or job status "completed"/"error"/"cancelled".
    *                     page.tsx matches on 'completed'/'cancelled'/'error' to set terminal state.

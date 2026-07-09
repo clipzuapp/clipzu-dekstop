@@ -28,6 +28,11 @@ const config: Config = {
         warning: {
           DEFAULT: '#e5a228',
           hover: '#f0b53e'
+        },
+        brand: {
+          DEFAULT: '#4f7fff',
+          purple: '#7c5cfc',
+          hover: '#6b8fff'
         }
       },
       fontFamily: {
