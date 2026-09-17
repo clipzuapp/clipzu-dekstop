@@ -38,3 +38,31 @@ npm-debug.log*
 data/raw/
 data/normalized/
 data/output/
+
+# Local task / audit notes (never push)
+task.txt
+audit.txt
+audit-*.txt
+TASK*.md
+*.clipzu
+*.capcraft
+
+# Creds & secrets (never push)
+.env*
+*.pem
+*.key
+*creds*
+*credentials*
+secrets/
+.secrets/
+
+# One-time / manual scripts (not part of build)
+scripts/
+test_media.ps1
+
+# Test scripts / folders (never push)
+test/
+tests/
+__tests__/
+*.test.*
+*_test.*
