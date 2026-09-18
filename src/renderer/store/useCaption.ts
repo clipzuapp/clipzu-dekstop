@@ -30,6 +30,7 @@ interface CaptionActions {
   selectEntry: (id: string | null) => void
   setLanguage: (language: string) => void
   clearCaptions: () => void
+  resetCaptionSession: () => void
   loadCaptions: (data: { entries: CaptionEntry[]; style?: Partial<CaptionStyle>; language?: string }) => void
   setProgress: (progress: number) => void
   splitEntry: (id: string, splitAtMs: number) => void
@@ -405,6 +406,24 @@ export const useCaption = create<CaptionState & CaptionActions>()(
         state.error = null
       })
       useTimeline.setState({ textClips: [] })
+    },
+
+    /**
+     * Reset transient transcription session (project load boundary).
+     * Unlike clearCaptions: no undo snapshot, no textClips touch — pure
+     * session reset so a failed load never pollutes undo and a fresh project
+     * never inherits stale status/progress/error.
+     */
+    resetCaptionSession: () => {
+      if (whisperProgressCleanup) {
+        whisperProgressCleanup()
+        whisperProgressCleanup = null
+      }
+      set((state) => {
+        state.status = 'idle'
+        state.progress = 0
+        state.error = null
+      })
     },
 
     loadCaptions: (data) => {

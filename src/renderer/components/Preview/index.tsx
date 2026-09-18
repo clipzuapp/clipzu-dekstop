@@ -16,6 +16,7 @@ import { computeCaptionLayout } from '../../../shared/utils/renderGeometry'
 import type { CaptionStyle } from '../../../shared/types/caption'
 import { evaluateKeyframes } from '../../services/KeyframeEvaluator'
 import { buildCssFilter } from '../../services/FilterPipeline'
+import { toFileUrl } from '../../../shared/utils/fileUrl'
 
 /**
  * Preview component — dynamic canvas sized from project resolution.
@@ -191,13 +192,7 @@ export function Preview(): JSX.Element {
     []
   )
 
-  /** Encode a local file path to a valid file:// URL (handles Windows backslashes and spaces) */
-  const toFileUrl = useCallback((filePath: string): string => {
-    const forward = filePath.replace(/\\/g, '/')
-    // On Windows paths start with a drive letter — prepend extra slash
-    const prefix = forward.startsWith('/') ? 'file://' : 'file:///'
-    return prefix + forward.split('/').map(encodeURIComponent).join('/')
-  }, [])
+  // File URLs use the canonical shared encoder (toFileUrl, imported above).
 
   // ---- effect 6: apply master volume × clip volume to video element ----
 

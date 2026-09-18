@@ -1,0 +1,19 @@
+# Clipzu Desktop Beta — global text policy (Phase 9, task.txt).
+# Every source file is UTF-8, LF, no BOM. This is the enforcement half of the
+# UTF-8 policy (the other half is runtime: explicit 'utf-8' on all fs IPC,
+# StringDecoder on child-process streams, BOM/CR stripping on imports).
+root = true
+
+[*]
+charset = utf-8
+end_of_line = lf
+insert_final_newline = true
+trim_trailing_whitespace = true
+indent_style = space
+indent_size = 2
+
+[*.{bat,cmd}]
+end_of_line = crlf
+
+[*.md]
+trim_trailing_whitespace = false

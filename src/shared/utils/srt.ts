@@ -6,6 +6,7 @@
 
 import { computeCaptionLayout } from './renderGeometry'
 import type { CaptionStyle } from '../types/caption'
+import { normalizeImportedText } from './encoding'
 
 /**
  * ExportCaptionStyle is CaptionStyle. The alias is kept so existing call sites
@@ -32,7 +33,9 @@ export interface CaptionEntry {
  */
 export function parseSRT(content: string): CaptionEntry[] {
   const entries: CaptionEntry[] = []
-  const blocks = content.trim().split(/\n\s*\n/)
+  // UTF-8 policy (Phase 9): strip BOM + normalize CRLF/CR before parsing so
+  // foreign files never mangle timing or smuggle '\r' into caption text.
+  const blocks = normalizeImportedText(content).trim().split(/\n\s*\n/)
   let id = 0
 
   for (const block of blocks) {
@@ -117,6 +120,9 @@ interface ExportClip {
   text: string
   words?: Array<{ word: string; startMs: number; endMs: number }>
   style?: ExportCaptionStyle
+  /** Edge fades in ms (0 = none). Rendered as ASS \fad, matching Preview. */
+  fadeInMs?: number
+  fadeOutMs?: number
 }
 
 interface SRTOutputEntry {
@@ -331,6 +337,12 @@ function expandExportClip(clip: ExportClip, style: ExportCaptionStyle): SRTOutpu
   const mode = style.captionMode ?? 'full-phrase'
   const animation = style.animation ?? 'none'
   const hasWords = clip.words && clip.words.length > 0
+  // Edge fades (Preview parity): \fad applies to the whole entry. Combined
+  // with animation tags by taking the max fade-in (both are alpha ramps).
+  const clipFadeTags =
+    (clip.fadeInMs ?? 0) > 0 || (clip.fadeOutMs ?? 0) > 0
+      ? `{\\fad(${Math.round(clip.fadeInMs ?? 0)},${Math.round(clip.fadeOutMs ?? 0)})}`
+      : ''
 
   if (mode === 'word-reveal' && hasWords) {
     return clip.words!.map((word, i, words) => {
@@ -368,7 +380,7 @@ function expandExportClip(clip: ExportClip, style: ExportCaptionStyle): SRTOutpu
   }
 
   const tags = style.animation === 'typewriter' ? '' : buildAnimationTags(animation, clip.startMs, clip.endMs)
-  return [{ startMs: clip.startMs, endMs: clip.endMs, text: tags + escapeASS(clip.text) }]
+  return [{ startMs: clip.startMs, endMs: clip.endMs, text: clipFadeTags + tags + escapeASS(clip.text) }]
 }
 
 export function generateExportASS(clips: ExportClip[], options: ExportASSOptions): string {
@@ -406,7 +418,7 @@ export function generateExportASS(clips: ExportClip[], options: ExportASSOptions
     const existing = styleNames.get(key)
     if (existing) return existing
 
-    const name = `Capcraft${styleNames.size + 1}`
+    const name = `Clipzu${styleNames.size + 1}`
     styleNames.set(key, name)
     styles.push('Style: ' + [
       name,

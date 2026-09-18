@@ -1,6 +1,8 @@
-# Capcraft
+# Clipzu Desktop Beta
 
-Desktop video editor with offline Whisper transcription, caption styling, and multi-format export. CapCut replacement for stitch → caption → export workflows.
+Cross-platform desktop video editor (Windows, macOS, Linux) with offline Whisper transcription, caption styling, and multi-format export. CapCut replacement for stitch → caption → export workflows.
+
+> **Runs natively on all three desktop platforms.** The app is Electron + React and uses only cross-platform primitives (Node `fs`/`child_process.spawn`, Web Audio, Canvas). Per-OS binaries (FFmpeg/ffprobe/whisper-cli) are swapped in `resources/bin/` by OS/arch — see [Quick Start](#quick-start) and [Platform Setup](#platform-setup).
 
 ## Features
 
@@ -22,11 +24,17 @@ Desktop video editor with offline Whisper transcription, caption styling, and mu
 - **Preview viewport controls** (zoom mode, pan, guide overlays, quality modes, playback speed)
 - Export with CapCut-style dimension presets (TikTok, YouTube, Instagram, 4K)
 - Hotkey-driven editing (J/K/L, I/O trim points, Space play/pause)
-- Project save/load (.ecp format)
-- Preset export/import (.ccpreset format)
+- Project save/load (`.clipzu` format) with a versioned schema validator
+- **Portable projects**: media is referenced by relative path + content hash, so moving the project folder (and its media) keeps it loadable
+- **Atomic, crash-safe saves**: temp file + fsync + rename, single-flight queue (Ctrl+S spam and autosave coalesce to the latest bytes)
+- **Missing-media relink**: a moved/deleted source opens a one-click Recovery dialog (locate each file or scan a folder) instead of failing silently
+- **Legacy import**: opens old CapCraft `.ecp` projects (v1) and migrates them to `.clipzu` on next save
+- Preset export/import (`.ccpreset` format)
 - SRT sidecar export alongside every MP4
 - Media library with deduplication and lazy-loaded thumbnails
 - Real-time canvas-based preview with caption rendering
+- **Export↔preview parity**: a shared export graph feeds effects, keyframes, blend modes, transitions and audio settings into FFmpeg
+- Unicode-safe (UTF-8) filenames, captions and metadata everywhere
 - LeftRail + RightRail navigation paradigm (CapCut-style)
 
 ## Tech Stack
@@ -65,10 +73,10 @@ Desktop video editor with offline Whisper transcription, caption styling, and mu
 |---|---|---|---|
 | **Node.js** | 18+ | Development & build | Download from https://nodejs.org |
 | **npm** | 9+ | Package management | Bundled with Node.js 18+ |
-| **FFmpeg** | 5.0+ | Video processing, export | Bundled in `resources/bin/` for production |
-| **whisper-cli** | 1.8.x | Offline transcription | Bundled in `resources/bin/` |
-| **Whisper Model** | GGML format | Auto-captions | Download to `models/` or `resources/models/` |
-| **MSVC Runtime** | 2015-2022 | Windows only | Checks for `msvcp140.dll` at startup |
+| **FFmpeg / ffprobe** | 5.0+ | Video processing, export | Per-OS build in `resources/bin/` (`ffmpeg.exe` on Windows; `ffmpeg` on macOS/Linux) |
+| **whisper-cli** | 1.8.x | Offline transcription | Per-OS build in `resources/bin/` (`whisper-cli.exe` on Windows; `whisper-cli` elsewhere) |
+| **Whisper Model** | GGML format | Auto-captions | Download to `models/` (dev) or `resources/models/` (packaged) |
+| **MSVC Runtime** | 2015-2022 | Windows only | Checks for `msvcp140.dll` at startup (non-Windows skips this) |
 
 ### CPU Feature Requirements
 
@@ -93,115 +101,120 @@ Whisper binary selection is based on CPU capabilities (auto-detected at runtime)
 
 **Recommendation:** Use `ggml-small-q8_0` for most systems. Use `ggml-base-q8_0` for machines with <4GB RAM.
 
-### Windows-Specific Requirements
+### Platform Setup
 
-- **Visual C++ Redistributable 2015-2022**: Required for `whisper-cli.exe` and `ffmpeg.exe`
+### Windows
+
+- **Visual C++ Redistributable 2015-2022**: required by `whisper-cli.exe` / `ffmpeg.exe`
   - Startup validation checks for `C:\Windows\System32\msvcp140.dll`
-  - Download from: https://aka.ms/vs/17/release/vc_redist.x64.exe
-- **PowerShell**: Required for `start.bat` script execution
-  - All modern Windows versions include PowerShell by default
+  - Download: https://aka.ms/vs/17/release/vc_redist.x64.exe
+- **PowerShell 5+**: bundled with all supported Windows versions (used by `start.bat`)
 
-### macOS-Specific Requirements
+### macOS
 
-- **Xcode Command Line Tools**: May be required for native module compilation during `npm install`
-  - Install with: `xcode-select --install`
+- **Xcode Command Line Tools**: required to compile the native `better-sqlite3` module during install
+  - `xcode-select --install`
+- **Apple Silicon vs Intel**: use the matching `whisper-cli`/`ffmpeg` build in `resources/bin/` (`arm64` vs `x64`). The default `npm install` pulls the correct electron binary for the host.
+- **Gatekeeper**: unsigned local builds may need `Right-click → Open` the first time.
 
-### Linux-Specific Requirements
+### Linux
 
-- **X11/Wayland**: Required for Electron GUI
-- **Xvfb**: For headless/server deployment
-  - Install: `sudo apt install -y xvfb`
-  - Run: `xvfb-run -a npx electron-vite dev`
+- **Runtime libraries**: Electron needs a display + standard GUI libs
+  - Debian/Ubuntu: `sudo apt install -y libgtk-3-0 libnss3 libasound2 libgbm1`
+  - Fedora: `sudo dnf install -y gtk3 nss alsa-lib mesa-libgbm`
+- **X11/Wayland**: required for the GUI. For headless/CI use Xvfb:
+  - `sudo apt install -y xvfb && xvfb-run -a npx electron-vite dev`
+- **AppImage/FUSE**: to run a packaged AppImage, `sudo apt install -y libfuse2` may be required.
 
 ---
 
-### Quick Start
+## Quick Start
 
-### Windows (recommended)
+All commands run from the repository root. Works on Windows (PowerShell/CMD), macOS, and Linux.
 
-```
-Double-click start.bat
-```
+### 1. Install Node.js 18+ and FFmpeg
 
-The `start.bat` script will:
-1. Check for Node.js, FFmpeg, and Whisper model
-2. Install dependencies if needed
-3. Download Electron binary if needed
-4. Launch the app in development mode
+| OS | Node.js | FFmpeg |
+|---|---|---|
+| Windows | https://nodejs.org or `winget install OpenJS.NodeJS.LTS` | `winget install Gyan.FFmpeg` (or bundle in `resources/bin/`) |
+| macOS | `brew install node` | `brew install ffmpeg` (or bundle in `resources/bin/`) |
+| Linux | `sudo apt install nodejs npm` | `sudo apt install ffmpeg` (or bundle in `resources/bin/`) |
 
-### Manual Setup
+> For a **self-contained build** (no system FFmpeg), drop the per-OS `ffmpeg`/`ffprobe` binaries into `resources/bin/` — the app prefers bundled binaries in production and falls back to `ffmpeg-static`/`ffprobe-static` in development. On Windows the binaries are `ffmpeg.exe` / `ffprobe.exe`; on macOS/Linux they are named `ffmpeg` / `ffprobe`.
 
-```bash
-# Install dependencies (use --ignore-scripts for faster install)
-npm install --ignore-scripts
-
-# Run Electron postinstall (downloads binary)
-cd node_modules/electron && node install.js && cd ../..
-
-# Download Whisper model (choose one)
-# Option A: Quantized base model (110MB) — fastest, recommended for most systems
-curl -L -o models/ggml-base-q8_0.bin https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base-q8_0.bin
-
-# Option B: Unquantized base model (142MB) — balanced accuracy/speed
-curl -L -o models/ggml-base.bin https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.bin
-
-# Option C: Quantized small model (370MB) — higher accuracy
-curl -L -o models/ggml-small-q8_0.bin https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-small-q8_0.bin
-
-# Option D: Full small model (465MB) — highest accuracy
-curl -L -o models/ggml-small.bin https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-small.bin
-
-# NOTE: ggml-small-q5_1.bin is NOT recommended (known kernel bug in whisper.cpp v1.8.6)
-
-# Download FFmpeg (Windows)
-# Get from: https://www.gyan.dev/ffmpeg/builds/
-# Place ffmpeg.exe and ffprobe.exe in resources/bin/
-
-# Run in development
-npx electron-vite dev
-```
-
-## Building for Production
-
-### Typecheck (always run before build)
+### 2. Install dependencies
 
 ```bash
-# Both tsconfigs (recommended)
+npm install
+```
+
+This also compiles the native `better-sqlite3` module for your OS/arch (macOS may need `xcode-select --install` first; Linux needs `build-essential`).
+
+### 3. Download a Whisper model
+
+Place the file in `models/` (development) — the app looks for `models/ggml-small-q8_0.bin` by default. Pick one:
+
+```bash
+# Option A: Quantized base (110 MB) — fastest, low RAM
+curl -L -o models/ggml-base-q8_0.bin   https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base-q8_0.bin
+# Option B: Base (142 MB) — balanced
+curl -L -o models/ggml-base.bin        https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.bin
+# Option C: Quantized small (370 MB) — recommended default
+curl -L -o models/ggml-small-q8_0.bin  https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-small-q8_0.bin
+# Option D: Small (465 MB) — highest accuracy
+curl -L -o models/ggml-small.bin       https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-small.bin
+```
+
+On Windows PowerShell, `curl` is an alias for `Invoke-WebRequest` — use `curl.exe -L -o ...` or `Invoke-WebRequest -Uri <url> -OutFile models\ggml-small-q8_0.bin`.
+
+> `ggml-small-q5_1.bin` is **not** recommended (known kernel bug in whisper.cpp v1.8.6).
+
+### 4. Run
+
+| OS | Command |
+|---|---|
+| Windows | `start.bat` (checks prerequisites, installs deps, launches) or `npm run dev` |
+| macOS / Linux | `npm run dev` |
+
+`npx electron-vite dev` also works on any platform (equivalent to `npm run dev`).
+
+`scripts/setup-binaries.ps1` (Windows) automates FFmpeg + whisper.cpp binary placement.
+
+## Build Distribution
+
+The build scripts produce a **per-OS** artifact — build on the OS you are targeting (Electron packages native binaries; cross-compiling installers is not supported by default).
+
+| OS | Command | Output |
+|---|---|---|
+| Windows | `npm run dist:win` | `dist/*-setup.exe` (NSIS installer), also `dist/win-unpacked/` |
+| macOS | `npm run dist:mac` | `dist/*.dmg` |
+| Linux | `npm run dist:linux` | `dist/*.AppImage` |
+| Any | `npm run pack` | unpacked app only (no installer) |
+
+```bash
+# Compile only (no installer) — fast sanity build to out/
+npm run build
+
+# Typecheck both tsconfigs
 npm run typecheck
-
-# Or individually
-npm run typecheck:node
-npm run typecheck:web
 ```
 
-### Build (compile only, no installer)
+Notes:
+- **FFmpeg/whisper binaries**: package per-OS binaries into `resources/bin/` before `dist:*` (they are copied via `extraResources`).
+- **Whisper model**: put the chosen model in `resources/models/` so packaged builds ship with it; otherwise end users must add it to the app's data folder.
+- **macOS signing/notarization** is disabled by default (`electron-builder.yml` → `notarize: false`). Set your Apple credentials to sign for distribution.
+- **Linux** `.AppImage` requires `libfuse2` to run on the target machine.
+- **Windows** installers are built unsigned unless a code-signing certificate is configured.
+
+## Development
 
 ```bash
-# Output goes to out/
-npx electron-vite build
-
-# Or the batch script
-build.bat
+npm run dev          # hot-reload dev mode
+npm run typecheck    # typecheck main+preload and renderer tsconfigs
+npm run test:project-format   # project-format / export / relink regression tests (96 tests)
 ```
 
-### Package (build + installer)
-
-```bash
-# Windows installer (.exe) → outputs to dist/
-npm run dist:win
-
-# Or the batch shortcut
-build.bat --pack
-```
-
-### Development
-
-```bash
-# Dev mode with hot reload
-npx electron-vite dev
-
-# Or double-click start.bat
-```
+`build.bat` (Windows) wraps these; `build.bat --pack` runs a packaged build.
 
 ### All npm scripts
 
@@ -219,7 +232,7 @@ npx electron-vite dev
 
 ## VPS / Server Deployment
 
-Capcraft uses **better-sqlite3** for thumbnail caching. On Linux VPS, native module compilation may be required during `npm install`. No other native build steps needed.
+Clipzu uses **better-sqlite3** for thumbnail caching. On a Linux VPS, native module compilation may be required during `npm install` (install `build-essential` and `python3`). No other native build steps are needed.
 
 ### Minimum VPS Specs
 
@@ -265,15 +278,16 @@ capcut-killer/
 │   │   │   ├── ffmpeg.handler.ts     # Media info, thumbnails, file dialogs, audio extraction
 │   │   │   ├── whisper.handler.ts    # Transcription, model validation, diagnostics, timeline transcribe
 │   │   │   ├── export.handler.ts     # Export queue management, progress events
-│   │   │   ├── project.handler.ts    # Project save/load (.ecp), SRT export
+│   │   │   ├── project.handler.ts    # Project save/load (.clipzu), legacy .ecp read, relink, SRT/ASS export
 │   │   │   └── sfx.handler.ts        # SFX library browsing, file metadata
+│   │   ├── project/                  # Project file plumbing (Electron-free, unit-tested)
+│   │   │   ├── saveCoordinator.ts    # Atomic save: temp + fsync + rename, single-flight queue
+│   │   │   └── projectAssets.ts      # Asset manifest build/resolve, missing-media scan
 │   │   ├── services/                 # CPU-heavy services (child_process spawn)
 │   │   │   ├── FFmpegService.ts      # Video processing via child_process.spawn
-│   │   │   ├── WhisperService.ts     # whisper-cli.exe direct spawn (streaming + file-based)
+│   │   │   ├── WhisperService.ts     # whisper-cli direct spawn (streaming + file-based)
 │   │   │   ├── ThumbnailService.ts   # better-sqlite3 frame cache with FFmpeg extraction
 │   │   │   └── ExportQueue.ts        # Priority queue, 1 concurrent job, progress tracking
-│   │   └── workers/
-│   │       └── thumbnail.worker.ts   # Background thumbnail generation
 │   ├── preload/
 │   │   └── index.ts                  # Context bridge, safe IPC API exposure
 │   ├── renderer/                     # Electron renderer (React/Chromium)
@@ -314,6 +328,7 @@ capcut-killer/
 │   │   │   │   └── index.tsx         # Main export dialog
 │   │   │   ├── HotkeyManager.tsx     # Global hotkeys (J/K/L, Space, I/O, etc.)
 │   │   │   ├── ConfirmDialog/        # Confirmation dialog component
+│   │   │   ├── RelinkDialog/         # Missing-media recovery (locate / scan / retry)
 │   │   │   ├── Toast/                # Toast notification component
 │   │   │   └── ShortcutsDialog/      # Keyboard shortcuts reference
 │   │   ├── effects/                  # Effects system (data-driven)
@@ -338,10 +353,13 @@ capcut-killer/
 │   │   │   ├── errors/
 │   │   │   │   └── EffectErrors.ts   # Effect system error types
 │   │   │   └── index.ts              # Public API barrel export
+│   │   ├── ipc/
+│   │   │   └── projectIpc.ts         # Typed project/relink IPC call sites
 │   │   ├── services/                 # Renderer-side services
 │   │   │   ├── AudioEngine.ts        # Web Audio API multi-track mixing engine
 │   │   │   ├── FilterPipeline.ts     # Modifier[] → CSS filter string (SSOT)
 │   │   │   ├── KeyframeEvaluator.ts  # Keyframe interpolation (SSOT)
+│   │   │   ├── projectSession.ts     # Loaded project → stores (reset + hydrate SSOT)
 │   │   │   └── WaveformService.ts    # Audio waveform extraction for timeline
 │   │   ├── timeline/                 # Timeline interaction system
 │   │   │   ├── interaction.ts        # InteractionMachine, hit testing, snap, lane layout
@@ -356,6 +374,7 @@ capcut-killer/
 │   │   │   ├── useConfirm.ts         # Confirmation dialog state
 │   │   │   ├── useToast.ts           # Toast notification state
 │   │   │   ├── usePreviewView.ts     # Zoom mode, pan, guides, quality, playback speed (NOT persisted)
+│   │   │   ├── useRelink.ts          # Missing-media relink dialog state
 │   │   │   └── useSelectedEntity.ts  # Derived hook: focusedId → selected entity type
 │   │   ├── utils/                    # Renderer utilities
 │   │   │   ├── audio.ts              # Audio utilities
@@ -365,13 +384,26 @@ capcut-killer/
 │   │   │   └── wordActivation.ts     # Word-level caption timing logic
 │   │   ├── index.html                # Renderer HTML entry
 │   │   └── env.d.ts                  # TypeScript environment declarations
-│   └── shared/
+│   └── shared/                       # Cross-process, zero-dependency (main + renderer + tests)
+│       ├── project/
+│       │   ├── projectSchema.ts      # .clipzu v2 validator + v1→v2 migration (SSOT)
+│       │   ├── legacyEcp.ts          # CapCraft .ecp (v1) → loaded project mapping
+│       │   ├── relink.ts             # Missing-media token protocol
+│       │   └── integration/          # node:test integration suites (schema, relink, undo, golden)
+│       ├── export/
+│       │   ├── exportGraph.ts        # Shared export graph (effects/keyframes/blend/transitions)
+│       │   └── ffmpegText.ts         # Pure ffmpeg escaping / error formatting
+│       ├── ipc/
+│       │   └── channels.ts           # Typed IPC channel contracts (menu + project + relink)
 │       ├── types/
 │       │   └── caption.ts            # CaptionStyle interface (SSOT for caption visual properties)
 │       └── utils/
 │           ├── srt.ts                # SSOT: SRT parse/generate/format (pure functions)
 │           ├── timeline.ts           # Timeline timing utilities (recalcDuration, TextClip invariants)
 │           ├── color.ts              # Hex color conversion (ASS format, CSS alpha)
+│           ├── encoding.ts           # UTF-8 policy (BOM/CR/NFC/byte-length)
+│           ├── fileUrl.ts            # Canonical file:// encoder
+│           ├── concurrency.ts        # Bounded-parallelism limiter
 │           ├── fonts.ts              # AVAILABLE_FONTS array (SSOT for font selection)
 │           └── renderGeometry.ts     # Caption layout geometry (canvas dims → pixel coords)
 ├── models/                           # Primary Whisper model (ggml-small-q8_0.bin)
@@ -403,7 +435,25 @@ capcut-killer/
 | WebM / VP9 | 1920×1080 | 16:9 | Web embed |
 | Custom | Any | — | |
 
+## Project Files & Portability
+
+Projects are saved as a single `.clipzu` file (JSON, versioned `2.0`). Media is **not** embedded; instead the file stores a manifest of assets with:
+
+- a **relative path** (relative to the `.clipzu` file's folder),
+- the original absolute path as a fallback,
+- a SHA-256 content hash + size/mtime,
+- a per-asset `assetId` (clips/audio reference assets, never raw paths).
+
+This means:
+
+- **Moving the whole project folder** (with its media) keeps it loadable — the relative paths resolve.
+- **A missing source** is detected on load and offers the one-click **Relink** dialog (locate each file, or scan a folder); the project is never partially loaded.
+- **Legacy CapCraft `.ecp`** (v1) files open via `File → Open Project…` and migrate to `.clipzu` on the next save.
+- Saves are **atomic** (write temp → fsync → rename) with a single-flight queue, so Ctrl+S spam and autosave can never corrupt or half-write a project.
+
 ## Hotkeys
+
+`Ctrl` in the table below means `Cmd` on macOS (accelerators are `CmdOrCtrl`).
 
 | Key | Action |
 |---|---|
@@ -414,8 +464,20 @@ capcut-killer/
 | Ctrl+Z | Undo |
 | Ctrl+Shift+Z | Redo |
 | Ctrl+S | Save project |
+| Ctrl+Shift+S | Save project as… |
+| Ctrl+O | Open project |
+| Ctrl+N | New project |
 | Ctrl+E | Open export dialog |
 | I / O | Set in / out trim points |
+
+## Remaining Work
+
+Tracked gaps after the stabilization pass (intentionally deferred to keep this release stability-focused):
+
+- **Performance (bounded, not re-architected)**: the timeline canvas still redraws the full surface per playhead tick, and thumbnail caching uses synchronous `better-sqlite3` on the main thread. Thumbnail/waveform/proxy fan-out is concurrency-limited (ceiling 4) as a mitigation.
+- **Transitions**: slide (4-way) and zoom (in/out) are exported with exact geometry + fades; slides do not reproduce Preview's subtle partial-opacity ramp (export uses gated alpha). Wipe matches Preview (a plain crossfade). Any unmapped transition type falls back to crossfade alpha and is reported, never silent.
+- **Packaging**: `resources/models/` is empty by default — the Whisper model must be added before `dist:*` for a self-contained installer. macOS notarization and Windows code-signing are off until credentials are configured.
+- **Cross-platform binaries**: `resources/bin/` currently contains Windows binaries; macOS/Linux builds need their per-OS FFmpeg/ffprobe/whisper-cli dropped in before packaging.
 
 ## License
 

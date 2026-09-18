@@ -13,6 +13,7 @@ import { FFmpegService } from './services/FFmpegService'
 import { WhisperService, type ModelCompatibilityInfo } from './services/WhisperService'
 import { ThumbnailService } from './services/ThumbnailService'
 import { ExportQueueManager } from './services/ExportQueue'
+import { MENU } from '../shared/ipc/channels'
 
 interface StartupValidation {
   ffmpeg: boolean
@@ -96,6 +97,39 @@ let whisperService: WhisperService | null = null
 let ffmpegService: FFmpegService | null = null
 let exportQueue: ExportQueueManager | null = null
 
+/**
+ * Copy the Capcraft-era userData directory into the new Clipzu location on
+ * first run after the rename (thumbnails.db, whisper-cache.json, proxies/,
+ * cache/waveforms/). Copy (never move): the old install keeps working and a
+ * failed copy loses nothing. Skips when the new dir already has content or
+ * the old dir does not exist.
+ */
+function migrateLegacyUserData(): void {
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const fs = require('fs') as typeof import('fs')
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const path = require('path') as typeof import('path')
+    const newDir = app.getPath('userData')
+    const oldDir = path.join(path.dirname(newDir), 'Capcraft')
+    if (newDir === oldDir) return
+    if (!fs.existsSync(oldDir)) return
+    const isEmptyDir = (dir: string): boolean => {
+      try {
+        return fs.readdirSync(dir).length === 0
+      } catch {
+        return true
+      }
+    }
+    if (fs.existsSync(newDir) && !isEmptyDir(newDir)) return
+    fs.mkdirSync(newDir, { recursive: true })
+    fs.cpSync(oldDir, newDir, { recursive: true, force: false, errorOnExist: false })
+    console.log(`[startup] Migrated legacy userData Capcraft -> ${newDir}`)
+  } catch (err) {
+    console.error('[startup] Legacy userData migration failed (continuing with fresh dir):', (err as Error).message)
+  }
+}
+
 function createWindow(): void {
   mainWindow = new BrowserWindow({
     width: 1440,
@@ -123,24 +157,24 @@ function createWindow(): void {
         {
           label: 'New Project',
           accelerator: 'CmdOrCtrl+N',
-          click: () => mainWindow?.webContents.send('menu:new-project')
+          click: () => mainWindow?.webContents.send(MENU.newProject)
         },
         { type: 'separator' },
         {
           label: 'Open Project…',
           accelerator: 'CmdOrCtrl+O',
-          click: () => mainWindow?.webContents.send('menu:open-project')
+          click: () => mainWindow?.webContents.send(MENU.openProject)
         },
         { type: 'separator' },
         {
           label: 'Save',
           accelerator: 'CmdOrCtrl+S',
-          click: () => mainWindow?.webContents.send('menu:save')
+          click: () => mainWindow?.webContents.send(MENU.save)
         },
         {
           label: 'Save As…',
           accelerator: 'CmdOrCtrl+Shift+S',
-          click: () => mainWindow?.webContents.send('menu:save-as')
+          click: () => mainWindow?.webContents.send(MENU.saveAs)
         }
       ]
     },
@@ -195,15 +229,23 @@ function createWindow(): void {
 
     e.preventDefault()
 
-    // Query renderer for dirty state
+    // Query renderer for dirty state. The sentinel distinguishes three
+    // cases: false = explicitly clean (close now); true = dirty (prompt);
+    // null = bridge not mounted yet (pre-mount close — PROMPT, never assume
+    // clean: closing blind here used to discard work without asking).
     mainWindow.webContents.executeJavaScript(
-      'window.__capcraft_isDirty?.() ?? false'
+      'window.__clipzu_isDirty === undefined ? null : window.__clipzu_isDirty()'
     ).then((isDirty) => {
-      if (!isDirty || !mainWindow) {
-        // Clean or window gone — just close
+      if (isDirty === false || !mainWindow) {
+        // Explicitly clean or window gone — just close
         pendingClose = true
         mainWindow?.close()
         return
+      }
+      if (isDirty !== true && isDirty !== null) {
+        // Foreign value (preload tampering / version skew): fail safe,
+        // treat as dirty and prompt.
+        isDirty = true
       }
 
       // Show native OS dialog (like VS Code / Word)
@@ -219,14 +261,17 @@ function createWindow(): void {
       if (choice === 0) {
         // Save → then close
         mainWindow.webContents.executeJavaScript(
-          'window.__capcraft_saveNow?.() ?? Promise.resolve(false)'
+          'window.__clipzu_saveNow === undefined ? null : window.__clipzu_saveNow()'
         ).then((saved) => {
-          if (saved !== false) {
-            // saved = path string or null (user cancelled save dialog) → close
+          // Close ONLY on a real saved path. null = user cancelled the save
+          // dialog (abort the close, keep working); false = save failed
+          // (stay open so the user can retry). Closing on null used to
+          // discard work the user never agreed to drop.
+          if (typeof saved === 'string' && saved.length > 0) {
             pendingClose = true
             mainWindow?.close()
           }
-          // If saved === false, save failed — stay open (user can retry)
+          // Otherwise stay open.
         })
       } else if (choice === 1) {
         // Don't Save → close without saving
@@ -245,7 +290,12 @@ function createWindow(): void {
 }
 
 app.whenReady().then(() => {
-  electronApp.setAppUserModelId('com.capcraft.app')
+  electronApp.setAppUserModelId('com.clipzu.desktop-beta')
+
+  // Phase 10: one-time userData migration Capcraft -> Clipzu Desktop Beta.
+  // Best-effort, never fatal: a failed copy leaves the new (empty) dir and
+  // logs loudly. Runs before any service opens thumbnails.db / caches.
+  migrateLegacyUserData()
 
   app.on('browser-window-created', (_, window) => {
     optimizer.watchWindowShortcuts(window)
@@ -287,7 +337,7 @@ app.whenReady().then(() => {
 
   // Fast model check: file-existence + GGML header read (instant, no spawn).
   // Wrapped in try/catch so a validation failure can NEVER abort startup.
-  // NOTE: _startupValidated is NOT set here â€” async validation below is the
+  // NOTE: _startupValidated is NOT set here — async validation below is the
   // single source of truth, unless persistent cache says we can skip it.
   try {
     whisper.resolveModelPath(true)
@@ -318,8 +368,8 @@ app.whenReady().then(() => {
     const appVersion = pkg.version || '1.0.0'
 
     if (WhisperService.isPersistentCacheValid(cliPath, modelPath, appVersion)) {
-      // Cache is valid â€” skip all validation, mark immediately
-      console.log('[startup] Persistent cache valid â€” skipping async model validation')
+      // Cache is valid — skip all validation, mark immediately
+      console.log('[startup] Persistent cache valid — skipping async model validation')
       whisper.markStartupValidated()
     } else {
       // Fire async full model validation (non-blocking)

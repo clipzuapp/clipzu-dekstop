@@ -2,6 +2,7 @@ import { ipcMain, app } from 'electron'
 import { join } from 'path'
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs'
 import { createHash } from 'crypto'
+import { normalizeNFC } from '../../shared/utils/encoding'
 
 /**
  * Waveform disk cache IPC handlers.
@@ -16,7 +17,7 @@ import { createHash } from 'crypto'
  *   [8+peakCount*4..end] min peaks: Float32Array[peakCount]
  *
  * File naming: SHA-256 of the source file path → {hash}.pek
- * Directory:   appData/capcraft/cache/waveforms/
+ * Directory:   appData/Clipzu Desktop Beta/cache/waveforms/
  *
  * SSOT: All waveform disk cache goes through this module.
  */
@@ -38,7 +39,9 @@ function ensureCacheDir(): string {
 }
 
 function sourceHash(filePath: string): string {
-  return createHash('sha256').update(filePath).digest('hex').slice(0, 16)
+  // UTF-8 policy (Phase 9): NFC-normalize before hashing (macOS NFD vs
+  // Windows NFC would otherwise fork the cache for the same file).
+  return createHash('sha256').update(normalizeNFC(filePath)).digest('hex').slice(0, 16)
 }
 
 function pekPath(filePath: string): string {

@@ -6,11 +6,20 @@ import { useToast } from '../../store/useToast'
 import { ContextMenu } from '../ContextMenu/index'
 import { formatDuration } from '../../utils/format'
 import type { ContextMenuItem } from '../ContextMenu/index'
+import { createLimiter, MEDIA_FANOUT_LIMIT } from '../../../shared/utils/concurrency'
+import { toFileUrl } from '../../../shared/utils/fileUrl'
 import { Trash2, Check, Search, Film, Music as MusicIcon, X } from 'lucide-react'
 
 /** Module-level video element pool for hover preview (max 2) */
 const hoverVideoPool: HTMLVideoElement[] = []
 let hoverVideoInUse: HTMLVideoElement | null = null
+
+/**
+ * Module-level thumbnail limiter (Phase 8): importing N videos fans out N
+ * ffmpeg:getThumbnail IPC calls; at most MEDIA_FANOUT_LIMIT run at once.
+ * Module scope (not component scope) so remounts share the same gate.
+ */
+const thumbnailLimiter = createLimiter(MEDIA_FANOUT_LIMIT)
 
 /** Media file extensions we accept for drag-and-drop import */
 const MEDIA_EXTS = /\.(mp4|mov|avi|mkv|webm|mp3|wav|aac|ogg|flac|m4a)$/i
@@ -65,11 +74,11 @@ export function MediaPanel(): JSX.Element {
   }>({ active: false, startX: 0, startY: 0, moved: false, containerRect: null })
   const mediaListRef = useRef<HTMLDivElement>(null)
 
-  // Load thumbnail for a single video item
+  // Load thumbnail for a single video item (bounded via module limiter)
   const loadThumbnail = useCallback(async (id: string, path: string) => {
     try {
-      const base64 = await window.electron.ipcRenderer.invoke(
-        'ffmpeg:getThumbnail', path, 0, 120
+      const base64 = await thumbnailLimiter(() =>
+        window.electron.ipcRenderer.invoke('ffmpeg:getThumbnail', path, 0, 120)
       )
       if (base64 && typeof base64 === 'string') {
         setThumb(id, base64)
@@ -184,7 +193,7 @@ export function MediaPanel(): JSX.Element {
 
     // Batch format: array of media objects for the timeline drop handler
     e.dataTransfer.setData(
-      'application/capcraft-media-batch',
+      'application/clipzu-media-batch',
       JSON.stringify(dragItems.map((m) => ({
         path: m.path,
         durationMs: m.durationMs,
@@ -197,7 +206,7 @@ export function MediaPanel(): JSX.Element {
     )
     // Also set single-item format for backward compatibility
     e.dataTransfer.setData(
-      'application/capcraft-media',
+      'application/clipzu-media',
       JSON.stringify({
         path: item.path,
         durationMs: item.durationMs,
@@ -404,7 +413,7 @@ export function MediaPanel(): JSX.Element {
     vid.style.height = rect.height + 'px'
     vid.style.left = '0'
     vid.style.top = '0'
-    vid.src = `file:///${encodeURI(item.path.replace(/\\/g, '/'))}`
+    vid.src = toFileUrl(item.path)
     vid.onloadeddata = (): void => {
       vid!.currentTime = (vid!.duration || 0) * 0.1
       vid!.play().catch(() => {})

@@ -24,6 +24,8 @@
  */
 
 import { getBuffer, getAudioContext } from './AudioEngine'
+// Canonical shared file:// encoder (Phase 9) — replaces the local copy.
+import { toFileUrl } from '../../shared/utils/fileUrl'
 
 /** Base peak resolution for short files (< 5 min) */
 const BASE_PEAKS = 2048
@@ -55,16 +57,6 @@ function adaptivePeakCount(durationSec: number): number {
   if (durationSec < 1800) return BASE_PEAKS * 2   // < 30 min → 4096
   if (durationSec < 7200) return BASE_PEAKS * 4   // < 2 hr → 8192
   return BASE_PEAKS * 8                            // ≥ 2 hr → 16384
-}
-
-/**
- * Ensure a file path is a valid file:// URL. Handles Windows backslashes.
- */
-function toFileUrl(filePath: string): string {
-  if (filePath.startsWith('file://')) return filePath
-  const normalized = filePath.replace(/\\/g, '/')
-  if (normalized.startsWith('/')) return `file://${normalized}`
-  return `file:///${normalized}`
 }
 
 /**

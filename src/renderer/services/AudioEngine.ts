@@ -9,6 +9,9 @@
  * files or working with large projects.
  */
 
+// Canonical shared file:// encoder (Phase 9) — replaces the local copy.
+import { toFileUrl } from '../../shared/utils/fileUrl'
+
 let _ctx: AudioContext | null = null
 
 /** Memory ceiling in bytes. Default 512 MB. */
@@ -453,12 +456,3 @@ export function dispose(): void {
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-
-function toFileUrl(filePath: string): string {
-  if (filePath.startsWith('file://') || filePath.startsWith('http://') || filePath.startsWith('https://')) {
-    return filePath
-  }
-  const normalized = filePath.replace(/\\/g, '/')
-  const prefix = normalized.startsWith('/') ? 'file://' : 'file:///'
-  return prefix + normalized.split('/').map(encodeURIComponent).join('/')
-}

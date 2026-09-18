@@ -1,6 +1,6 @@
 import { create } from 'zustand'
 import { immer } from 'zustand/middleware/immer'
-import { useProject } from './useProject'
+import { useProject, type UndoSnapshot } from './useProject'
 import { clearWaveformCache } from '../services/WaveformService'
 import { useCaption, type CaptionStyle } from './useCaption'
 import {
@@ -29,7 +29,9 @@ function uuid(): string {
 }
 
 // ---------------------------------------------------------------------------
-// Deep clone helpers (Phase 9: undo correctness)
+// Deep clone helpers — used ONLY where an independent copy is semantically
+// required (clipboard copy, duplicate, paste, split). Undo snapshots do NOT
+// clone (see pushUndoSnapshot): structural sharing instead.
 // ---------------------------------------------------------------------------
 
 function deepCloneTransform(t?: ClipTransform): ClipTransform | undefined {
@@ -67,19 +69,103 @@ function deepCloneTextClip(tc: TextClip): TextClip {
   }
 }
 
-/** Capture current timeline + caption state for undo (deep clone) */
-export function pushUndoSnapshot(): void {
+/**
+ * Capture current timeline + caption state for undo WITHOUT cloning.
+ *
+ * Structural sharing: the snapshot holds the LIVE array/object references.
+ * This is safe because every timeline mutation flows through immer `set()`
+ * producers (verified by audit — no out-of-producer writes exist), and immer
+ * copies-on-write: committed state is never mutated in place, so a stored
+ * reference keeps its captured values forever. Result: O(1) snapshot instead
+ * of O(n) deep clone per edit (a 1h timeline with word-level captions went
+ * from ~ms+GC churn per keystroke to pointer copies).
+ *
+ * Safety net: in non-production builds the snapshot is deep-frozen, so any
+ * future out-of-producer mutation throws loudly in dev/test instead of
+ * silently corrupting undo history. (Production skips the freeze walk;
+ * correctness does not depend on it.)
+ */
+export function captureTimelineSnapshot(): {
+  clips: Clip[]
+  audioTracks: AudioTrack[]
+  textClips: TextClip[]
+  captions: Array<{ id: string; startMs: number; endMs: number; text: string }>
+  tracks: Track[]
+  markers: TimelineMarker[]
+} {
   const { clips, audioTracks, textClips, tracks, markers } = useTimeline.getState()
-  useProject.getState().pushUndo({
-    clips: clips.map(deepCloneClip),
-    audioTracks: audioTracks.map(deepCloneAudioTrack),
-    textClips: textClips.map(deepCloneTextClip),
+  const snapshot = {
+    clips,
+    audioTracks,
+    textClips,
     captions: textClips.map((tc) => ({
       id: tc.id, startMs: tc.startMs, endMs: getTextClipEnd(tc), text: tc.text
     })),
-    tracks: tracks.map((t) => ({ ...t })),
-    markers: markers.map((m) => ({ ...m }))
+    tracks,
+    markers
+  }
+  freezeUndoSnapshot(snapshot)
+  return snapshot
+}
+
+/** Push the current state as an undo entry (shared refs — see above). */
+export function pushUndoSnapshot(): void {
+  useProject.getState().pushUndo(captureTimelineSnapshot())
+}
+
+/**
+ * Apply an undo/redo snapshot to the live timeline (SSOT for ALL undo
+ * entry points: Ctrl+Z, Ctrl+Shift+Z/Ctrl+Y, toolbar buttons). Previously
+ * each call site hand-rolled this — and the toolbar buttons forgot the
+ * apply step entirely, silently EATING history entries without restoring.
+ */
+export function applySnapshotToTimeline(snapshot: UndoSnapshot): void {
+  useTimeline.setState({
+    clips: snapshot.clips,
+    audioTracks: snapshot.audioTracks,
+    textClips: snapshot.textClips,
+    ...(snapshot.tracks ? { tracks: snapshot.tracks } : {}),
+    ...(snapshot.markers ? { markers: snapshot.markers } : {})
   })
+  useTimeline.getState().recalcTotalDuration()
+}
+
+/**
+ * Full undo operation: capture current (for redo), pop, apply.
+ * Returns false when history is empty. Single source for hotkeys + toolbar.
+ */
+export function performUndo(): boolean {
+  const snapshot = useProject.getState().undo(captureTimelineSnapshot())
+  if (!snapshot) return false
+  applySnapshotToTimeline(snapshot)
+  return true
+}
+
+/** Full redo operation: mirror image of performUndo. */
+export function performRedo(): boolean {
+  const snapshot = useProject.getState().redo(captureTimelineSnapshot())
+  if (!snapshot) return false
+  applySnapshotToTimeline(snapshot)
+  return true
+}
+
+/** Deep-freeze an undo snapshot (dev/test only — loud on violation). */
+export function freezeUndoSnapshot(snapshot: object): void {
+  if (typeof process !== 'undefined' && process.env?.NODE_ENV === 'production') return
+  const seen = new Set<object>()
+  const walk = (value: unknown): void => {
+    if (!value || typeof value !== 'object') return
+    const obj = value as object
+    if (seen.has(obj)) return
+    seen.add(obj)
+    if (Array.isArray(obj)) {
+      for (const item of obj) walk(item)
+    } else {
+      for (const item of Object.values(obj)) walk(item)
+    }
+    Object.freeze(obj)
+  }
+  walk(snapshot)
 }
 
 // ---------------------------------------------------------------------------
@@ -111,6 +197,8 @@ export function getClipboard(): ClipboardData | null { return _clipboard }
 
 let _styleClipboard: CaptionStyle | null = null
 export function getStyleClipboard(): CaptionStyle | null { return _styleClipboard }
+/** Clear the style clipboard (project load/reset boundary — no stale paste). */
+export function clearStyleClipboard(): void { _styleClipboard = null }
 
 // ---------------------------------------------------------------------------
 // In/Out points
@@ -521,6 +609,10 @@ export const useTimeline = create<TimelineState & TimelineActions>()(
         if (!clip.speed) clip.speed = 1.0
         if (clip.volume === undefined) clip.volume = 1.0
         if (clip.muted === undefined) clip.muted = false
+        // Canonical shape from birth: save→load must be identity, so creation
+        // defaults match the schema normalizer exactly (same as audio below).
+        if (clip.fadeInMs === undefined) clip.fadeInMs = 0
+        if (clip.fadeOutMs === undefined) clip.fadeOutMs = 0
         state.clips.push(clip)
         growTotalDuration(state, clip.startMs + clip.durationMs)
         const exists = state.tracks.some((t) => t.kind === 'video' && t.index === clip.trackIndex)
@@ -797,7 +889,10 @@ export const useTimeline = create<TimelineState & TimelineActions>()(
           sourceDurationMs: clip.sourceDurationMs, durationMs: clip.durationMs - splitPoint + (clip.durationMs - splitPoint),
           trackIndex: clip.trackIndex, trimStart: clip.trimStart + splitPoint, trimEnd: clip.trimEnd,
           name: clip.name, transform: deepCloneTransform(clip.transform), speed: clip.speed,
-          volume: clip.volume ?? 1, muted: clip.muted ?? false
+          volume: clip.volume ?? 1, muted: clip.muted ?? false,
+          // Canonical shape from birth (see addClip): a split point carries no
+          // fade, and audio presence inherits the source clip.
+          fadeInMs: 0, fadeOutMs: 0, hasAudio: clip.hasAudio ?? true
         }
         newClip.durationMs = clip.sourceDurationMs - newClip.trimStart - newClip.trimEnd
         state.clips.splice(clipIndex + 1, 0, newClip)
@@ -894,6 +989,8 @@ export const useTimeline = create<TimelineState & TimelineActions>()(
           if (!clip.speed) clip.speed = 1.0
           if (clip.volume === undefined) clip.volume = 1.0
           if (clip.muted === undefined) clip.muted = false
+          if (clip.fadeInMs === undefined) clip.fadeInMs = 0
+          if (clip.fadeOutMs === undefined) clip.fadeOutMs = 0
           state.clips.push(clip)
           const exists = state.tracks.some((t) => t.kind === 'video' && t.index === clip.trackIndex)
           if (!exists) {
@@ -994,7 +1091,12 @@ export const useTimeline = create<TimelineState & TimelineActions>()(
     addTextClip: (clip) => {
       pushUndoSnapshot()
       set((state) => {
-        state.textClips.push(normalizeTextClip({ ...clip }))
+        const full = normalizeTextClip({ ...clip })
+        // Canonical shape from birth (see addClip): fades explicit, never
+        // undefined, so save→load round-trips identically.
+        if (full.fadeInMs === undefined) full.fadeInMs = 0
+        if (full.fadeOutMs === undefined) full.fadeOutMs = 0
+        state.textClips.push(full)
         const hasCaptionTrack = state.tracks.some((t) => t.kind === 'caption')
         if (!hasCaptionTrack) {
           state.tracks.push({ id: 'track_caption_0', index: 0, name: 'Captions', kind: 'caption', muted: false, locked: false, hidden: false, solo: false })
@@ -1007,7 +1109,12 @@ export const useTimeline = create<TimelineState & TimelineActions>()(
       if (clips.length === 0) return
       pushUndoSnapshot()
       set((state) => {
-        for (const clip of clips) state.textClips.push(normalizeTextClip({ ...clip }))
+        for (const clip of clips) {
+          const full = normalizeTextClip({ ...clip })
+          if (full.fadeInMs === undefined) full.fadeInMs = 0
+          if (full.fadeOutMs === undefined) full.fadeOutMs = 0
+          state.textClips.push(full)
+        }
         const hasCaptionTrack = state.tracks.some((t) => t.kind === 'caption')
         if (!hasCaptionTrack) {
           state.tracks.push({ id: 'track_caption_0', index: 0, name: 'Captions', kind: 'caption', muted: false, locked: false, hidden: false, solo: false })
@@ -1332,24 +1439,29 @@ export const useTimeline = create<TimelineState & TimelineActions>()(
     // -- Deferred undo --
 
     beginDragCapture: () => {
+      // Shared references (same safety argument as pushUndoSnapshot): the
+      // drag interaction mutates only via set() producers, so the captured
+      // refs stay pristine until commitDrag pushes them as the undo entry.
       const { clips, audioTracks, textClips, tracks, markers } = useTimeline.getState()
-      _dragPreClips = clips.map(deepCloneClip)
-      _dragPreAudioTracks = audioTracks.map(deepCloneAudioTrack)
-      _dragPreTextClips = textClips.map(deepCloneTextClip)
-      _dragPreTracks = tracks.map((t) => ({ ...t }))
-      _dragPreMarkers = markers.map((m) => ({ ...m }))
+      _dragPreClips = clips
+      _dragPreAudioTracks = audioTracks
+      _dragPreTextClips = textClips
+      _dragPreTracks = tracks
+      _dragPreMarkers = markers
     },
 
     commitDrag: () => {
       if (!_dragPreClips) return
-      useProject.getState().pushUndo({
+      const snapshot = {
         clips: _dragPreClips, audioTracks: _dragPreAudioTracks!, textClips: _dragPreTextClips!,
         captions: _dragPreTextClips!.map((tc) => ({
           id: tc.id, startMs: tc.startMs, endMs: getTextClipEnd(tc), text: tc.text
         })),
         tracks: _dragPreTracks ?? undefined,
         markers: _dragPreMarkers ?? undefined
-      })
+      }
+      freezeUndoSnapshot(snapshot)
+      useProject.getState().pushUndo(snapshot)
       _dragPreClips = null; _dragPreAudioTracks = null; _dragPreTextClips = null
       _dragPreTracks = null; _dragPreMarkers = null
     },

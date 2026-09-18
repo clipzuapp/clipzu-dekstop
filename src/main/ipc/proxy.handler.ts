@@ -2,13 +2,14 @@ import { ipcMain, app } from 'electron'
 import { join } from 'path'
 import { existsSync, mkdirSync } from 'fs'
 import { createHash } from 'crypto'
+import { normalizeNFC } from '../../shared/utils/encoding'
 import { FFmpegService } from '../services/FFmpegService'
 
 /**
  * Proxy workflow IPC handlers.
  *
  * On import of video files > 720p, the renderer requests a proxy generation.
- * FFmpeg creates a 720p H.264 copy stored in appData/capcraft/proxies/.
+ * FFmpeg creates a 720p H.264 copy stored in appData/Clipzu Desktop Beta/proxies/.
  * The timeline preview uses the proxy path; export swaps back to original.
  *
  * File naming: SHA-256 of source path → {hash}.mp4
@@ -30,7 +31,9 @@ function ensureProxyDir(): string {
 }
 
 function sourceHash(filePath: string): string {
-  return createHash('sha256').update(filePath).digest('hex').slice(0, 16)
+  // UTF-8 policy (Phase 9): NFC-normalize before hashing so the same file
+  // hashes identically on macOS (NFD) and Windows (NFC).
+  return createHash('sha256').update(normalizeNFC(filePath)).digest('hex').slice(0, 16)
 }
 
 function proxyPathForSource(filePath: string): string {

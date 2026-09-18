@@ -1,5 +1,5 @@
 import { useEffect, useRef } from 'react'
-import { useTimeline, type TextClip } from '../store/useTimeline'
+import { useTimeline, clearStyleClipboard, performUndo, performRedo } from '../store/useTimeline'
 import { useProject } from '../store/useProject'
 import { useCaption } from '../store/useCaption'
 import { useExport } from '../store/useExport'
@@ -7,6 +7,12 @@ import { useToast } from '../store/useToast'
 import { usePreviewView } from '../store/usePreviewView'
 import { useMediaLibrary } from '../store/useMediaLibrary'
 import type { LeftTabId } from './LeftRail/index'
+import {
+  MENU,
+  type ProjectSavePayload,
+} from '../../shared/ipc/channels'
+import { invokeSaveProject } from '../ipc/projectIpc'
+import { loadProjectFromDialog } from '../services/projectSession'
 
 /**
  * HotkeyManager - Global keyboard shortcut handler
@@ -22,16 +28,16 @@ interface HotkeyManagerProps {
   onShortcuts?: () => void
   activeTool?: ActiveTool
   setActiveTool?: (tool: ActiveTool) => void
-  onUndo?: () => unknown
-  onRedo?: () => unknown
   onAddText?: () => void
   /** Which left panel tab is currently active (for context-aware Ctrl+A) */
   activeLeftTab?: LeftTabId
 }
 
 /**
- * Serialize and save the current project to disk. SSOT — used by both
- * Ctrl+S manual save and the auto-save interval.
+ * Serialize and save the current project to disk (.clipzu). SSOT — used by
+ * both Ctrl+S manual save and the auto-save interval.
+ * Main validates strictly, builds the asset manifest, migrates to the v2
+ * envelope, and writes .clipzu ONLY.
  * @param forceDialog - if true, always show save dialog (Save As behavior)
  */
 function saveProjectToDisk(options?: { forceDialog?: boolean }): Promise<string | null> {
@@ -44,7 +50,8 @@ function saveProjectToDisk(options?: { forceDialog?: boolean }): Promise<string 
   // always shows the save dialog (Save As behavior).
   const ipcFilePath = options?.forceDialog ? undefined : project.projectFilePath
 
-  return window.electron.ipcRenderer.invoke('project:save', {
+  // Typed contract (shared/ipc/channels): main strict-validates at runtime.
+  const payload: ProjectSavePayload = {
     version: '1.0',
     name: project.name,
     fps: project.fps,
@@ -66,57 +73,35 @@ function saveProjectToDisk(options?: { forceDialog?: boolean }): Promise<string 
       style: captionData.activeStyle,
       language: captionData.language
     },
-    exportPreset: exportData.preset
-  }, ipcFilePath)
+    exportPreset: exportData.preset,
+    // Full export configuration for the v2 envelope (strict-validated in main).
+    exportConfig: {
+      preset: exportData.preset,
+      customWidth: exportData.customWidth,
+      customHeight: exportData.customHeight,
+      upscaleEnabled: exportData.upscaleEnabled,
+      upscaleAlgorithm: exportData.upscaleAlgorithm,
+      codec: exportData.codec,
+      qualityPreset: exportData.qualityPreset,
+      bitrateKbps: exportData.bitrateKbps,
+      bitrateMode: exportData.bitrateMode,
+      exportFrameRange: exportData.exportFrameRange,
+      audioOnly: exportData.audioOnly,
+      fps: exportData.fps,
+      hardwareAccel: exportData.hardwareAccel
+    }
+  }
+
+  return invokeSaveProject(payload, ipcFilePath)
 }
 
-// SSOT: Single project load function used by both Ctrl+O and menu:open-project
-function loadProjectFromDialog(): void {
-  window.electron.ipcRenderer.invoke('project:load')
-    .then((result: { data: Record<string, unknown>; filePath: string } | null) => {
-      if (!result) return
-      const { data, filePath } = result
-      useProject.getState().loadProject({
-        name: data.name as string,
-        fps: data.fps as 24 | 30 | 60,
-        resolution: data.resolution as { width: number; height: number },
-        aspectRatio: data.aspectRatio as import('../store/useProject').AspectRatio | undefined,
-        backgroundColor: data.backgroundColor as string | undefined,
-        projectFilePath: filePath
-      })
-      useTimeline.getState().loadTimeline({
-        clips: (data.clips || []) as import('../store/useTimeline').Clip[],
-        audioTracks: (data.audioTracks || []) as import('../store/useTimeline').AudioTrack[],
-        textClips: ((data.textClips || (data.captions as Record<string, unknown>)?.entries) || []) as TextClip[],
-        tracks: (data.tracks || []) as import('../store/useTimeline').Track[],
-        markers: (data.markers || []) as import('../store/useTimeline').TimelineMarker[],
-        playheadMs: data.playheadMs as number | undefined,
-        zoom: data.zoom as number | undefined,
-        masterVolume: data.masterVolume as number | undefined,
-        loopEnabled: data.loopEnabled as boolean | undefined
-      })
-      useCaption.getState().loadCaptions({
-        entries: ((data.captions as Record<string, unknown>)?.entries || []) as Array<{ id: string; text: string; startMs: number; endMs: number }>,
-        style: (data.captions as Record<string, unknown>)?.style as Record<string, unknown>,
-        language: ((data.captions as Record<string, unknown>)?.language || 'en') as string
-      })
-      useToast.getState().success('Project loaded')
-    })
-    .catch((err: Error) => {
-      console.error('Load failed:', err)
-      useToast.getState().error(`Load failed: ${err.message}`)
-    })
-}
-
-export function HotkeyManager({ onExport, onShortcuts, activeTool: _activeTool, setActiveTool, onUndo, onRedo, onAddText, activeLeftTab }: HotkeyManagerProps): null {
+export function HotkeyManager({ onExport, onShortcuts, activeTool: _activeTool, setActiveTool, onAddText, activeLeftTab }: HotkeyManagerProps): null {
   const isPlaying = useTimeline((s) => s.isPlaying)
   const playheadMs = useTimeline((s) => s.playheadMs)
   const totalDurationMs = useTimeline((s) => s.totalDurationMs)
   const setPlaying = useTimeline((s) => s.setPlaying)
   const setPlayhead = useTimeline((s) => s.setPlayhead)
   const splitClipAtPlayhead = useTimeline((s) => s.splitClipAtPlayhead)
-  const undo = useProject((s) => s.undo)
-  const redo = useProject((s) => s.redo)
 
   // Keep refs in sync for stable event handler (avoids re-registering on every frame)
   const isPlayingRef = useRef(isPlaying)
@@ -223,37 +208,18 @@ export function HotkeyManager({ onExport, onShortcuts, activeTool: _activeTool, 
         return
       }
 
-      // Ctrl+Z: undo
+      // Ctrl+Z: undo (capture-apply centralized in performUndo so the
+      // toolbar buttons and hotkeys share one correct implementation).
       if (isMod && e.key === 'z' && !e.shiftKey) {
         e.preventDefault()
-        const snapshot = undo()
-        if (snapshot) {
-          useTimeline.setState({
-            clips: snapshot.clips,
-            audioTracks: snapshot.audioTracks,
-            textClips: snapshot.textClips,
-            ...(snapshot.tracks ? { tracks: snapshot.tracks } : {}),
-            ...(snapshot.markers ? { markers: snapshot.markers } : {})
-          })
-          useTimeline.getState().recalcTotalDuration()
-        }
+        performUndo()
         return
       }
 
-      // Ctrl+Shift+Z / Ctrl+Y: redo
+      // Ctrl+Shift+Z / Ctrl+Y: redo (mirror image).
       if (isMod && ((e.key === 'z' && e.shiftKey) || e.key === 'y')) {
         e.preventDefault()
-        const snapshot = redo()
-        if (snapshot) {
-          useTimeline.setState({
-            clips: snapshot.clips,
-            audioTracks: snapshot.audioTracks,
-            textClips: snapshot.textClips,
-            ...(snapshot.tracks ? { tracks: snapshot.tracks } : {}),
-            ...(snapshot.markers ? { markers: snapshot.markers } : {})
-          })
-          useTimeline.getState().recalcTotalDuration()
-        }
+        performRedo()
         return
       }
 
@@ -262,7 +228,10 @@ export function HotkeyManager({ onExport, onShortcuts, activeTool: _activeTool, 
         e.preventDefault()
         saveProjectToDisk({ forceDialog: true })
           .then((savedPath) => {
-            if (savedPath) useProject.getState().setProjectFilePath(savedPath)
+            // Cancelled dialog (null) keeps the project dirty — marking clean
+            // here used to lose the close-guard prompt (data-loss bug).
+            if (!savedPath) return
+            useProject.getState().setProjectFilePath(savedPath)
             useProject.getState().markClean()
             useToast.getState().success('Project saved as ' + (savedPath?.split(/[\\/]/).pop() ?? ''))
           })
@@ -278,7 +247,8 @@ export function HotkeyManager({ onExport, onShortcuts, activeTool: _activeTool, 
         e.preventDefault()
         saveProjectToDisk()
           .then((savedPath) => {
-            if (savedPath) useProject.getState().setProjectFilePath(savedPath)
+            if (!savedPath) return
+            useProject.getState().setProjectFilePath(savedPath)
             useProject.getState().markClean()
             useToast.getState().success('Project saved')
           })
@@ -294,6 +264,9 @@ export function HotkeyManager({ onExport, onShortcuts, activeTool: _activeTool, 
         e.preventDefault()
         useProject.getState().newProject()
         useTimeline.getState().clearTimeline()
+        clearStyleClipboard()
+        useCaption.getState().resetCaptionSession()
+        useExport.getState().resetExportSession()
         useToast.getState().success('New project created')
         return
       }
@@ -472,7 +445,7 @@ export function HotkeyManager({ onExport, onShortcuts, activeTool: _activeTool, 
     return () => window.removeEventListener('keydown', handleKeyDown)
   }, [
     setPlaying, setPlayhead, splitClipAtPlayhead,
-    undo, redo, onExport, onShortcuts, setActiveTool, onUndo, onRedo, onAddText, activeLeftTab
+    onExport, onShortcuts, setActiveTool, onAddText, activeLeftTab
   ])
 
   // ---------------------------------------------------------------------------
@@ -481,12 +454,18 @@ export function HotkeyManager({ onExport, onShortcuts, activeTool: _activeTool, 
   useEffect(() => {
     // Expose dirty-state + save function so main process can query them via
     // executeJavaScript() when intercepting the window close event.
-    ;(window as any).__capcraft_isDirty = (): boolean => useProject.getState().isDirty
-    ;(window as any).__capcraft_saveNow = (): Promise<string | null | false> => {
+    // Clipzu namespace (Phase 10): main queries the same names — rename one
+    // side without the other and the close guard goes blind (data loss).
+    ;(window as any).__clipzu_isDirty = (): boolean => useProject.getState().isDirty
+    ;(window as any).__clipzu_saveNow = (): Promise<string | null | false> => {
       return saveProjectToDisk()
         .then((savedPath) => {
-          if (savedPath) useProject.getState().setProjectFilePath(savedPath)
-          useProject.getState().markClean()
+          // null = user cancelled the dialog: stay dirty so the close guard
+          // still prompts. Only a real path marks clean.
+          if (savedPath) {
+            useProject.getState().setProjectFilePath(savedPath)
+            useProject.getState().markClean()
+          }
           return savedPath
         })
         .catch(() => false as const)
@@ -499,7 +478,12 @@ export function HotkeyManager({ onExport, onShortcuts, activeTool: _activeTool, 
 
       saveProjectToDisk()
         .then((savedPath) => {
-          if (savedPath) useProject.getState().setProjectFilePath(savedPath)
+          // Cancelled dialog (null) keeps the project dirty AND skips
+          // markClean — marking clean on cancel used to lose the close-guard
+          // prompt (data-loss bug). With a reused path main never cancels,
+          // but the guard is free.
+          if (!savedPath) return
+          useProject.getState().setProjectFilePath(savedPath)
           useProject.getState().markClean()
           useToast.getState().success('Auto-saved')
         })
@@ -513,7 +497,9 @@ export function HotkeyManager({ onExport, onShortcuts, activeTool: _activeTool, 
     const onMenuSave = (): void => {
       saveProjectToDisk()
         .then((savedPath) => {
-          if (savedPath) useProject.getState().setProjectFilePath(savedPath)
+          // Same cancel-guard as auto-save: no path, no markClean.
+          if (!savedPath) return
+          useProject.getState().setProjectFilePath(savedPath)
           useProject.getState().markClean()
           useToast.getState().success('Project saved')
         })
@@ -526,7 +512,8 @@ export function HotkeyManager({ onExport, onShortcuts, activeTool: _activeTool, 
     const onMenuSaveAs = (): void => {
       saveProjectToDisk({ forceDialog: true })
         .then((savedPath) => {
-          if (savedPath) useProject.getState().setProjectFilePath(savedPath)
+          if (!savedPath) return
+          useProject.getState().setProjectFilePath(savedPath)
           useProject.getState().markClean()
           useToast.getState().success('Project saved as ' + (savedPath?.split(/[\\/]/).pop() ?? ''))
         })
@@ -541,25 +528,33 @@ export function HotkeyManager({ onExport, onShortcuts, activeTool: _activeTool, 
       loadProjectFromDialog()
     }
 
-    const onMenuNew = (): void => {
+    // New project: same full reset as load (no stale state may survive).
+    const resetForNewProject = (): void => {
       useProject.getState().newProject()
       useTimeline.getState().clearTimeline()
+      clearStyleClipboard()
+      useCaption.getState().resetCaptionSession()
+      useExport.getState().resetExportSession()
+    }
+
+    const onMenuNew = (): void => {
+      resetForNewProject()
       useToast.getState().success('New project created')
     }
 
     // Store cleanup functions returned by ipcRenderer.on()
     const unsubscribers: Array<() => void> = []
 
-    unsubscribers.push(window.electron.ipcRenderer.on('menu:save', onMenuSave))
-    unsubscribers.push(window.electron.ipcRenderer.on('menu:save-as', onMenuSaveAs))
-    unsubscribers.push(window.electron.ipcRenderer.on('menu:open-project', onMenuOpen))
-    unsubscribers.push(window.electron.ipcRenderer.on('menu:new-project', onMenuNew))
+    unsubscribers.push(window.electron.ipcRenderer.on(MENU.save, onMenuSave))
+    unsubscribers.push(window.electron.ipcRenderer.on(MENU.saveAs, onMenuSaveAs))
+    unsubscribers.push(window.electron.ipcRenderer.on(MENU.openProject, onMenuOpen))
+    unsubscribers.push(window.electron.ipcRenderer.on(MENU.newProject, onMenuNew))
 
     return () => {
       clearInterval(autoSaveInterval)
       for (const unsub of unsubscribers) unsub()
-      delete (window as any).__capcraft_isDirty
-      delete (window as any).__capcraft_saveNow
+      delete (window as any).__clipzu_isDirty
+      delete (window as any).__clipzu_saveNow
     }
   }, [])
 

@@ -6,6 +6,7 @@ import { useProject } from '../../store/useProject'
 import { useCaption } from '../../store/useCaption'
 import { useToast } from '../../store/useToast'
 import { formatDuration } from '../../utils/format'
+import { buildExportGraph } from '../../../shared/export/exportGraph'
 
 
 /**
@@ -101,7 +102,9 @@ export function ExportDialog({ onClose, show = true }: { onClose: () => void; sh
           text: clip.text,
           words: clip.words,
           // Per-clip style is already CaptionStyle — pass through without projection
-          style: clip.style ?? undefined
+          style: clip.style ?? undefined,
+          fadeInMs: clip.fadeInMs ?? 0,
+          fadeOutMs: clip.fadeOutMs ?? 0
         })), {
           outputWidth: renderWidth,
           outputHeight: renderHeight,
@@ -109,6 +112,74 @@ export function ExportDialog({ onClose, show = true }: { onClose: () => void; sh
           projectHeight: projectResolution.height,
           fallbackStyle
         })
+      }
+
+      // Phase 7: single shared export graph — Timeline state | Effects |
+      // Modifiers | Keyframes | Audio. Visibility/mute, effect filters,
+      // keyframe-baked segments, blend modes, and transition windows are
+      // resolved HERE (pure, unit-tested); FFmpegService only applies them.
+      const graph = buildExportGraph({
+        clips: clips.map((c) => ({
+          path: c.path,
+          startMs: c.startMs,
+          durationMs: c.durationMs,
+          trimStart: c.trimStart,
+          speed: c.speed ?? 1,
+          volume: c.volume ?? 1,
+          muted: c.muted ?? false,
+          hasAudio: c.hasAudio,
+          trackIndex: c.trackIndex,
+          transform: c.transform ? { ...c.transform } : null,
+          fadeInMs: c.fadeInMs,
+          fadeOutMs: c.fadeOutMs,
+          keyframes: c.keyframes,
+          modifiers: c.modifiers,
+          blendMode: c.blendMode,
+          outTransition: c.outTransition,
+        })),
+        audioTracks: audioTracks.map((t) => ({
+          path: t.path,
+          startMs: t.startMs,
+          volume: t.volume,
+          muted: t.muted ?? false,
+          trimStart: t.trimStart,
+          durationMs: t.durationMs,
+          fadeInMs: t.fadeInMs,
+          fadeOutMs: t.fadeOutMs,
+          trackIndex: t.trackIndex,
+          keyframes: t.keyframes,
+        })),
+        lanes: tracks.map((t) => ({
+          kind: t.kind,
+          index: t.index,
+          muted: t.muted,
+          hidden: t.hidden,
+          solo: t.solo,
+        })),
+      })
+      // Unrepresentable effects are LOUD (toast), never silently dropped.
+      for (const d of graph.dropped) {
+        useToast.getState().warning(`Export note: ${d}`)
+      }
+      for (const w of graph.warnings) {
+        useToast.getState().warning(`Export note: ${w}`)
+      }
+
+      // Resolve hardware encoding BEFORE starting (previously the knob was
+      // forwarded but never honored — exports always used software encoders).
+      let useNvenc = false
+      if (hardwareAccel && codec === 'h264') {
+        try {
+          const accel = await window.electron.ipcRenderer.invoke('export:detectAccel') as {
+            nvenc?: boolean
+          } | null
+          useNvenc = accel?.nvenc === true
+          if (!useNvenc) {
+            useToast.getState().warning('Export note: NVENC not available, using software H.264')
+          }
+        } catch {
+          useToast.getState().warning('Export note: encoder detection failed, using software H.264')
+        }
       }
 
       // Start video export (async in main process — returns job immediately)
@@ -128,6 +199,20 @@ export function ExportDialog({ onClose, show = true }: { onClose: () => void; sh
         clipDurationMs: clips.map((c) => c.durationMs),
         clipTrimStarts: clips.map((c) => c.trimStart),
         clipSpeeds: clips.map((c) => c.speed ?? 1),
+        // Phase 7 graph output (effects/keyframes/blend/transitions/volume).
+        clipVideoFilters: graph.clips.map((n) => n.staticFilters),
+        clipVideoAnimated: graph.clips.map((n) => n.animatedFilters),
+        clipAnimatedOpacity: graph.clips.map((n) => n.animatedOpacity),
+        clipAnimatedVolume: graph.clips.map((n) => n.animatedVolume),
+        clipBlends: graph.clips.map((n) => n.blend),
+        clipTransitionFadeInMs: graph.clips.map((n) => n.transitionFadeInMs),
+        clipTransitionFadeOutMs: graph.clips.map((n) => n.transitionFadeOutMs),
+        clipSlideOut: graph.clips.map((n) => n.slideOut),
+        clipSlideIn: graph.clips.map((n) => n.slideIn),
+        clipZoomOut: graph.clips.map((n) => n.zoomOut),
+        clipZoomIn: graph.clips.map((n) => n.zoomIn),
+        audioAnimatedVolume: graph.audioTracks.map((n) => n.animatedVolume),
+        useNvenc,
         audioTracks: audioTracks
           .filter((t) => !computeEffectiveMuted(t.muted, t.trackIndex, tracks))
           .map((t) => ({

@@ -22,7 +22,7 @@ interface TimelineProps {
 }
 
 // ---------------------------------------------------------------------------
-// Timeline â€” thin render-only component
+// Timeline — thin render-only component
 // ---------------------------------------------------------------------------
 
 export function Timeline({ activeTool = 'select' }: TimelineProps): JSX.Element {
@@ -340,8 +340,8 @@ export function Timeline({ activeTool = 'select' }: TimelineProps): JSX.Element 
   // ---- HTML5 drop target ----
 
   const handleDragOver = useCallback((e: React.DragEvent) => {
-    if (e.dataTransfer.types.includes('application/capcraft-media') ||
-        e.dataTransfer.types.includes('application/capcraft-media-batch')) {
+    if (e.dataTransfer.types.includes('application/clipzu-media') ||
+        e.dataTransfer.types.includes('application/clipzu-media-batch')) {
       e.preventDefault()
       e.dataTransfer.dropEffect = e.dataTransfer.effectAllowed === 'copy' ? 'copy' : 'move'
     }
@@ -364,15 +364,15 @@ export function Timeline({ activeTool = 'select' }: TimelineProps): JSX.Element 
       const ts = Date.now()
 
       // ---- Unified batch path: multi-select from MediaPanel OR single-item ----
-      // Both MediaPanel and AudioPanel set 'application/capcraft-media'.
-      // MediaPanel also sets 'application/capcraft-media-batch'.
+      // Both MediaPanel and AudioPanel set 'application/clipzu-media'.
+      // MediaPanel also sets 'application/clipzu-media-batch'.
       // We prioritize batch to prevent dual-path execution (duplication bug).
       let items: Array<{
         path: string; durationMs: number; width: number; height: number
         hasAudio: boolean; name: string; isAudio: boolean; isSfx?: boolean
       }> | null = null
 
-      const batchRaw = e.dataTransfer.getData('application/capcraft-media-batch')
+      const batchRaw = e.dataTransfer.getData('application/clipzu-media-batch')
       if (batchRaw) {
         try {
           const parsed = JSON.parse(batchRaw)
@@ -386,7 +386,7 @@ export function Timeline({ activeTool = 'select' }: TimelineProps): JSX.Element 
       }
 
       if (!items) {
-        const raw = e.dataTransfer.getData('application/capcraft-media')
+        const raw = e.dataTransfer.getData('application/clipzu-media')
         if (!raw) return
         try {
           const data = JSON.parse(raw)

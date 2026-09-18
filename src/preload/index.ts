@@ -1,4 +1,5 @@
 import { contextBridge, ipcRenderer } from 'electron'
+import { MENU_CHANNELS, PROJECT_CHANNELS } from '../shared/ipc/channels'
 
 /**
  * Preload script - Exposes safe IPC bridge to renderer process
@@ -8,7 +9,7 @@ import { contextBridge, ipcRenderer } from 'electron'
 const electronAPI = {
   ipcRenderer: {
     invoke: (channel: string, ...args: unknown[]): Promise<unknown> => {
-      const validChannels = [
+      const validChannels: string[] = [
         'ffmpeg:getMediaInfo',
         'ffmpeg:extractFrame',
         'ffmpeg:getThumbnail',
@@ -34,11 +35,7 @@ const electronAPI = {
         'export:cancel',
         'export:getJobs',
         'export:clearCompleted',
-        'project:save',
-        'project:load',
-        'project:exportSRT',
-        'project:createTempSRT',
-        'project:createTempASS',
+        ...PROJECT_CHANNELS,
         'waveform:readPeaks',
         'waveform:writePeaks',
         'waveform:getCacheDir',
@@ -53,7 +50,10 @@ const electronAPI = {
       return Promise.reject(new Error(`Invalid channel: ${channel}`))
     },
     on: (channel: string, listener: (event: unknown, ...args: unknown[]) => void): (() => void) => {
-      const validChannels = [
+      // Native menu events MUST stay in sync with main/index.ts sends and
+      // HotkeyManager subscriptions — all three reference MENU_CHANNELS.
+      const validChannels: string[] = [
+        ...MENU_CHANNELS,
         'export:progress',
         'whisper:progress',
         'startup:validation',

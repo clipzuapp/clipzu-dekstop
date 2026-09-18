@@ -3,9 +3,71 @@ import { join } from 'path'
 import { tmpdir } from 'os'
 import { randomUUID } from 'crypto'
 import { existsSync } from 'fs'
+import { StringDecoder } from 'string_decoder'
 import { app } from 'electron'
 import { toAssColor } from '../../shared/utils/color'
 import type { ExportCaptionStyle } from '../../shared/utils/srt'
+import {
+  escapeFilterPath as sharedEscapeFilterPath,
+  formatStderrMessage as sharedFormatStderrMessage,
+  classifyFfmpegError as sharedClassifyFfmpegError,
+  buildFfmpegError as sharedBuildFfmpegError,
+  withEnableWindow,
+  appendCappedText,
+} from '../../shared/export/ffmpegText'
+import type {
+  ExportAnimatedFilter,
+  ExportTimeSegment,
+  SlideGeometry,
+  ZoomGeometry,
+} from '../../shared/export/exportGraph'
+import { fmtFilterNumber } from '../../shared/export/exportGraph'
+
+/** Cap on retained stderr per process (Phase 8): ring, not concat-O(n^2). */
+const MAX_RETAINED_STDERR = 16 * 1024
+
+/**
+ * Append a chunk to a capped stderr buffer (shared helper).
+ */
+function appendCappedStderr(current: string, chunk: string): string {
+  return appendCappedText(current, chunk, MAX_RETAINED_STDERR)
+}
+
+/**
+ * Build an animated scale expression for a zoom transition.
+ * scale(t) = from -> to across [start,end] (absolute seconds); 1 otherwise.
+ * Caller wraps it in single quotes inside the scale filter (contains commas).
+ */
+function zoomScaleExpr(geom: ZoomGeometry, clipStartMs: number): string {
+  const spanSec = (geom.endMs - geom.startMs) / 1000
+  if (spanSec <= 0) return '1'
+  const s = ((clipStartMs + geom.startMs) / 1000).toFixed(3)
+  const e = ((clipStartMs + geom.endMs) / 1000).toFixed(3)
+  const delta = geom.toScale - geom.fromScale
+  const expr = `${fmtFilterNumber(geom.fromScale)}+${fmtFilterNumber(delta)}*((t-${s})/${spanSec.toFixed(3)})`
+  return `if(between(t,${s},${e}),${expr},1)`
+}
+
+/**
+ * Build an animated overlay coordinate expression for a slide transition.
+ * value(t) = base + dim*frac(p) while t ∈ [start,end] (absolute seconds);
+ * base otherwise. `dim` is the output dimension on the geometry's axis.
+ * Caller wraps the result in single quotes (it contains commas).
+ */
+function slideOffsetExpr(
+  geom: SlideGeometry,
+  baseValue: string,
+  clipStartMs: number,
+  dim: number
+): string {
+  const spanSec = (geom.endMs - geom.startMs) / 1000
+  if (spanSec <= 0) return baseValue
+  const s = ((clipStartMs + geom.startMs) / 1000).toFixed(3)
+  const e = ((clipStartMs + geom.endMs) / 1000).toFixed(3)
+  const delta = geom.toFrac - geom.fromFrac
+  const frac = `${fmtFilterNumber(geom.fromFrac)}+${fmtFilterNumber(delta)}*((t-${s})/${spanSec.toFixed(3)})`
+  return `if(between(t,${s},${e}),${baseValue}+${dim}*(${frac}),${baseValue})`
+}
 
 /** req 2.1 — Single authoritative CRF policy for export encoders */
 const CRF_H264 = { fast: 20, slow: 18 } as const
@@ -87,40 +149,24 @@ export class FFmpegService {
 
   /**
    * Escape a path for use inside an FFmpeg filter graph string.
-   * Backslashes become forward slashes; colons are escaped as \:
-   * Single quotes are escaped as \' for safe embedding in filter options.
+   * Delegates to the shared pure helper (unit-tested under node:test).
    */
   static escapeFilterPath(p: string): string {
-    return p.replace(/\\/g, '/').replace(/:/g, '\\:').replace(/'/g, "\\'")
+    return sharedEscapeFilterPath(p)
   }
 
   /** req 2.20 — Include head and tail of stderr in error messages */
   static formatStderrMessage(stderr: string): string {
-    if (stderr.length <= 600) return stderr.trim()
-    return `${stderr.slice(0, 300).trim()}...${stderr.slice(-300).trim()}`
+    return sharedFormatStderrMessage(stderr)
   }
 
   /** req 2.18 — Classify common FFmpeg failure patterns */
   static classifyFfmpegError(stderr: string): string | null {
-    const patterns = [
-      /Stream specifier[^\n]*does not match[^\n]*/i,
-      /Invalid option[^\n]*/i,
-      /No such file or directory[^\n]*/i,
-      /Error while opening encoder[^\n]*/i,
-      /moov atom not found[^\n]*/i
-    ]
-    for (const pattern of patterns) {
-      const match = stderr.match(pattern)
-      if (match) return match[0].trim()
-    }
-    return null
+    return sharedClassifyFfmpegError(stderr)
   }
 
   static buildFfmpegError(code: number | null, stderr: string): Error {
-    const classified = FFmpegService.classifyFfmpegError(stderr)
-    const body = FFmpegService.formatStderrMessage(stderr)
-    const prefix = classified ? `${classified}: ` : ''
-    return new Error(`FFmpeg exited with code ${code}: ${prefix}${body}`)
+    return sharedBuildFfmpegError(code, stderr)
   }
 
   /** Parse FFmpeg stderr progress line */
@@ -154,10 +200,13 @@ export class FFmpegService {
 
     const promise = new Promise<void>((resolve, reject) => {
       let stderr = ''
+      // UTF-8 policy (Phase 9): StringDecoder never splits a multi-byte
+      // sequence across chunks (CJK/emoji log lines stay intact).
+      const decoder = new StringDecoder('utf8')
 
       ffmpegProcess.stderr?.on('data', (data: Buffer) => {
-        const line = data.toString()
-        stderr += line
+        const line = decoder.write(data)
+        stderr = appendCappedStderr(stderr, line)
         if (onProgress) {
           const progress = FFmpegService.parseProgress(line, totalDurationMs)
           if (progress) onProgress(progress)
@@ -194,9 +243,11 @@ export class FFmpegService {
 
       let stdout = ''
       let stderr = ''
+      const decoder = new StringDecoder('utf8')
+      const errDecoder = new StringDecoder('utf8')
 
-      probeProcess.stdout?.on('data', (data: Buffer) => { stdout += data.toString() })
-      probeProcess.stderr?.on('data', (data: Buffer) => { stderr += data.toString() })
+      probeProcess.stdout?.on('data', (data: Buffer) => { stdout += decoder.write(data) })
+      probeProcess.stderr?.on('data', (data: Buffer) => { stderr = appendCappedStderr(stderr, errDecoder.write(data)) })
 
       probeProcess.on('close', (code) => {
         if (code !== 0) return reject(new Error(`ffprobe failed: ${stderr}`))
@@ -241,7 +292,8 @@ export class FFmpegService {
     return new Promise((resolve) => {
       const proc = spawn(this.ffmpegPath, ['-encoders'], { stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true })
       let stdout = ''
-      proc.stdout?.on('data', (data: Buffer) => { stdout += data.toString() })
+      const decoder = new StringDecoder('utf8')
+      proc.stdout?.on('data', (data: Buffer) => { stdout += decoder.write(data) })
       proc.on('close', () => {
         resolve({
           nvenc: /h264_nvenc/.test(stdout),
@@ -270,15 +322,16 @@ export class FFmpegService {
 
       const chunks: Buffer[] = []
       let stderr = ''
+      const errDecoder = new StringDecoder('utf8')
 
       ffmpegProcess.stdout?.on('data', (data: Buffer) => { chunks.push(data) })
-      ffmpegProcess.stderr?.on('data', (data: Buffer) => { stderr += data.toString() })
+      ffmpegProcess.stderr?.on('data', (data: Buffer) => { stderr = appendCappedStderr(stderr, errDecoder.write(data)) })
 
       ffmpegProcess.on('close', (code) => {
         if (code === 0 && chunks.length > 0) {
           resolve(Buffer.concat(chunks).toString('base64'))
         } else {
-          reject(new Error(`Frame extraction failed: ${stderr.slice(-200)}`))
+          reject(new Error(`Frame extraction failed: ${FFmpegService.formatStderrMessage(stderr)}`))
         }
       })
 
@@ -329,7 +382,33 @@ export class FFmpegService {
     clipDurationMs?: number[]
     clipTrimStarts?: number[]
     clipSpeeds?: number[]
+    // Phase 7 (shared export graph): per-clip effect/modifier filters
+    // (static, stack order), keyframe-baked animated filters (clip-local ms),
+    // animated opacity segments (0-1 values, clip-local ms), ffmpeg blend
+    // mode name (null = normal overlay path), and resolved transition fade
+    // windows. All produced by buildExportGraph — this function only applies.
+    clipVideoFilters?: string[][]
+    clipVideoAnimated?: ExportAnimatedFilter[][]
+    clipAnimatedOpacity?: ExportTimeSegment[][]
+    clipAnimatedVolume?: ExportTimeSegment[][]
+    clipBlends?: (string | null)[]
+    clipTransitionFadeInMs?: number[]
+    clipTransitionFadeOutMs?: number[]
+    /** Geometric slide offsets (overlay x/y expressions), from the graph. */
+    clipSlideOut?: (SlideGeometry | null)[]
+    clipSlideIn?: (SlideGeometry | null)[]
+    /** Geometric zoom scales (scale eval=frame), from the graph. */
+    clipZoomOut?: (ZoomGeometry | null)[]
+    clipZoomIn?: (ZoomGeometry | null)[]
+    // Phase 7 ignored-knob wiring: range trims output, audioOnly drops the
+    // video graph, bitrate overrides CRF, useNvenc selects h264_nvenc.
+    exportFrameRange?: { startMs: number; endMs: number } | null
+    audioOnly?: boolean
+    bitrateKbps?: number | null
+    bitrateMode?: 'auto' | 'cbr' | 'vbr'
+    useNvenc?: boolean
     audioTracks: Array<{ path: string; startMs: number; volume: number; trimStart?: number; durationMs?: number; fadeInMs?: number; fadeOutMs?: number }>
+    audioAnimatedVolume?: ExportTimeSegment[][]
     srtPath: string | null
     captionStyle: ExportCaptionStyle | null
     outputWidth: number; outputHeight: number
@@ -344,7 +423,11 @@ export class FFmpegService {
       clipPaths, clipTrackIndices, clipHasAudio, clipHidden, clipVideoMuted,
       clipTransforms, clipVolumes,
       clipStartMs, clipDurationMs, clipTrimStarts, clipSpeeds,
-      audioTracks, srtPath, captionStyle, outputWidth, outputHeight,
+      clipVideoFilters, clipVideoAnimated, clipAnimatedOpacity, clipAnimatedVolume,
+      clipBlends, clipTransitionFadeInMs, clipTransitionFadeOutMs,
+      clipSlideOut, clipSlideIn, clipZoomOut, clipZoomIn,
+      exportFrameRange, audioOnly, bitrateKbps, bitrateMode, useNvenc,
+      audioTracks, audioAnimatedVolume, srtPath, captionStyle, outputWidth, outputHeight,
       projectWidth, projectHeight, fps, codec, qualityPreset, outputPath
     } = params
 
@@ -363,17 +446,24 @@ export class FFmpegService {
     audioTracks.forEach((track) => args.push('-i', track.path))
 
     // 1. Base video background (black, matches output resolution, fits totalDurationMs)
+    // RGBA throughout the composite chain: the `blend` path (non-normal blend
+    // modes) requires identical pixel formats on both inputs.
     const totalDurationMs = Math.max(1, params.totalDurationMs ?? 0)
     const durationSec = (totalDurationMs / 1000).toFixed(3)
-    filterParts.push(`color=c=black:s=${outputWidth}x${outputHeight}:d=${durationSec}[base]`)
+    if (!audioOnly) {
+      filterParts.push(`color=c=black:s=${outputWidth}x${outputHeight}:d=${durationSec},format=rgba[base]`)
+    }
 
     const isIdentity = (t: ClipTransformExport | null): boolean =>
       !t || (t.x === 0 && t.y === 0 && t.scaleX === 1 && t.scaleY === 1
         && t.rotation === 0 && t.opacity === 1
         && t.cropTop === 0 && t.cropBottom === 0 && t.cropLeft === 0 && t.cropRight === 0)
 
-    // Build per-clip filters (trim, speed, delay/setpts, crop, scale, rotate, opacity, pad, fade)
+    // Build per-clip filters (trim, speed, delay/setpts, crop, scale, rotate,
+    // opacity, EFFECT FILTERS from the shared export graph, fades, pad).
     // Hidden clips are skipped entirely — they contribute neither video nor audio to the output.
+    // audioOnly skips the whole video chain (no base, no overlays, -vn below).
+    if (!audioOnly) {
     clipOrder.forEach((origIdx) => {
       if (clipHidden?.[origIdx]) return  // hidden track — skip video
 
@@ -384,6 +474,8 @@ export class FFmpegService {
       const speedVal = Math.max(0.01, clipSpeeds?.[origIdx] ?? 1.0)  // guard zero/negative
       const fadeInMs = params.clipFadeInMs?.[origIdx] ?? 0
       const fadeOutMs = params.clipFadeOutMs?.[origIdx] ?? 0
+      const transInMs = clipTransitionFadeInMs?.[origIdx] ?? 0
+      const transOutMs = clipTransitionFadeOutMs?.[origIdx] ?? 0
 
       const delaySec = (startMs / 1000).toFixed(3)
       const trimStartSec = (trimStart / 1000).toFixed(3)
@@ -391,7 +483,11 @@ export class FFmpegService {
 
       const parts: string[] = []
 
-      // Trim & Speed & delay timestamp shifting (video stream level)
+      // Trim & Speed & delay timestamp shifting (video stream level).
+      // setpts shifts PTS onto the ABSOLUTE timeline, so every `st=` and
+      // `enable` window below is absolute ms — matching Preview, where a
+      // fade/keyframe runs relative to the clip's timeline position, not
+      // relative to its own first frame.
       const ptsExpr = `(PTS-STARTPTS)/${speedVal}+${delaySec}/TB`
       parts.push(`trim=start=${trimStartSec}:duration=${durationSecVal},setpts=${ptsExpr}`)
 
@@ -409,19 +505,51 @@ export class FFmpegService {
           const rad = (t.rotation * Math.PI) / 180
           parts.push(`rotate=${rad.toFixed(6)}:fillcolor=none:ow=rotw(${rad.toFixed(6)}):oh=roth(${rad.toFixed(6)})`)
         }
-        // Opacity via colorchannelmixer alpha
-        if (t.opacity < 1) {
-          parts.push(`format=rgba,colorchannelmixer=aa=${t.opacity.toFixed(3)}`)
-        }
       }
 
-      // Video fade in/out — applied AFTER transform, BEFORE pad so it works on content only
+      // Opacity: keyframe-baked segments win over the static value (segments
+      // always cover the full clip range by construction).
+      const animOp = clipAnimatedOpacity?.[origIdx] ?? []
+      if (animOp.length > 0) {
+        parts.push('format=rgba')
+        for (const seg of animOp) {
+          parts.push(withEnableWindow(
+            `colorchannelmixer=aa=${fmtFilterNumber(seg.value)}`,
+            startMs + seg.startMs,
+            startMs + seg.endMs
+          ))
+        }
+      } else if (!isIdentity(t) && t && t.opacity < 1) {
+        parts.push(`format=rgba,colorchannelmixer=aa=${t.opacity.toFixed(3)}`)
+      }
+
+      // Phase 7: static effect filters from the shared export graph, in
+      // modifier-stack order (same order as Preview's CSS join).
+      for (const f of clipVideoFilters?.[origIdx] ?? []) {
+        parts.push(f)
+      }
+      // Phase 7: keyframe-baked effect segments (clip-local -> absolute).
+      for (const seg of clipVideoAnimated?.[origIdx] ?? []) {
+        parts.push(withEnableWindow(seg.filter, startMs + seg.startMs, startMs + seg.endMs))
+      }
+
+      // Video fade in/out — ABSOLUTE st. (Previously st=0 relative, which
+      // silently no-op'd every fade on clips starting after t=0 while
+      // Preview showed them. Clips at t=0 emit byte-identical args.)
       if (fadeInMs > 0) {
-        parts.push(`fade=t=in:st=0:d=${(fadeInMs / 1000).toFixed(3)}:alpha=1`)
+        parts.push(`fade=t=in:st=${(startMs / 1000).toFixed(3)}:d=${(fadeInMs / 1000).toFixed(3)}:alpha=1`)
       }
       if (fadeOutMs > 0) {
-        const fadeOutStartSec = Math.max(0, (durationMs - fadeOutMs) / 1000)
+        const fadeOutStartSec = Math.max(0, (startMs + durationMs - fadeOutMs) / 1000)
         parts.push(`fade=t=out:st=${fadeOutStartSec.toFixed(3)}:d=${(fadeOutMs / 1000).toFixed(3)}:alpha=1`)
+      }
+      // Phase 7: resolved transition crossfade/dip windows (absolute).
+      if (transInMs > 0) {
+        parts.push(`fade=t=in:st=${(startMs / 1000).toFixed(3)}:d=${(transInMs / 1000).toFixed(3)}:alpha=1`)
+      }
+      if (transOutMs > 0) {
+        const transOutStartSec = Math.max(0, (startMs + durationMs - transOutMs) / 1000)
+        parts.push(`fade=t=out:st=${transOutStartSec.toFixed(3)}:d=${(transOutMs / 1000).toFixed(3)}:alpha=1`)
       }
 
       // Pad with transparent background for compositing/overlays
@@ -429,12 +557,24 @@ export class FFmpegService {
       parts.push(`scale=${outputWidth}:${outputHeight}:force_original_aspect_ratio=decrease`)
       parts.push(`pad=${outputWidth}:${outputHeight}:(ow-iw)/2:(oh-ih)/2:color=black@0`)
 
+      // Zoom transition: time-varying scale on the padded frame (centered by
+      // the overlay below). Preview parity: zoom-in/out scale + full fade.
+      const zoomGeom = (clipZoomIn?.[origIdx] ?? clipZoomOut?.[origIdx]) ?? null
+      if (zoomGeom) {
+        const z = zoomScaleExpr(zoomGeom, startMs)
+        parts.push(`scale=w='trunc(iw*(${z})/2)*2':h='trunc(ih*(${z})/2)*2':eval=frame`)
+      }
+
       filterParts.push(`[${origIdx}:v]${parts.join(',')}[vs${origIdx}]`)
     })
+    }
 
-    // Overlay compositions — apply actual X/Y transform offsets
-    // Hidden clips are excluded from overlay chain.
+    // Overlay compositions — apply actual X/Y transform offsets.
+    // Hidden clips are excluded from overlay chain. Clips with a non-normal
+    // blend mode take the `blend` path (per-plane modes, alpha passthrough —
+    // matches CSS mix-blend-mode compositing); everything else uses `overlay`.
     let videoFilter = '[base]'
+    if (!audioOnly) {
     clipOrder.forEach((origIdx, idx) => {
       if (clipHidden?.[origIdx]) return  // hidden — skip overlay
 
@@ -444,29 +584,57 @@ export class FFmpegService {
       const delaySec = (startMs / 1000).toFixed(3)
       const endSec = ((startMs + durationMs) / 1000).toFixed(3)
 
-      let overlayX = '0'
-      let overlayY = '0'
+      // Zoom transition: the padded frame is scaled about its center, so the
+      // overlay below is centered (x=(W-w)/2) rather than top-left aligned.
+      const zoom = (clipZoomIn?.[origIdx] ?? clipZoomOut?.[origIdx]) ?? null
+
+      let overlayX = zoom ? '(W-w)/2' : '0'
+      let overlayY = zoom ? '(H-h)/2' : '0'
       if (t && (t.x !== 0 || t.y !== 0)) {
         const xPx = Math.round((t.x / pW) * outputWidth)
         const yPx = Math.round((t.y / pH) * outputHeight)
-        overlayX = xPx.toString()
-        overlayY = yPx.toString()
+        overlayX = zoom ? `${overlayX}+${xPx}` : xPx.toString()
+        overlayY = zoom ? `${overlayY}+${yPx}` : yPx.toString()
+      }
+
+      // Geometric slide transitions: animate the overlay coordinate.
+      const slideOut = clipSlideOut?.[origIdx] ?? null
+      const slideIn = clipSlideIn?.[origIdx] ?? null
+      const hasSlide = slideOut !== null || slideIn !== null
+      for (const geom of [slideOut, slideIn]) {
+        if (!geom) continue
+        if (geom.axis === 'x') {
+          overlayX = slideOffsetExpr(geom, overlayX, startMs, outputWidth)
+        } else {
+          overlayY = slideOffsetExpr(geom, overlayY, startMs, outputHeight)
+        }
       }
 
       const nextFilter = `[v_over_${idx}]`
       // Use gte(t,start)*lt(t,end) instead of between() to get exclusive upper bound.
       // between(t,a,b) is inclusive on both ends — at a hard cut where clip A ends at t=5.0
       // and clip B starts at t=5.0, both would render for one frame. gte/lt avoids that.
-      filterParts.push(`${videoFilter}[vs${origIdx}]overlay=x=${overlayX}:y=${overlayY}:enable='gte(t,${delaySec})*lt(t,${endSec})':eof_action=pass${nextFilter}`)
+      const blend = clipBlends?.[origIdx] ?? null
+      if (blend) {
+        filterParts.push(`${videoFilter}[vs${origIdx}]blend=c0_mode=${blend}:c1_mode=${blend}:c2_mode=${blend}:c3_mode=normal:all_opacity=1:enable='gte(t,${delaySec})*lt(t,${endSec})':eof_action=pass${nextFilter}`)
+      } else {
+        const overlayXY = hasSlide
+          ? `x='${overlayX}':y='${overlayY}'`
+          : `x=${overlayX}:y=${overlayY}`
+        filterParts.push(`${videoFilter}[vs${origIdx}]overlay=${overlayXY}:enable='gte(t,${delaySec})*lt(t,${endSec})':eof_action=pass${nextFilter}`)
+      }
       videoFilter = nextFilter
     })
+    }
 
     // Rename to composited
-    filterParts.push(`${videoFilter}null[composited]`)
-    videoFilter = '[composited]'
+    if (!audioOnly) {
+      filterParts.push(`${videoFilter}null[composited]`)
+      videoFilter = '[composited]'
+    }
 
-    // Burn-in subtitles/captions
-    if (srtPath && captionStyle) {
+    // Burn-in subtitles/captions (video path only)
+    if (srtPath && captionStyle && !audioOnly) {
       const escapedSrtPath = srtPath.replace(/\\/g, '/').replace(/:/g, '\\:')
       const isAssFile = /\.ass$/i.test(srtPath)
       const fontsDir = FFmpegService.getFontsDir()
@@ -497,7 +665,7 @@ export class FFmpegService {
       videoFilter = '[captioned]'
     }
 
-    if (fps && fps > 0) {
+    if (fps && fps > 0 && !audioOnly) {
       filterParts.push(`${videoFilter}fps=${fps}[vout]`)
       videoFilter = '[vout]'
     }
@@ -536,7 +704,10 @@ export class FFmpegService {
       const atempoStr = atempoFilters.length > 0 ? `,${atempoFilters.join(',')}` : ''
 
       const audioVol = cv?.volume ?? 1
-      const volStr = audioVol !== 1 ? `,volume=${audioVol.toFixed(3)}` : ''
+      // Phase 7: keyframed volume automation wins over the static value
+      // (segments always cover the full clip range by construction).
+      const animVol = clipAnimatedVolume?.[i] ?? []
+      const volStr = animVol.length > 0 ? '' : audioVol !== 1 ? `,volume=${audioVol.toFixed(3)}` : ''
 
       // Audio fade in/out — applied after speed and volume
       let fadeStr = ''
@@ -548,7 +719,13 @@ export class FFmpegService {
         fadeStr += `,afade=t=out:st=${fadeOutStartSec.toFixed(3)}:d=${(fadeOutMs / 1000).toFixed(3)}`
       }
 
-      filterParts.push(`[${i}:a:0]${AUDIO_NORM_FILTER},atrim=start=${trimStartSec}:duration=${durationSecVal}${atempoStr},adelay=${delayMs}|${delayMs}${volStr}${fadeStr}[ac${i}]`)
+      // Phase 7: baked volume automation on the ABSOLUTE timeline.
+      let animVolStr = ''
+      for (const seg of animVol) {
+        animVolStr += `,${withEnableWindow(`volume=${fmtFilterNumber(seg.value)}`, startMs + seg.startMs, startMs + seg.endMs)}`
+      }
+
+      filterParts.push(`[${i}:a:0]${AUDIO_NORM_FILTER},atrim=start=${trimStartSec}:duration=${durationSecVal}${atempoStr},adelay=${delayMs}|${delayMs}${volStr}${fadeStr}${animVolStr}[ac${i}]`)
       audioInputs.push(`[ac${i}]`)
     })
 
@@ -577,8 +754,16 @@ export class FFmpegService {
         fadeStr += `,afade=t=out:st=${fadeOutStartSec.toFixed(3)}:d=${(trackFadeOut / 1000).toFixed(3)}`
       }
 
+      // Phase 7: baked volume automation (absolute timeline); wins over static.
+      const animVol = audioAnimatedVolume?.[i] ?? []
+      const volPart = animVol.length > 0 ? '' : `,volume=${vol}`
+      let animVolStr = ''
+      for (const seg of animVol) {
+        animVolStr += `,${withEnableWindow(`volume=${fmtFilterNumber(seg.value)}`, delayMs + seg.startMs, delayMs + seg.endMs)}`
+      }
+
       filterParts.push(
-        `[${inputIdx}:a:0]${AUDIO_NORM_FILTER},atrim=start=${trimStartSec}:duration=${durSec},adelay=${delayMs}|${delayMs},volume=${vol}${fadeStr}[av${i}]`
+        `[${inputIdx}:a:0]${AUDIO_NORM_FILTER},atrim=start=${trimStartSec}:duration=${durSec},adelay=${delayMs}|${delayMs}${volPart}${fadeStr}${animVolStr}[av${i}]`
       )
       audioInputs.push(`[av${i}]`)
     })
@@ -594,37 +779,79 @@ export class FFmpegService {
     }
 
     if (filterParts.length > 0) args.push('-filter_complex', filterParts.join(';'))
-    args.push('-map', videoFilter)
+    if (audioOnly) {
+      // Audio-only export: no video stream at all (UI knob was previously
+      // forwarded but ignored — the file came out with video anyway).
+      args.push('-vn')
+    } else {
+      args.push('-map', videoFilter)
+    }
     args.push(...audioMapArgs)
 
     const hasAudioOutput = audioInputs.length > 0
+    // Phase 7: explicit bitrate wins over CRF. CBR pins min/max/bufsize;
+    // VBR/auto sets target + ceiling and keeps encoder quality logic.
+    const hasBitrate = typeof bitrateKbps === 'number' && bitrateKbps > 0
+    const bitrateStr = hasBitrate ? `${Math.round(bitrateKbps as number)}k` : null
+    const useHwAccel = useNvenc === true && codec === 'h264'
 
     switch (codec) {
       case 'h264':
-        args.push('-c:v', 'libx264', '-preset', qualityPreset, '-crf', String(CRF_H264[qualityPreset]))
+        if (useHwAccel) {
+          args.push('-c:v', 'h264_nvenc', '-preset', qualityPreset === 'fast' ? 'p4' : 'p7')
+          if (bitrateStr) {
+            args.push('-b:v', bitrateStr)
+            if (bitrateMode === 'cbr') args.push('-minrate', bitrateStr, '-maxrate', bitrateStr, '-bufsize', `${Math.round((bitrateKbps as number) * 2)}k`)
+          } else {
+            args.push('-cq', qualityPreset === 'fast' ? '23' : '20')
+          }
+        } else {
+          args.push('-c:v', 'libx264', '-preset', qualityPreset)
+          if (bitrateStr) {
+            args.push('-b:v', bitrateStr)
+            if (bitrateMode === 'cbr') args.push('-minrate', bitrateStr, '-maxrate', bitrateStr, '-bufsize', `${Math.round((bitrateKbps as number) * 2)}k`)
+          } else {
+            args.push('-crf', String(CRF_H264[qualityPreset]))
+          }
+        }
         if (hasAudioOutput) args.push('-c:a', 'aac', '-b:a', qualityPreset === 'fast' ? '160k' : '192k')
         // req 2.13 + 2.14 + 2.15
-        args.push('-pix_fmt', 'yuv420p', '-color_range', 'tv', '-fps_mode', 'cfr')
+        if (!audioOnly) args.push('-pix_fmt', 'yuv420p', '-color_range', 'tv', '-fps_mode', 'cfr')
         break
       case 'h265':
-        args.push('-c:v', 'libx265', '-preset', qualityPreset, '-crf', String(CRF_H265[qualityPreset]))
+        args.push('-c:v', 'libx265', '-preset', qualityPreset)
+        if (bitrateStr) {
+          args.push('-b:v', bitrateStr)
+          if (bitrateMode === 'cbr') args.push('-minrate', bitrateStr, '-maxrate', bitrateStr, '-bufsize', `${Math.round((bitrateKbps as number) * 2)}k`)
+        } else {
+          args.push('-crf', String(CRF_H265[qualityPreset]))
+        }
         if (hasAudioOutput) args.push('-c:a', 'aac', '-b:a', '192k')
-        args.push('-pix_fmt', 'yuv420p10le', '-color_range', 'tv', '-fps_mode', 'cfr')
+        if (!audioOnly) args.push('-pix_fmt', 'yuv420p10le', '-color_range', 'tv', '-fps_mode', 'cfr')
         break
       case 'prores':
         args.push('-c:v', 'prores_ks', '-profile:v', '3')
         if (hasAudioOutput) args.push('-c:a', 'pcm_s16le')
         break
       case 'vp9':
-        args.push('-c:v', 'libvpx-vp9', '-crf', String(CRF_VP9[qualityPreset]), '-b:v', '0')
+        args.push('-c:v', 'libvpx-vp9', '-b:v', bitrateStr ?? '0')
+        if (!bitrateStr) args.push('-crf', String(CRF_VP9[qualityPreset]))
         if (hasAudioOutput) args.push('-c:a', 'libopus', '-b:a', qualityPreset === 'fast' ? '128k' : '192k')
-        args.push('-pix_fmt', 'yuv420p', '-color_range', 'tv', '-fps_mode', 'cfr')
+        if (!audioOnly) args.push('-pix_fmt', 'yuv420p', '-color_range', 'tv', '-fps_mode', 'cfr')
         break
     }
 
-    // Limit output duration exactly to project duration and write to output file
-    args.push('-t', (totalDurationMs / 1000).toFixed(3))
-    args.push('-movflags', '+faststart', '-y', outputPath)
+    // Phase 7: frame-range export trims the muxed output (absolute timeline
+    // graph is unchanged; -ss/-t as OUTPUT options seek/trim the result).
+    if (exportFrameRange && exportFrameRange.endMs > exportFrameRange.startMs) {
+      args.push('-ss', (Math.max(0, exportFrameRange.startMs) / 1000).toFixed(3))
+      args.push('-t', ((exportFrameRange.endMs - exportFrameRange.startMs) / 1000).toFixed(3))
+    } else {
+      // Limit output duration exactly to project duration and write to output file
+      args.push('-t', (totalDurationMs / 1000).toFixed(3))
+    }
+    if (!audioOnly) args.push('-movflags', '+faststart')
+    args.push('-y', outputPath)
     return args
   }
 
@@ -676,8 +903,10 @@ export class FFmpegService {
       const proc = spawn(this.ffprobePath, args, { stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true })
       let stdout = ''
       let stderr = ''
-      proc.stdout?.on('data', (d: Buffer) => { stdout += d.toString() })
-      proc.stderr?.on('data', (d: Buffer) => { stderr += d.toString() })
+      const decoder = new StringDecoder('utf8')
+      const errDecoder = new StringDecoder('utf8')
+      proc.stdout?.on('data', (d: Buffer) => { stdout += decoder.write(d) })
+      proc.stderr?.on('data', (d: Buffer) => { stderr = appendCappedStderr(stderr, errDecoder.write(d)) })
       proc.on('close', (code) => {
         if (code !== 0) {
           reject(new Error(`ffprobe failed (${code}): ${FFmpegService.formatStderrMessage(stderr)}`))
@@ -709,13 +938,13 @@ export class FFmpegService {
   /** req 2.19 — Assert export output matches expected dimensions and duration */
   async validateExportOutput(
     outputPath: string,
-    expected: { width: number; height: number; totalDurationMs: number; expectAudio: boolean }
+    expected: { width: number; height: number; totalDurationMs: number; expectAudio: boolean; expectVideo?: boolean }
   ): Promise<void> {
     const probe = await this.probeExportOutput(outputPath)
-    if (!probe.hasVideo) {
+    if (expected.expectVideo !== false && !probe.hasVideo) {
       throw new Error('Post-export validation failed: no video stream in output')
     }
-    if (probe.width !== expected.width || probe.height !== expected.height) {
+    if (expected.expectVideo !== false && (probe.width !== expected.width || probe.height !== expected.height)) {
       throw new Error(
         `Post-export validation failed: expected ${expected.width}x${expected.height}, got ${probe.width}x${probe.height}`
       )
@@ -761,10 +990,11 @@ export class FFmpegService {
       this.lastExtractionProcess = ffmpegProcess
 
       let stderr = ''
+      const errDecoder = new StringDecoder('utf8')
 
       ffmpegProcess.stderr?.on('data', (data: Buffer) => {
-        const line = data.toString()
-        stderr += line
+        const line = errDecoder.write(data)
+        stderr = appendCappedStderr(stderr, line)
         if (onProgress && totalDurationMs && totalDurationMs > 0) {
           const parsed = FFmpegService.parseProgress(line, totalDurationMs)
           if (parsed) {
@@ -790,7 +1020,7 @@ export class FFmpegService {
           onProgress?.(100)
           resolve(output)
         } else {
-          reject(new Error(`FFmpeg audio extraction failed with code ${code}: ${stderr.slice(-500)}`))
+          reject(new Error(`FFmpeg audio extraction failed with code ${code}: ${FFmpegService.formatStderrMessage(stderr)}`))
         }
       })
 

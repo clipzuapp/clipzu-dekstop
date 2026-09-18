@@ -1,10 +1,20 @@
 import { spawn, spawnSync, ChildProcess } from 'child_process'
 import { join, dirname, basename } from 'path'
 import { openSync, readSync, closeSync, unlinkSync, existsSync, readFileSync, writeFileSync, statSync } from 'fs'
+import { StringDecoder } from 'string_decoder'
 import { tmpdir, cpus, totalmem, release } from 'os'
 import { randomUUID } from 'crypto'
 import { parseSRT, type CaptionEntry } from '../../shared/utils/srt'
+import { stripBOM } from '../../shared/utils/encoding'
+import { appendCappedText, formatStderrMessage } from '../../shared/export/ffmpegText'
 import type { FFmpegService } from './FFmpegService'
+
+/**
+ * Cap on retained whisper stderr per transcription (Phase 8/9). The log is
+ * only used for progress regex + failure tail; transcript text comes from
+ * the SRT/JSON sidecar files, so capping loses nothing.
+ */
+const MAX_WHISPER_STDERR = 64 * 1024
 
 /** Discriminated failure modes for model validation */
 export type ValidationErrorType = 'crash' | 'timeout' | 'not_found' | 'startup_failed' | 'unknown'
@@ -166,7 +176,7 @@ export class WhisperService {
     try {
       const cachePath = WhisperService.getCachePath()
       if (!existsSync(cachePath)) return null
-      return JSON.parse(readFileSync(cachePath, 'utf-8'))
+      return JSON.parse(stripBOM(readFileSync(cachePath, 'utf-8')))
     } catch { return null }
   }
 
@@ -411,11 +421,15 @@ export class WhisperService {
         reject(new Error(`FFmpeg process error: ${err.message}`))
       })
 
-      proc.stdout?.on('data', (chunk: Buffer) => { stdout += chunk.toString() })
+      // UTF-8 policy (Phase 9): StringDecoder never splits a multi-byte
+      // sequence across chunks; stderr is tail-capped (Phase 8).
+      const outDecoder = new StringDecoder('utf8')
+      const errDecoder = new StringDecoder('utf8')
+      proc.stdout?.on('data', (chunk: Buffer) => { stdout += outDecoder.write(chunk) })
 
       proc.stderr?.on('data', (chunk: Buffer) => {
-        const text = chunk.toString()
-        stderr += text
+        const text = errDecoder.write(chunk)
+        stderr = appendCappedText(stderr, text, MAX_WHISPER_STDERR)
         const progressMatch = text.match(/progress\s*=\s*(\d+)%/)
         if (progressMatch && options.onProgress) {
           options.onProgress(Math.min(95, 10 + parseInt(progressMatch[1], 10) * 0.85))
@@ -447,7 +461,7 @@ export class WhisperService {
         }
 
         if (code !== 0) {
-          return reject(new Error(`whisper-cli exited with code ${code}: ${stderr.slice(-500)}`))
+          return reject(new Error(`whisper-cli exited with code ${code}: ${formatStderrMessage(stderr)}`))
         }
 
         if (options.onProgress) options.onProgress(95)
@@ -610,7 +624,7 @@ export class WhisperService {
         }
 
         if (code !== 0) {
-          return reject(new Error(`whisper-cli exited with code ${code}: ${stderr.slice(-500)}`))
+          return reject(new Error(`whisper-cli exited with code ${code}: ${formatStderrMessage(stderr)}`))
         }
         if (options.onProgress) options.onProgress(95)
         let entries: CaptionEntry[] = []
@@ -1412,7 +1426,9 @@ export class WhisperService {
   private static parseJsonTokens(jsonContent: string): Array<Array<{ word: string; startMs: number; endMs: number }>> | null {
     let parsed: any
     try {
-      parsed = JSON.parse(jsonContent)
+      // UTF-8 policy (Phase 9): whisper.cpp may emit a BOM; strip it or
+      // JSON.parse throws and word timestamps silently fall back.
+      parsed = JSON.parse(stripBOM(jsonContent))
     } catch {
       console.warn('[WhisperService] JSON parse failed — invalid JSON syntax')
       return null

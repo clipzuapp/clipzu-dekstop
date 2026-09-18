@@ -1,5 +1,6 @@
 import Database from 'better-sqlite3'
 import { FFmpegService } from './FFmpegService'
+import { mapWithLimit, MEDIA_FANOUT_LIMIT } from '../../shared/utils/concurrency'
 
 /**
  * ThumbnailService - SQLite LRU cache for video frame thumbnails.
@@ -61,16 +62,19 @@ export class ThumbnailService {
     return base64
   }
 
-  /** Get multiple thumbnails (strip of frames) */
+  /**
+   * Get multiple thumbnails (strip of frames). Bounded parallelism (Phase 8):
+   * at most MEDIA_FANOUT_LIMIT concurrent ffmpeg spawns — an N-frame strip
+   * no longer fans out N processes at once.
+   */
   async getThumbnailStrip(
     clipPath: string, durationMs: number, frameCount = 10, width = 80
   ): Promise<string[]> {
     const interval = durationMs / frameCount
-    const promises: Promise<string>[] = []
-    for (let i = 0; i < frameCount; i++) {
-      promises.push(this.getOrCreateThumbnail(clipPath, Math.round(i * interval), width))
-    }
-    return Promise.all(promises)
+    const offsets = Array.from({ length: frameCount }, (_, i) => Math.round(i * interval))
+    return mapWithLimit(offsets, MEDIA_FANOUT_LIMIT, (frameMs) =>
+      this.getOrCreateThumbnail(clipPath, frameMs, width)
+    )
   }
 
   /** Evict oldest/least-accessed entries when over the max cache size */

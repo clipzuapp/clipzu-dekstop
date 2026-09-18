@@ -3,6 +3,12 @@ import { BrowserWindow } from 'electron'
 import { unlink } from 'fs/promises'
 import { FFmpegService, FFmpegProgress, ClipTransformExport } from './FFmpegService'
 import type { ExportCaptionStyle } from '../../shared/utils/srt'
+import type {
+  ExportAnimatedFilter,
+  ExportTimeSegment,
+  SlideGeometry,
+  ZoomGeometry,
+} from '../../shared/export/exportGraph'
 
 // Re-export so callers that previously imported from here keep working
 export type { ExportCaptionStyle }
@@ -37,6 +43,24 @@ interface ExportParams {
   clipDurationMs?: number[]
   clipTrimStarts?: number[]
   clipSpeeds?: number[]
+  // Phase 7 (shared export graph output — see buildExportGraph).
+  clipVideoFilters?: string[][]
+  clipVideoAnimated?: ExportAnimatedFilter[][]
+  clipAnimatedOpacity?: ExportTimeSegment[][]
+  clipAnimatedVolume?: ExportTimeSegment[][]
+  clipBlends?: (string | null)[]
+  clipTransitionFadeInMs?: number[]
+  clipTransitionFadeOutMs?: number[]
+  clipSlideOut?: (SlideGeometry | null)[]
+  clipSlideIn?: (SlideGeometry | null)[]
+  clipZoomOut?: (ZoomGeometry | null)[]
+  clipZoomIn?: (ZoomGeometry | null)[]
+  audioAnimatedVolume?: ExportTimeSegment[][]
+  exportFrameRange?: { startMs: number; endMs: number } | null
+  audioOnly?: boolean
+  bitrateKbps?: number | null
+  bitrateMode?: 'auto' | 'cbr' | 'vbr'
+  useNvenc?: boolean
   audioTracks: Array<{ path: string; startMs: number; volume: number; trimStart?: number; durationMs?: number; fadeInMs?: number; fadeOutMs?: number }>
   srtPath: string | null
   captionStyle: ExportCaptionStyle | null
@@ -123,6 +147,13 @@ class ExportQueueManager {
     }
 
     // req 2.2 — Single-pass encode at full target resolution (no half-res intermediate)
+    // Phase 7: frame-range exports validate/parse progress against the RANGE
+    // length, not the full timeline.
+    const range = params.exportFrameRange
+    const rangeValid = !!range && range.endMs > range.startMs
+    const effectiveDurationMs = rangeValid
+      ? range!.endMs - range!.startMs
+      : params.totalDurationMs
     const args = this.ffmpeg.buildExportCommand({
       clipPaths: params.clipPaths,
       clipTrackIndices: params.clipTrackIndices,
@@ -137,7 +168,24 @@ class ExportQueueManager {
       clipDurationMs: params.clipDurationMs,
       clipTrimStarts: params.clipTrimStarts,
       clipSpeeds: params.clipSpeeds,
+      clipVideoFilters: params.clipVideoFilters,
+      clipVideoAnimated: params.clipVideoAnimated,
+      clipAnimatedOpacity: params.clipAnimatedOpacity,
+      clipAnimatedVolume: params.clipAnimatedVolume,
+      clipBlends: params.clipBlends,
+      clipTransitionFadeInMs: params.clipTransitionFadeInMs,
+      clipTransitionFadeOutMs: params.clipTransitionFadeOutMs,
+      clipSlideOut: params.clipSlideOut,
+      clipSlideIn: params.clipSlideIn,
+      clipZoomOut: params.clipZoomOut,
+      clipZoomIn: params.clipZoomIn,
+      exportFrameRange: rangeValid ? range : null,
+      audioOnly: params.audioOnly,
+      bitrateKbps: params.bitrateKbps,
+      bitrateMode: params.bitrateMode,
+      useNvenc: params.useNvenc,
       audioTracks: params.audioTracks,
+      audioAnimatedVolume: params.audioAnimatedVolume,
       srtPath: params.srtPath,
       captionStyle: params.captionStyle,
       outputWidth: params.outputWidth,
@@ -147,7 +195,7 @@ class ExportQueueManager {
       fps: params.fps,
       codec: params.codec,
       qualityPreset: params.qualityPreset,
-      totalDurationMs: params.totalDurationMs,
+      totalDurationMs: effectiveDurationMs,
       outputPath: params.outputPath
     })
 
@@ -161,7 +209,7 @@ class ExportQueueManager {
       this.sendProgress(job.id, progress.percent, progress.fps, progress.speed)
     }
 
-    const { process: ffmpegProcess, promise } = this.ffmpeg.spawn(args, params.totalDurationMs, onProgress)
+    const { process: ffmpegProcess, promise } = this.ffmpeg.spawn(args, effectiveDurationMs, onProgress)
 
     this.activeJobs.set(job.id, { job, process: ffmpegProcess, controller, tempFiles })
 
@@ -197,8 +245,9 @@ class ExportQueueManager {
           await this.ffmpeg.validateExportOutput(params.outputPath, {
             width: params.outputWidth,
             height: params.outputHeight,
-            totalDurationMs: params.totalDurationMs,
-            expectAudio
+            totalDurationMs: effectiveDurationMs,
+            expectAudio,
+            expectVideo: !params.audioOnly
           })
         } catch (validationErr) {
           await finishJob('error', (validationErr as Error).message)

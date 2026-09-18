@@ -4,6 +4,9 @@
     "src/renderer/**/*",
     "src/shared/**/*"
   ],
+  "exclude": [
+    "src/shared/project/integration/**/*"
+  ],
   "compilerOptions": {
     "composite": true,
     "outDir": "./out",

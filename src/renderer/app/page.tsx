@@ -8,6 +8,7 @@ import { MediaPanel } from '../components/MediaPanel/index'
 import { Inspector } from '../components/Inspector/index'
 import { ExportDialog } from '../components/ExportDialog/index'
 import { ConfirmDialog } from '../components/ConfirmDialog/index'
+import { RelinkDialog } from '../components/RelinkDialog/index'
 import { ShortcutsDialog } from '../components/ShortcutsDialog/index'
 import { ToastContainer } from '../components/Toast/index'
 import { HotkeyManager } from '../components/HotkeyManager'
@@ -23,9 +24,8 @@ import { ErrorBoundary } from '../components/ErrorBoundary/index'
 import { preloadSounds } from '../services/NotificationSound'
 import { Undo2, Redo2, Scissors, Hand, ZoomIn, MousePointer2 } from 'lucide-react'
 import { useExport } from '../store/useExport'
-import { useProject, type ProjectState, type ProjectActions } from '../store/useProject'
+import { useTimeline, createTextClip, performUndo, performRedo } from '../store/useTimeline'
 import { useStartup } from '../store/useStartup'
-import { useTimeline, createTextClip } from '../store/useTimeline'
 import { useCaption, defaultStyle } from '../store/useCaption'
 import { useToast } from '../store/useToast'
 import { usePreviewView } from '../store/usePreviewView'
@@ -133,12 +133,11 @@ export default function Page(): JSX.Element {
     window.addEventListener('mouseup', onUp)
   }, [])
 
-  const { undo, redo } = useProject(
-    useShallow((s: ProjectState & ProjectActions) => ({
-      undo: s.undo,
-      redo: s.redo
-    }))
-  )
+  // Toolbar undo/redo go through the same centralized operations as the
+  // hotkeys (capture + pop + apply). Calling the raw store actions here used
+  // to pop history WITHOUT applying it — silently eating undo entries.
+  const handleToolbarUndo = useCallback(() => { performUndo() }, [])
+  const handleToolbarRedo = useCallback(() => { performRedo() }, [])
 
   const { validation, showBanner, setValidation, dismissBanner } = useStartup(
     useShallow((s) => ({
@@ -233,8 +232,6 @@ export default function Page(): JSX.Element {
         onShortcuts={() => setShowShortcuts(true)}
         activeTool={activeTool}
         setActiveTool={setActiveTool}
-        onUndo={undo}
-        onRedo={redo}
         onAddText={handleAddText}
         activeLeftTab={activeLeftTab}
       />
@@ -243,7 +240,7 @@ export default function Page(): JSX.Element {
         {/* TOOLBAR — 38px fixed */}
         <header className="layout-toolbar">
           <div className="toolbar-group">
-            <h1 className="toolbar-brand">CAPCRAFT</h1>
+            <h1 className="toolbar-brand">CLIPZU</h1>
 
             <div className="separator" />
 
@@ -271,10 +268,10 @@ export default function Page(): JSX.Element {
           </div>
 
           <div className="toolbar-group toolbar-group-right">
-            <button className="toolbar-btn" onClick={undo} title="Undo (Ctrl+Z)">
+            <button className="toolbar-btn" onClick={handleToolbarUndo} title="Undo (Ctrl+Z)">
               <Undo2 size={14} />
             </button>
-            <button className="toolbar-btn" onClick={redo} title="Redo (Ctrl+Shift+Z)">
+            <button className="toolbar-btn" onClick={handleToolbarRedo} title="Redo (Ctrl+Shift+Z)">
               <Redo2 size={14} />
             </button>
 
@@ -430,6 +427,7 @@ export default function Page(): JSX.Element {
 
       {showShortcuts && <ShortcutsDialog onClose={() => setShowShortcuts(false)} />}
       <ConfirmDialog />
+      <RelinkDialog />
       <ToastContainer />
 
       {/* Fullscreen preview overlay — only renders the single Preview instance

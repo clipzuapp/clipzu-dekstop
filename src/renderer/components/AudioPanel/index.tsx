@@ -99,7 +99,7 @@ export function AudioPanel(): JSX.Element {
   // HTML5 drag-start: carry full SFX info for timeline drop
   const handleDragStart = (e: React.DragEvent, sfx: SFXFile): void => {
     e.dataTransfer.setData(
-      'application/capcraft-media',
+      'application/clipzu-media',
       JSON.stringify({
         path: sfx.path,
         durationMs: sfx.durationMs,

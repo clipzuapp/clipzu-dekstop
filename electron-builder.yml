@@ -1,5 +1,5 @@
-appId: com.capcraft.app
-productName: Capcraft
+appId: com.clipzu.desktop-beta
+productName: Clipzu Desktop Beta
 directories:
   buildResources: build
   output: dist
@@ -14,7 +14,7 @@ asarUnpack:
   - resources/**
   - node_modules/better-sqlite3/**
 win:
-  executableName: capcraft
+  executableName: clipzu
   target:
     - nsis
 nsis:
@@ -36,7 +36,7 @@ dmg:
 linux:
   target:
     - AppImage
-  maintainer: capcraft.app
+  maintainer: clipzu.app
   category: AudioVideo
 appImage:
   artifactName: ${name}-${version}.${ext}

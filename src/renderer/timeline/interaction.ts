@@ -1,5 +1,5 @@
 // ---------------------------------------------------------------------------
-// CapCraft Timeline Interaction Engine
+// Clipzu Timeline Interaction Engine
 // Phases 1, 2, 3, 7: State Machine · Hit Testing · Box Select · Snap
 // ---------------------------------------------------------------------------
 

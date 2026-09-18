@@ -1,6 +1,7 @@
 import { create } from 'zustand'
 import { immer } from 'zustand/middleware/immer'
 import type { CaptionStyle } from '../../shared/types/caption'
+import type { CanonicalExportConfig } from '../../shared/project/projectSchema'
 
 const EXPORT_PRESETS = {
   'tiktok-reels': { label: '9:16 — TikTok / Reels', width: 1080, height: 1920 },
@@ -26,7 +27,7 @@ interface ExportJob {
   completedAt?: number
 }
 
-interface ExportState {
+export interface ExportState {
   preset: PresetKey
   customWidth: number
   customHeight: number
@@ -77,6 +78,21 @@ interface ExportActions {
     clipDurationMs?: number[]
     clipTrimStarts?: number[]
     clipSpeeds?: number[]
+    // Phase 7: shared export graph output (buildExportGraph). Optional so
+    // older/test callers keep compiling; always sent by ExportDialog.
+    clipVideoFilters?: string[][]
+    clipVideoAnimated?: Array<Array<{ filter: string; startMs: number; endMs: number }>>
+    clipAnimatedOpacity?: Array<Array<{ startMs: number; endMs: number; value: number }>>
+    clipAnimatedVolume?: Array<Array<{ startMs: number; endMs: number; value: number }>>
+    clipBlends?: (string | null)[]
+    clipTransitionFadeInMs?: number[]
+    clipTransitionFadeOutMs?: number[]
+    clipSlideOut?: Array<{ axis: 'x' | 'y'; fromFrac: number; toFrac: number; startMs: number; endMs: number } | null>
+    clipSlideIn?: Array<{ axis: 'x' | 'y'; fromFrac: number; toFrac: number; startMs: number; endMs: number } | null>
+    clipZoomOut?: Array<{ fromScale: number; toScale: number; startMs: number; endMs: number } | null>
+    clipZoomIn?: Array<{ fromScale: number; toScale: number; startMs: number; endMs: number } | null>
+    audioAnimatedVolume?: Array<Array<{ startMs: number; endMs: number; value: number }>>
+    useNvenc?: boolean
     audioTracks: Array<{ path: string; startMs: number; volume: number; trimStart?: number; durationMs?: number; fadeInMs?: number; fadeOutMs?: number }>
     srtPath: string | null
     captionStyle: CaptionStyle | null
@@ -88,6 +104,17 @@ interface ExportActions {
   }) => Promise<void>
   cancelExport: (jobId: string) => Promise<void>
   clearQueue: () => void
+  /**
+   * Reset transient export session (project load boundary): drops queued jobs
+   * and any stuck exporting flag. Queue entries reference the previous
+   * project's outputs — carrying them over would be stale state.
+   */
+  resetExportSession: () => void
+  /**
+   * Restore full export configuration from a validated .clipzu document.
+   * Config only — queue/isExporting are session state, never restored.
+   */
+  loadExportConfig: (config: CanonicalExportConfig) => void
   updateProgress: (jobId: string, progress: number) => void
   setJobStatus: (jobId: string, status: ExportJob['status'], error?: string) => void
   getOutputDimensions: () => { width: number; height: number }
@@ -219,6 +246,31 @@ export const useExport = create<ExportState & ExportActions>()(
     clearQueue: () =>
       set((state) => {
         state.queue = state.queue.filter((j) => j.status === 'running' || j.status === 'pending')
+      }),
+
+    resetExportSession: () =>
+      set((state) => {
+        state.queue = []
+        state.isExporting = false
+      }),
+
+    loadExportConfig: (config) =>
+      set((state) => {
+        state.preset = config.preset
+        state.customWidth = config.customWidth
+        state.customHeight = config.customHeight
+        state.upscaleEnabled = config.upscaleEnabled
+        state.upscaleAlgorithm = config.upscaleAlgorithm
+        state.codec = config.codec
+        state.qualityPreset = config.qualityPreset
+        state.bitrateKbps = config.bitrateKbps
+        state.bitrateMode = config.bitrateMode
+        state.exportFrameRange = config.exportFrameRange
+          ? { ...config.exportFrameRange }
+          : null
+        state.audioOnly = config.audioOnly
+        state.fps = config.fps
+        state.hardwareAccel = config.hardwareAccel
       }),
 
     updateProgress: (jobId, progress) =>

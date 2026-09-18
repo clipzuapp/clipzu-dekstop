@@ -1,5 +1,6 @@
 import { create } from 'zustand'
 import { immer } from 'zustand/middleware/immer'
+import { utf8ByteLength } from '../../shared/utils/encoding'
 
 export type AspectRatio = '16:9' | '9:16' | '1:1' | '4:5' | '4:3' | 'custom'
 
@@ -13,7 +14,7 @@ export const RESOLUTION_PRESETS: Record<Exclude<AspectRatio, 'custom'>, [number,
 }
 
 /** Snapshot of timeline + caption state for undo/redo */
-interface UndoSnapshot {
+export interface UndoSnapshot {
   clips: import('./useTimeline').Clip[]
   audioTracks: import('./useTimeline').AudioTrack[]
   textClips: import('./useTimeline').TextClip[]
@@ -48,8 +49,18 @@ export interface ProjectActions {
   markClean: () => void
   newProject: () => void
   loadProject: (data: Partial<ProjectState>) => void
-  undo: () => UndoSnapshot | null
-  redo: () => UndoSnapshot | null
+  /**
+   * Undo: pop the pre-edit snapshot, stash the CURRENT state on the redo
+   * stack, return the snapshot to apply. The caller captures `current` via
+   * captureTimelineSnapshot() BEFORE calling (cheap shared refs).
+   *
+   * Correctness fix: the old model pushed the POPPED snapshot onto redo,
+   * making redo a no-op (it re-applied the state undo had just restored).
+   * The redo stack must hold the state that was live at undo time.
+   */
+  undo: (current: UndoSnapshot) => UndoSnapshot | null
+  /** Redo: mirror image of undo. */
+  redo: (current: UndoSnapshot) => UndoSnapshot | null
   pushUndo: (snapshot: UndoSnapshot) => void
 }
 
@@ -143,33 +154,42 @@ export const useProject = create<ProjectState & ProjectActions>()(
         state.redoStack = []
       }),
 
-    undo: () => {
+    undo: (current) => {
       const { undoStack } = useProject.getState()
       if (undoStack.length === 0) return null
       const snapshot = undoStack[undoStack.length - 1]
       set((state) => {
         state.undoStack.pop()
-        state.redoStack.push(snapshot)
+        state.redoStack.push(current)
+        if (state.redoStack.length > MAX_UNDO_STACK) {
+          state.redoStack.shift()
+        }
       })
       return snapshot
     },
 
-    redo: () => {
+    redo: (current) => {
       const { redoStack } = useProject.getState()
       if (redoStack.length === 0) return null
       const snapshot = redoStack[redoStack.length - 1]
       set((state) => {
         state.redoStack.pop()
-        state.undoStack.push(snapshot)
+        state.undoStack.push(current)
+        if (state.undoStack.length > MAX_UNDO_STACK) {
+          state.undoStack.shift()
+        }
       })
       return snapshot
     },
 
     pushUndo: (snapshot) =>
       set((state) => {
-        // Size guard: skip snapshot if too large (prevents OOM on complex projects)
+        // Size guard: skip snapshot if too large (prevents OOM on complex projects).
+        // UTF-8 BYTE length (Phase 9): `.length` counts UTF-16 units and
+        // under-reports CJK/emoji 2-4x — a CJK-heavy timeline would blow past
+        // the budget while `.length` still looks safe.
         try {
-          const size = JSON.stringify(snapshot).length
+          const size = utf8ByteLength(JSON.stringify(snapshot))
           if (size > MAX_SNAPSHOT_BYTES) {
             // Still clear redo and mark dirty, just don't add to undo stack
             state.redoStack = []

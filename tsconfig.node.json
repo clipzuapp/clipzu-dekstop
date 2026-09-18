@@ -6,6 +6,9 @@
     "src/shared/**/*",
     "electron.vite.config.ts"
   ],
+  "exclude": [
+    "src/shared/project/integration/**/*"
+  ],
   "compilerOptions": {
     "composite": true,
     "outDir": "./out",
