@@ -67,3 +67,7 @@ tests/
 __tests__/
 *.test.*
 *_test.*
+
+# AI assistant metadata + local design blueprints (never push)
+.qoder/
+blueprint/

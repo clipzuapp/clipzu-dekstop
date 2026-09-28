@@ -130,6 +130,21 @@ function migrateLegacyUserData(): void {
   }
 }
 
+/** Resolve the Clipzu brand icon (assets/icon_logo.png) for dev + packaged builds */
+function resolveAppIcon(): string | undefined {
+  const candidates = app.isPackaged
+    ? [join(process.resourcesPath, 'assets', 'icon_logo.png')]
+    : [join(app.getAppPath(), 'assets', 'icon_logo.png')]
+  for (const p of candidates) {
+    try {
+      if (existsSync(p)) return p
+    } catch {
+      // ignore FS errors — window simply falls back to the default icon
+    }
+  }
+  return undefined
+}
+
 function createWindow(): void {
   mainWindow = new BrowserWindow({
     width: 1440,
@@ -139,6 +154,7 @@ function createWindow(): void {
     show: false,
     backgroundColor: '#0d0d10',
     titleBarStyle: 'hiddenInset',
+    icon: resolveAppIcon(),
     frame: process.platform === 'darwin' ? false : true,
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),

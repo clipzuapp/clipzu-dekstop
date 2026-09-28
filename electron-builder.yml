@@ -15,6 +15,7 @@ asarUnpack:
   - node_modules/better-sqlite3/**
 win:
   executableName: clipzu
+  icon: assets/icon_logo.png
   target:
     - nsis
 nsis:
@@ -23,6 +24,7 @@ nsis:
   uninstallDisplayName: ${productName}
   createDesktopShortcut: always
 mac:
+  icon: assets/icon_logo.png
   entitlementsInherit: build/entitlements.mac.plist
   extendInfo:
     - NSDocumentsFolderUsageDescription: Application requests access to the user's Documents folder.
@@ -34,6 +36,7 @@ mac:
 dmg:
   artifactName: ${name}-${version}.${ext}
 linux:
+  icon: assets/icon_logo.png
   target:
     - AppImage
   maintainer: clipzu.app
