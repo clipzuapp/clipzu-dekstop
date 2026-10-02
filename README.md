@@ -2,6 +2,8 @@
 
 Cross-platform desktop video editor (Windows, macOS, Linux) with offline Whisper transcription, caption styling, and multi-format export. CapCut replacement for stitch → caption → export workflows.
 
+**Website:** [clipzu.com](https://clipzu.com)
+
 > **Runs natively on all three desktop platforms.** The app is Electron + React and uses only cross-platform primitives (Node `fs`/`child_process.spawn`, Web Audio, Canvas). Per-OS binaries (FFmpeg/ffprobe/whisper-cli) are swapped in `resources/bin/` by OS/arch — see [Quick Start](#quick-start) and [Platform Setup](#platform-setup).
 
 ## Features

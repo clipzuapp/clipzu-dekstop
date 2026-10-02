@@ -8,6 +8,10 @@ out-test/
 build/
 dist/
 
+# ...except the committed Electron installer icons
+!build/icon.ico
+!build/icon.icns
+
 # Environment
 .env
 .env.local
@@ -44,6 +48,7 @@ data/output/
 task.txt
 audit.txt
 audit-*.txt
+roadmap.md
 TASK*.md
 *.clipzu
 *.capcraft
