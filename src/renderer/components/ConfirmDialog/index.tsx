@@ -1,13 +1,26 @@
-import { useEffect, useCallback } from 'react'
+import { useEffect, useCallback, useState } from 'react'
 import { useConfirm } from '../../store/useConfirm'
 
 /**
  * ConfirmDialog — reusable confirmation modal with promise-based API.
  * Rendered once in page.tsx; triggered via useConfirm.getState().show(options).
+ *
+ * P1.5 input variant: when options.input is present (and the dialog was
+ * opened via showWithInput), a text field renders. Enter confirms with the
+ * trimmed value (empty resolves null = no-op), Escape cancels.
  */
 export function ConfirmDialog(): JSX.Element | null {
   const isOpen = useConfirm((s) => s.isOpen)
   const options = useConfirm((s) => s.options)
+
+  const [draft, setDraft] = useState('')
+
+  // Reset the draft whenever a new dialog opens.
+  useEffect(() => {
+    if (isOpen && options) {
+      setDraft(options.input?.initialValue ?? '')
+    }
+  }, [isOpen, options])
 
   const confirm = useCallback(() => {
     useConfirm.getState()._close(true)
@@ -17,20 +30,31 @@ export function ConfirmDialog(): JSX.Element | null {
     useConfirm.getState()._close(false)
   }, [])
 
-  // Close on Escape
+  const confirmInput = useCallback(() => {
+    const value = draft.trim()
+    useConfirm.getState()._closeWithInput(value.length > 0 ? value : null)
+  }, [draft])
+
+  const cancelInput = useCallback(() => {
+    useConfirm.getState()._closeWithInput(null)
+  }, [])
+
+  // Close on Escape / confirm on Enter
   useEffect(() => {
     if (!isOpen) return
+    const isInputMode = !!options?.input
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') cancel()
-      if (e.key === 'Enter') confirm()
+      if (e.key === 'Escape') (isInputMode ? cancelInput : cancel)()
+      if (e.key === 'Enter') (isInputMode ? confirmInput : confirm)()
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [isOpen, confirm, cancel])
+  }, [isOpen, options, confirm, cancel, confirmInput, cancelInput])
 
   if (!isOpen || !options) return null
 
   const isDanger = options.variant === 'danger'
+  const isInputMode = !!options.input
 
   return (
     <div
@@ -39,7 +63,7 @@ export function ConfirmDialog(): JSX.Element | null {
         display: 'flex', alignItems: 'center', justifyContent: 'center',
         background: 'rgba(0,0,0,0.6)'
       }}
-      onClick={cancel}
+      onClick={isInputMode ? cancelInput : cancel}
     >
       <div
         style={{
@@ -60,6 +84,28 @@ export function ConfirmDialog(): JSX.Element | null {
         }}>
           {options.message}
         </p>
+        {isInputMode && (
+          <input
+            autoFocus
+            value={draft}
+            placeholder={options.input?.placeholder ?? ''}
+            onChange={(e) => setDraft(e.target.value)}
+            onKeyDown={(e) => {
+              // Let the input handle text keys; Enter/Escape are also
+              // handled globally above — stop double handling here.
+              e.stopPropagation()
+              if (e.key === 'Enter') confirmInput()
+              if (e.key === 'Escape') cancelInput()
+            }}
+            style={{
+              width: '100%', boxSizing: 'border-box',
+              padding: '6px 10px', fontSize: '12px', borderRadius: '4px',
+              background: 'var(--bg3)', color: 'var(--text1)',
+              border: '0.5px solid var(--border)', outline: 'none',
+              margin: '0 0 20px'
+            }}
+          />
+        )}
         <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '8px' }}>
           <button
             style={{
@@ -67,7 +113,7 @@ export function ConfirmDialog(): JSX.Element | null {
               background: 'var(--bg3)', color: 'var(--text1)',
               border: '0.5px solid var(--border)', cursor: 'pointer'
             }}
-            onClick={cancel}
+            onClick={isInputMode ? cancelInput : cancel}
           >
             {options.cancelLabel || 'Cancel'}
           </button>
@@ -78,9 +124,9 @@ export function ConfirmDialog(): JSX.Element | null {
               color: '#fff', border: 'none', cursor: 'pointer',
               fontWeight: 500
             }}
-            onClick={confirm}
+            onClick={isInputMode ? confirmInput : confirm}
           >
-            {options.confirmLabel || (isDanger ? 'Delete' : 'Confirm')}
+            {options.confirmLabel || (isDanger ? 'Delete' : isInputMode ? 'Rename' : 'Confirm')}
           </button>
         </div>
       </div>

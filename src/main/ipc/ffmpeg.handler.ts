@@ -1,6 +1,7 @@
 import { ipcMain, dialog, BrowserWindow } from 'electron'
 import { FFmpegService } from '../services/FFmpegService'
 import { ThumbnailService } from '../services/ThumbnailService'
+import { mediaDialogFilters } from '../../shared/media/extensions'
 
 /**
  * FFmpeg IPC handlers - Media info, frame extraction, thumbnails.
@@ -82,10 +83,7 @@ export function registerFFmpegHandler(
 
     const result = await dialog.showOpenDialog(win, {
       properties: ['openFile', 'multiSelections'],
-      filters: [
-        { name: 'Video/Audio', extensions: ['mp4', 'mov', 'avi', 'mkv', 'webm', 'mp3', 'wav', 'aac', 'ogg', 'flac'] },
-        { name: 'All Files', extensions: ['*'] }
-      ]
+      filters: mediaDialogFilters()
     })
 
     if (result.canceled) return null

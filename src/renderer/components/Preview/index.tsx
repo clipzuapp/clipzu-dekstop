@@ -12,6 +12,7 @@ import { GuideOverlay } from './GuideOverlay'
 import * as AudioEngine from '../../services/AudioEngine'
 import { type AudioTrack, computeEffectiveMuted, getInPoint, getOutPoint } from '../../store/useTimeline'
 import { ContextMenu, type ContextMenuItem } from '../ContextMenu/index'
+import { useConfirm } from '../../store/useConfirm'
 import { computeCaptionLayout } from '../../../shared/utils/renderGeometry'
 import type { CaptionStyle } from '../../../shared/types/caption'
 import { evaluateKeyframes } from '../../services/KeyframeEvaluator'
@@ -969,7 +970,11 @@ export function Preview(): JSX.Element {
         items.push(
           { divider: true },
           { label: 'Rename', onClick: () => {
-            const newName = window.prompt('Clip name:', selClip.name ?? ''); if (newName?.trim()) timelineActions.setClipName(selectedClipId, newName.trim())
+            useConfirm.getState().showWithInput({
+              title: 'Rename Clip', message: `Rename "${selClip.name ?? 'clip'}" to:`,
+              input: { initialValue: selClip.name ?? '', placeholder: 'Clip name' },
+              confirmLabel: 'Rename'
+            }).then((newName) => { if (newName) timelineActions.setClipName(selectedClipId, newName) })
           }},
           { label: selClip.muted ? '✓ Mute Audio' : 'Mute Audio', disabled: isLocked, onClick: () => timelineActions.setClipMute(selectedClipId, !selClip.muted) },
           { divider: true },

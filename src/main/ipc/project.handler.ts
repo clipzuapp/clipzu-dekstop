@@ -25,6 +25,7 @@ import {
   type ClipzuDocument,
 } from '../../shared/project/projectSchema'
 import { v1ToLoadedProject } from '../../shared/project/legacyEcp'
+import { mediaDialogFilters } from '../../shared/media/extensions'
 import {
   formatMissingMediaError,
   type RelinkListResult,
@@ -323,11 +324,18 @@ async function recomputeRelinkMissing(session: RelinkSession): Promise<void> {
   }
 }
 
-/** Media file filters shared by locate dialogs. */
-const MEDIA_FILTERS = [
-  { name: 'Media', extensions: ['mp4', 'mov', 'avi', 'mkv', 'webm', 'mp3', 'wav', 'aac', 'ogg', 'flac', 'm4a'] },
-  { name: 'All Files', extensions: ['*'] },
-]
+/**
+ * Media file filters shared by locate dialogs.
+ * SSOT lives in `src/shared/media/extensions.ts` (P1.4) — the dialog
+ * label differs ("Media") but the extension set must stay identical.
+ */
+const MEDIA_FILTERS = (() => {
+  const [media, all] = mediaDialogFilters()
+  return [
+    { name: 'Media', extensions: media.extensions },
+    all,
+  ]
+})()
 
 export function registerProjectHandler(getWindow: () => BrowserWindow | null): void {
   // Save project as .clipzu (v2 envelope). Write path is .clipzu ONLY.

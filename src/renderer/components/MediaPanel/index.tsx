@@ -8,6 +8,7 @@ import { formatDuration } from '../../utils/format'
 import type { ContextMenuItem } from '../ContextMenu/index'
 import { createLimiter, MEDIA_FANOUT_LIMIT } from '../../../shared/utils/concurrency'
 import { toFileUrl } from '../../../shared/utils/fileUrl'
+import { isSupportedMedia, isAudioFile, ACCEPTED_MEDIA_LABEL } from '../../../shared/media/extensions'
 import { Trash2, Check, Search, Film, Music as MusicIcon, X } from 'lucide-react'
 
 /** Module-level video element pool for hover preview (max 2) */
@@ -21,8 +22,7 @@ let hoverVideoInUse: HTMLVideoElement | null = null
  */
 const thumbnailLimiter = createLimiter(MEDIA_FANOUT_LIMIT)
 
-/** Media file extensions we accept for drag-and-drop import */
-const MEDIA_EXTS = /\.(mp4|mov|avi|mkv|webm|mp3|wav|aac|ogg|flac|m4a)$/i
+
 
 /**
  * MediaPanel — production-grade media library (CapCut-style).
@@ -105,7 +105,7 @@ export function MediaPanel(): JSX.Element {
       try {
         const info = await window.electron.ipcRenderer.invoke('ffmpeg:getMediaInfo', p)
         const name = p.split(/[\\/]/).pop() || 'Untitled'
-        const isAudio = /\.(mp3|wav|aac|ogg|flac|m4a)$/i.test(p)
+        const isAudio = isAudioFile(p)
         const ts = Date.now()
         const rand = Math.random().toString(36).slice(2, 6)
   
@@ -171,12 +171,12 @@ export function MediaPanel(): JSX.Element {
   
     const files = Array.from(e.dataTransfer.files)
     const validPaths = files
-      .filter((f) => MEDIA_EXTS.test(f.name))
+      .filter((f) => isSupportedMedia(f.name))
       .map((f) => (f as unknown as { path: string }).path)
       .filter(Boolean)
-  
+
     if (validPaths.length === 0) {
-      useToast.getState().error('No supported media files found. Accepted: mp4, mov, avi, mkv, webm, mp3, wav, aac, ogg, flac, m4a')
+      useToast.getState().error(`No supported media files found. Accepted: ${ACCEPTED_MEDIA_LABEL}`)
       return
     }
   

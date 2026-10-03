@@ -454,7 +454,8 @@ interface TimelineActions {
   addAudioTrack: (track: AudioTrack) => void
   addMediaBatch: (clips: Clip[], audioTracks: AudioTrack[]) => void
   removeAudioTrack: (trackId: string) => void
-  moveAudioTrack: (trackId: string, startMs: number) => void
+  moveAudioTrack: (trackId: string, startMs: number, trackIndex?: number) => void
+  setAudioName: (trackId: string, name: string) => void
   trimAudioTrack: (trackId: string, trimStart: number, trimEnd: number) => void
   setAudioVolume: (trackId: string, volume: number) => void
   toggleAudioMute: (trackId: string) => void
@@ -472,11 +473,13 @@ interface TimelineActions {
   commitDrag: () => void
   cancelDrag: () => void
   moveClipLive: (clipId: string, startMs: number, trackIndex?: number) => void
+  moveAudioTrackLive: (trackId: string, startMs: number, trackIndex?: number) => void
   trimClipLive: (clipId: string, trimStart: number, trimEnd: number) => void
   updateTextClipLive: (id: string, updates: Partial<TextClip>) => void
 
   addTrack: (kind: Track['kind']) => void
   deleteTrack: (trackId: string) => void
+  moveTrack: (trackId: string, direction: 'up' | 'down') => void
   renameTrack: (trackId: string, name: string) => void
   toggleMuteTrack: (trackId: string) => void
   toggleLockTrack: (trackId: string) => void
@@ -664,6 +667,25 @@ export const useTimeline = create<TimelineState & TimelineActions>()(
           if (trackIndex !== undefined) clip.trackIndex = trackIndex
           syncTotalDuration(state)
         }
+      })
+    },
+
+    moveAudioTrackLive: (trackId, startMs, trackIndex) => {
+      set((state) => {
+        const track = state.audioTracks.find((t) => t.id === trackId)
+        if (track) {
+          track.startMs = Math.max(0, startMs)
+          if (trackIndex !== undefined) track.trackIndex = Math.max(0, Math.floor(trackIndex))
+          syncTotalDuration(state)
+        }
+      })
+    },
+
+    setAudioName: (trackId, name) => {
+      pushUndoSnapshot()
+      set((state) => {
+        const track = state.audioTracks.find((t) => t.id === trackId)
+        if (track) track.name = name
       })
     },
 
@@ -1048,12 +1070,13 @@ export const useTimeline = create<TimelineState & TimelineActions>()(
       })
     },
 
-    moveAudioTrack: (trackId, startMs) => {
+    moveAudioTrack: (trackId, startMs, trackIndex) => {
       pushUndoSnapshot()
       set((state) => {
         const track = state.audioTracks.find((t) => t.id === trackId)
         if (track) {
           track.startMs = Math.max(0, startMs)
+          if (trackIndex !== undefined) track.trackIndex = Math.max(0, Math.floor(trackIndex))
           syncTotalDuration(state)
         }
       })
@@ -1254,9 +1277,17 @@ export const useTimeline = create<TimelineState & TimelineActions>()(
       set((state) => {
         const track = state.tracks.find((t) => t.id === trackId)
         if (!track) return
+        // P1.1 cascade (D4): deleting a lane deletes the clips on that lane
+        // for ALL kinds — matches the confirm-dialog copy ("and all clips
+        // on it"). Lane index is per-kind (see addTrack maxIndex+1).
         if (track.kind === 'video') {
           state.clips = state.clips.filter((c) => c.trackIndex !== track.index)
+        } else if (track.kind === 'audio') {
+          state.audioTracks = state.audioTracks.filter((c) => c.trackIndex !== track.index)
+        } else if (track.kind === 'caption') {
+          state.textClips = state.textClips.filter((c) => c.trackIndex !== track.index)
         }
+        // 'overlay' kind has no clip entity (never created) — drop record only.
         state.tracks = state.tracks.filter((t) => t.id !== trackId)
         syncTotalDuration(state)
       })
@@ -1299,6 +1330,56 @@ export const useTimeline = create<TimelineState & TimelineActions>()(
       set((state) => {
         const track = state.tracks.find((t) => t.id === trackId)
         if (track) track.solo = !track.solo
+      })
+    },
+
+    moveTrack: (trackId, direction) => {
+      // No-op guard BEFORE the undo push: moving past the edge or an
+      // unknown id must not pollute the depth-20 undo stack.
+      const live = useTimeline.getState()
+      const liveTrack = live.tracks.find((t) => t.id === trackId)
+      if (!liveTrack) return
+      const liveSiblings = live.tracks
+        .filter((t) => t.kind === liveTrack.kind)
+        .sort((a, b) => a.index - b.index)
+      const livePos = liveSiblings.findIndex((t) => t.id === trackId)
+      const liveOther = direction === 'up' ? liveSiblings[livePos - 1] : liveSiblings[livePos + 1]
+      if (!liveOther) return
+      pushUndoSnapshot()
+      set((state) => {
+        const track = state.tracks.find((t) => t.id === trackId)
+        if (!track) return
+        // Swap lane positions with the nearest sibling of the same kind.
+        // Clips on the two lanes move WITH their lane so the lane keeps
+        // its content (headers + clips reorder together).
+        const siblings = state.tracks
+          .filter((t) => t.kind === track.kind)
+          .sort((a, b) => a.index - b.index)
+        const pos = siblings.findIndex((t) => t.id === trackId)
+        if (pos < 0) return
+        const other = direction === 'up' ? siblings[pos - 1] : siblings[pos + 1]
+        if (!other) return
+        const a = track.index
+        const b = other.index
+        track.index = b
+        other.index = a
+        if (track.kind === 'video') {
+          for (const c of state.clips) {
+            if (c.trackIndex === a) c.trackIndex = b
+            else if (c.trackIndex === b) c.trackIndex = a
+          }
+        } else if (track.kind === 'audio') {
+          for (const c of state.audioTracks) {
+            if (c.trackIndex === a) c.trackIndex = b
+            else if (c.trackIndex === b) c.trackIndex = a
+          }
+        } else if (track.kind === 'caption') {
+          for (const c of state.textClips) {
+            if (c.trackIndex === a) c.trackIndex = b
+            else if (c.trackIndex === b) c.trackIndex = a
+          }
+        }
+        syncTotalDuration(state)
       })
     },
 

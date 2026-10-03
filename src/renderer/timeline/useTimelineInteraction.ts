@@ -32,7 +32,7 @@ export function useTimelineInteraction(
   const moveClipLive = useTimeline((s) => s.moveClipLive)
   const trimClipLive = useTimeline((s) => s.trimClipLive)
   const updateTextClipLive = useTimeline((s) => s.updateTextClipLive)
-  const moveAudioTrack = useTimeline((s) => s.moveAudioTrack)
+  const moveAudioTrackLive = useTimeline((s) => s.moveAudioTrackLive)
   const beginDragCapture = useTimeline((s) => s.beginDragCapture)
   const commitDrag = useTimeline((s) => s.commitDrag)
   const cancelDrag = useTimeline((s) => s.cancelDrag)
@@ -568,11 +568,25 @@ export function useTimelineInteraction(
             window.addEventListener('mousemove', (ev) => {
               const dm = machine.as('dragging')
               if (!dm) return
+              const canvasRect = canvasRef.current?.getBoundingClientRect()
+              if (!canvasRect) return
+              // Horizontal: time (snapped like video would be; audio keeps
+              // time-only snap via deltaMs). Vertical: audio lane change
+              // (P1.2) — absolute lane minus video lane count.
               const dx = ev.clientX - dm.startClientX
               const deltaMs = dx / ppm
+              const dy = ev.clientY - canvasRect.top - LAYOUT.RULER_H
+              const absoluteLane = Math.max(0, Math.floor(dy / (LAYOUT.TRACK_LANE_H + LAYOUT.LANE_GAP)))
+              const live = useTimeline.getState()
+              const videoCount = Math.max(
+                1,
+                ...live.tracks.filter((t) => t.kind === 'video').map((t) => t.index + 1),
+                ...live.clips.map((c) => c.trackIndex + 1)
+              )
+              const newAudioLane = Math.max(0, absoluteLane - videoCount)
               const origin = dm.originPositions.get(hit.id)
               if (origin) {
-                moveAudioTrack(hit.id, Math.max(0, origin.startMs + deltaMs))
+                moveAudioTrackLive(hit.id, Math.max(0, origin.startMs + deltaMs), newAudioLane)
               }
             }, { signal })
             window.addEventListener('mouseup', () => {
@@ -639,7 +653,7 @@ export function useTimelineInteraction(
   }, [
     canvasRef, containerRef, activeTool,
     setPlayhead, setZoom, moveClipLive, trimClipLive, updateTextClipLive,
-    moveAudioTrack, beginDragCapture, commitDrag, cancelDrag,
+    moveAudioTrackLive, beginDragCapture, commitDrag, cancelDrag,
     selectClip, selectTextClip, deselectAll,
     toggleClipSelection, selectClipRange,
     toggleTextClipSelection, selectTextClipRange,

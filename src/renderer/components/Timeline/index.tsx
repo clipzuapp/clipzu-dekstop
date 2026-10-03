@@ -480,6 +480,10 @@ export function Timeline({ activeTool = 'select' }: TimelineProps): JSX.Element 
       return { kind: 'audio' as const, index: i, trackId: t?.id ?? `audio_track_${i}`, name: t?.name ?? `Audio ${i + 1}` }
     })
   ]
+  // P1.5: caption header is a placeholder row until P2 gives the lane a real
+  // Track record per lane. The pseudo-id intentionally matches NO Track
+  // record so the mute/solo/lock/hide/delete header buttons stay hidden
+  // (G8: no placeholder controls). Mute/solo arrive with P2 caption lanes.
   if (textClips.length > 0) {
     allLanes.push({ kind: 'caption', index: 0, trackId: 'caption_track', name: 'Captions' })
   }
@@ -501,18 +505,17 @@ export function Timeline({ activeTool = 'select' }: TimelineProps): JSX.Element 
         ? st.clips.find((c) => c.id === hit.id)
         : st.audioTracks.find((a) => a.id === hit.id)
       if (entity) {
-        const newName = window.prompt('Rename:', entity.name || '')
-        if (newName?.trim()) {
-          useTimeline.setState((s) => {
-            if (hit.kind === 'clip-body') {
-              const c = s.clips.find((cc) => cc.id === hit.id)
-              if (c) c.name = newName.trim()
-            } else {
-              const a = s.audioTracks.find((aa) => aa.id === hit.id)
-              if (a) a.name = newName.trim()
-            }
-          })
-        }
+        const isClip = hit.kind === 'clip-body'
+        useConfirm.getState().showWithInput({
+          title: isClip ? 'Rename Clip' : 'Rename Audio',
+          message: `Rename "${entity.name || (isClip ? 'clip' : 'audio')}" to:`,
+          input: { initialValue: entity.name || '', placeholder: 'Name' },
+          confirmLabel: 'Rename'
+        }).then((newName) => {
+          if (!newName) return
+          if (isClip) st.setClipName(hit.id, newName)
+          else st.setAudioName(hit.id, newName)
+        })
       }
     }
   }, [])
@@ -630,7 +633,11 @@ export function Timeline({ activeTool = 'select' }: TimelineProps): JSX.Element 
             { divider: true },
             { label: 'Duplicate', shortcut: 'Ctrl+D', onClick: () => duplicateClip(clickedClip.id), disabled: isLocked },
             { label: 'Rename', onClick: () => {
-              const newName = window.prompt('Clip name:', clickedClip.name ?? ''); if (newName?.trim()) st.setClipName(clickedClip.id, newName.trim())
+              useConfirm.getState().showWithInput({
+                title: 'Rename Clip', message: `Rename "${clickedClip.name ?? 'clip'}" to:`,
+                input: { initialValue: clickedClip.name ?? '', placeholder: 'Clip name' },
+                confirmLabel: 'Rename'
+              }).then((newName) => { if (newName) st.setClipName(clickedClip.id, newName) })
             }},
             { divider: true },
             { label: 'Delete', shortcut: 'Del', danger: true, disabled: isLocked, onClick: () => deleteClip(clickedClip.id) },
@@ -726,7 +733,13 @@ export function Timeline({ activeTool = 'select' }: TimelineProps): JSX.Element 
                       { label: 'Set as Music', disabled: lane.kind !== 'audio', onClick: () => setAudioRole('music') },
                       { divider: true },
                       { label: 'Rename Track', onClick: () => {
-                        if (t) { const newName = window.prompt('Track name:', t.name); if (newName?.trim()) renameTrack(t.id, newName.trim()) }
+                        if (t) {
+                          useConfirm.getState().showWithInput({
+                            title: 'Rename Track', message: `Rename track "${t.name}" to:`,
+                            input: { initialValue: t.name, placeholder: 'Track name' },
+                            confirmLabel: 'Rename'
+                          }).then((newName) => { if (newName) renameTrack(t.id, newName) })
+                        }
                       }, disabled: !t },
                       { label: 'Delete Track', danger: true, disabled: !t, onClick: () => {
                         if (t) useConfirm.getState().show({ title: 'Delete Track', message: `Delete track "${t.name}" and all clips on it? This cannot be undone.`, variant: 'danger', confirmLabel: 'Delete' }).then((c) => { if (c) deleteTrack(t.id) })

@@ -18,7 +18,7 @@
     "typecheck:node": "tsc --noEmit -p tsconfig.node.json",
     "typecheck:web": "tsc --noEmit -p tsconfig.web.json",
     "typecheck": "npm run typecheck:node && npm run typecheck:web",
-    "test:project-format": "tsc -p tsconfig.test.json && node --test out-test/shared/project/integration/roundtrip.inttest.js out-test/shared/project/integration/lifecycle.inttest.js out-test/shared/project/integration/channels.inttest.js out-test/main/project/saveCoordinator.inttest.js out-test/shared/project/integration/exportGraph.inttest.js out-test/shared/project/integration/legacy.inttest.js out-test/shared/project/integration/undo.inttest.js out-test/shared/project/integration/relink.inttest.js out-test/shared/project/integration/golden.inttest.js out-test/shared/utils/utils.inttest.js",
+    "test:project-format": "tsc -p tsconfig.test.json && node --test out-test/shared/project/integration/roundtrip.inttest.js out-test/shared/project/integration/lifecycle.inttest.js out-test/shared/project/integration/channels.inttest.js out-test/main/project/saveCoordinator.inttest.js out-test/shared/project/integration/exportGraph.inttest.js out-test/shared/project/integration/legacy.inttest.js out-test/shared/project/integration/undo.inttest.js out-test/shared/project/integration/tracks.inttest.js out-test/shared/project/integration/relink.inttest.js out-test/shared/project/integration/golden.inttest.js out-test/shared/utils/utils.inttest.js",
     "lint": "tsc --noEmit"
   },
   "dependencies": {
