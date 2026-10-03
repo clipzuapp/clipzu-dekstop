@@ -22,6 +22,7 @@ import type {
   ZoomGeometry,
 } from '../../shared/export/exportGraph'
 import { fmtFilterNumber } from '../../shared/export/exportGraph'
+import { isImageFile } from '../../shared/media/extensions'
 
 /** Cap on retained stderr per process (Phase 8): ring, not concat-O(n^2). */
 const MAX_RETAINED_STDERR = 16 * 1024
@@ -368,6 +369,13 @@ export class FFmpegService {
     clipPaths: string[]
     clipTrackIndices: number[]
     clipHasAudio?: boolean[]
+    /**
+     * P4.4: still-image flags parallel to clipPaths (from export-graph
+     * nodes). Stills enter via `-loop 1 -framerate <fps>` so trim/setpts
+     * and the whole overlay/blend/fade chain treat them like video.
+     * Falls back to extension sniffing when omitted (tests/older callers).
+     */
+    clipIsStill?: boolean[]
     /** Whether each clip is effectively hidden (hidden track or solo exclusion). Hidden clips are skipped entirely. */
     clipHidden?: boolean[]
     /** Whether each clip's native audio should be muted (clip mute OR video track mute). */
@@ -442,7 +450,17 @@ export class FFmpegService {
     const filterParts: string[] = []
     const audioMapArgs: string[] = []
 
-    clipPaths.forEach((path) => args.push('-i', path))
+    // P4.4: stills loop the first frame into a video-rate stream; the
+    // per-clip trim/setpts/overlay chain below then works unchanged.
+    const stillFps = fps ?? 30
+    clipPaths.forEach((path, i) => {
+      const isStill = params.clipIsStill?.[i] ?? isImageFile(path)
+      if (isStill) {
+        args.push('-loop', '1', '-framerate', String(stillFps), '-i', path)
+      } else {
+        args.push('-i', path)
+      }
+    })
     audioTracks.forEach((track) => args.push('-i', track.path))
 
     // 1. Base video background (black, matches output resolution, fits totalDurationMs)

@@ -18,8 +18,20 @@ export const VIDEO_EXTENSIONS = ['mp4', 'mov', 'avi', 'mkv', 'webm'] as const
 /** Audio extensions (no leading dot, lowercase). Includes m4a. */
 export const AUDIO_EXTENSIONS = ['mp3', 'wav', 'aac', 'ogg', 'flac', 'm4a'] as const
 
-/** Every importable media extension (video + audio). */
-export const MEDIA_EXTENSIONS: readonly string[] = [...VIDEO_EXTENSIONS, ...AUDIO_EXTENSIONS]
+/**
+ * Still-image extensions (P4.1, first-frame only). Animated gif/webp play
+ * as a frozen first frame — full animation support is future work.
+ */
+export const IMAGE_EXTENSIONS = ['png', 'jpg', 'jpeg', 'webp', 'bmp', 'gif'] as const
+
+/** Every importable media extension (video + audio + stills). */
+export const MEDIA_EXTENSIONS: readonly string[] = [...VIDEO_EXTENSIONS, ...AUDIO_EXTENSIONS, ...IMAGE_EXTENSIONS]
+
+/**
+ * Default still duration in ms (P4.2: Clip.imageDurationMsDefault).
+ * Stills probe at 0ms via ffprobe, so imports take this instead.
+ */
+export const STILL_IMAGE_DEFAULT_DURATION_MS = 3000
 
 /** Basename extension extraction: lowercases, strips query/hash, no dot. */
 export function getFileExtension(path: string): string {
@@ -48,11 +60,34 @@ export function isVideoFile(path: string): boolean {
   return (VIDEO_EXTENSIONS as readonly string[]).includes(ext)
 }
 
+/** True when the path names a still image (P4 still path, first frame). */
+export function isImageFile(path: string): boolean {
+  const ext = getFileExtension(path)
+  return (IMAGE_EXTENSIONS as readonly string[]).includes(ext)
+}
+
+/**
+ * Import duration mapping (P4.2): stills take the documented default
+ * (probed 0ms carries no timing); timed media keeps the probed duration
+ * (rounded, clamped ≥ 0; unprobed → 0, preserving existing behavior).
+ */
+export function resolveImportDurationMs(
+  isImage: boolean,
+  probedDurationMs: number | null | undefined
+): number {
+  if (isImage) return STILL_IMAGE_DEFAULT_DURATION_MS
+  if (typeof probedDurationMs !== 'number' || !Number.isFinite(probedDurationMs)) return 0
+  return Math.max(0, Math.round(probedDurationMs))
+}
+
 /** RegExp equivalent of isSupportedMedia for File.name / drag-drop filtering. */
-export const MEDIA_EXTS_REGEX = /\.(mp4|mov|avi|mkv|webm|mp3|wav|aac|ogg|flac|m4a)$/i
+export const MEDIA_EXTS_REGEX = /\.(mp4|mov|avi|mkv|webm|mp3|wav|aac|ogg|flac|m4a|png|jpg|jpeg|webp|bmp|gif)$/i
 
 /** RegExp equivalent of isAudioFile for library isAudio classification. */
 export const AUDIO_EXTS_REGEX = /\.(mp3|wav|aac|ogg|flac|m4a)$/i
+
+/** RegExp equivalent of isImageFile for still classification. */
+export const IMAGE_EXTS_REGEX = /\.(png|jpg|jpeg|webp|bmp|gif)$/i
 
 /** Human-readable accepted list for toast/error copy (single-sourced). */
 export const ACCEPTED_MEDIA_LABEL = [...MEDIA_EXTENSIONS].join(', ')
@@ -63,7 +98,8 @@ export const ACCEPTED_MEDIA_LABEL = [...MEDIA_EXTENSIONS].join(', ')
  */
 export function mediaDialogFilters(): Array<{ name: string; extensions: string[] }> {
   return [
-    { name: 'Video/Audio', extensions: [...MEDIA_EXTENSIONS] },
+    // P4.1: covers video + audio + stills (renamed — 'Video/Audio' lied).
+    { name: 'Media', extensions: [...MEDIA_EXTENSIONS] },
     { name: 'All Files', extensions: ['*'] },
   ]
 }

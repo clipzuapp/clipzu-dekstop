@@ -203,6 +203,8 @@ export function ExportDialog({ onClose, show = true }: { onClose: () => void; sh
         clipPaths: clips.map((c) => c.path),
         clipTrackIndices: clips.map((c) => c.trackIndex),
         clipHasAudio: clips.map((c) => c.hasAudio ?? true),
+        // P4.4: still-image loop flags from the export-graph nodes.
+        clipIsStill: graph.clips.map((n) => n.isStill),
         // Respect track hidden + solo state — matches what Preview renders
         clipHidden: clips.map((c) => computeEffectiveVideoHidden(c.trackIndex, tracks)),
         // Respect per-clip mute AND video track mute — matches Preview audio behavior

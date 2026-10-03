@@ -15,6 +15,7 @@ import { ContextMenu, type ContextMenuItem } from '../ContextMenu/index'
 import { useConfirm } from '../../store/useConfirm'
 import { computeCaptionLayout } from '../../../shared/utils/renderGeometry'
 import { resolveActiveCaptions, visibleCaptionClips, captionLanePosition } from '../../../shared/captions/lanes'
+import { isImageFile } from '../../../shared/media/extensions'
 import type { CaptionStyle } from '../../../shared/types/caption'
 import { evaluateKeyframes } from '../../services/KeyframeEvaluator'
 import { buildCssFilter } from '../../services/FilterPipeline'
@@ -33,9 +34,13 @@ import { toFileUrl } from '../../../shared/utils/fileUrl'
 export function Preview(): JSX.Element {
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const videoRef = useRef<HTMLVideoElement>(null)
+  /** Still-image sibling for the base layer (P4.3) — shown iff base clip is a still. */
+  const stillRef = useRef<HTMLImageElement>(null)
   const animFrameRef = useRef<number>(0)
   /** Track which clip is loaded in <video> to avoid redundant src changes */
   const loadedClipIdRef = useRef<string | null>(null)
+  /** Track which still is loaded in <img> (same dedup role as loadedClipIdRef) */
+  const loadedStillIdRef = useRef<string | null>(null)
   /** Per-clip activation caches — avoids O(log n) binary search every frame during playback */
   const activationCacheMapRef = useRef<Map<string, ActivationCache>>(new Map())
 
@@ -147,8 +152,8 @@ export function Preview(): JSX.Element {
 
   /** Ref for overlay video pool container */
   const overlayContainerRef = useRef<HTMLDivElement>(null)
-  /** Track which clip IDs are loaded in overlay slots */
-  const overlayAssignedRef = useRef<Map<string, HTMLVideoElement>>(new Map())
+  /** Track which clip IDs are loaded in overlay slots (video or still image) */
+  const overlayAssignedRef = useRef<Map<string, HTMLVideoElement | HTMLImageElement>>(new Map())
   /** Track overlay audio node IDs (clipId → overlayAudioId) */
   const overlayAudioIdsRef = useRef<Map<string, string>>(new Map())
   /** Throttle for audio scrub preview */
@@ -279,14 +284,48 @@ export function Preview(): JSX.Element {
     console.log('[SRC DIAG] playheadMs:', playheadMs, 'clip:', clip ? { id: clip.id, startMs: clip.startMs, durationMs: clip.durationMs } : null)
     if (!clip) {
       loadedClipIdRef.current = null
+      loadedStillIdRef.current = null
       // Clear the video source so the last frame doesn't linger when playhead is outside all clips
       if (video.src) {
         console.log('[SRC DIAG] Clearing video source (no clip at playhead)')
         video.removeAttribute('src')
         video.load()
       }
+      const still = stillRef.current
+      if (still) {
+        still.removeAttribute('src')
+        still.style.display = 'none'
+      }
       return
     }
+
+    // P4.3: still-image base layer — <img> shows the frame, <video> stands down.
+    if (isImageFile(clip.path)) {
+      loadedClipIdRef.current = null
+      if (!video.paused) video.pause()
+      if (video.src) {
+        video.removeAttribute('src')
+        video.load()
+      }
+      video.style.display = 'none'
+      const still = stillRef.current
+      if (still) {
+        const src = toFileUrl(clip.path)
+        if (loadedStillIdRef.current !== clip.id || still.getAttribute('src') !== src) {
+          loadedStillIdRef.current = clip.id
+          still.src = src
+        }
+        still.style.display = ''
+      }
+      return
+    }
+    loadedStillIdRef.current = null
+    {
+      const still = stillRef.current
+      if (still && still.style.display !== 'none') still.style.display = 'none'
+    }
+    // Restore the base video element (a still may have hidden it).
+    if (video.style.display === 'none') video.style.display = ''
 
     const src = toFileUrl(clip.proxyPath ?? clip.path)
     let cancelled = false
@@ -330,6 +369,8 @@ export function Preview(): JSX.Element {
 
     const clip = findClipAt(playheadMs)
     if (!clip) return
+    // P4.3: stills have no timeline to seek — the <img> is already correct.
+    if (isImageFile(clip.path)) return
 
     const targetSec = clipTimeSec(clip, playheadMs)
     if (Math.abs(video.currentTime - targetSec) > 0.05) {
@@ -367,6 +408,13 @@ export function Preview(): JSX.Element {
         setPlayhead(effectiveHeadMs)
       }
 
+      // P4.3: still base — nothing to play in <video> (paused, sourceless);
+      // the still-advance timer owns playhead motion from here.
+      if (isImageFile(clip.path)) {
+        video.pause()
+        return
+      }
+
       const targetSec = clipTimeSec(clip, effectiveHeadMs)
       console.log('[PLAY DIAG] Seeking to video time:', targetSec, 'sec')
 
@@ -391,6 +439,47 @@ export function Preview(): JSX.Element {
       video.pause()
     }
   }, [isPlaying, findClipAt, clipTimeSec, setPlayhead, setPlaying, clips]) // playheadMs intentionally excluded; clips ensures re-init on data change
+
+  // ---- effect 3b: advance playhead across still-image base segments (P4.3) ----
+  // A still in <img> emits no timeupdate, so while the playhead sits inside
+  // a still base clip during playback, wall-clock drives it. End-of-segment
+  // mirrors effect 4's onEnded logic (next clip / loop / stop).
+  useEffect(() => {
+    if (!isPlaying) return
+    let last = performance.now()
+    const id = window.setInterval(() => {
+      if (!isPlayingRef.current) return
+      const now = performance.now()
+      const dt = now - last
+      last = now
+      const head = playheadMsRef.current
+      const clip = findClipAt(head)
+      if (!clip || !isImageFile(clip.path)) return
+      const end = clip.startMs + clip.durationMs
+      if (head + dt < end) {
+        setPlayhead(head + dt)
+        return
+      }
+      const nextClip = clipsRef.current.find((c) => c.startMs >= end && c.id !== clip.id)
+      if (nextClip) {
+        setPlayhead(nextClip.startMs)
+        return
+      }
+      if (loopEnabledRef.current) {
+        const inPoint = getInPoint()
+        const outPoint = getOutPoint()
+        if (inPoint !== null && outPoint !== null && inPoint < outPoint) {
+          setPlayhead(inPoint)
+          return
+        }
+        setPlayhead(0)
+        return
+      }
+      setPlayhead(end)
+      setPlaying(false)
+    }, 100)
+    return () => window.clearInterval(id)
+  }, [isPlaying, findClipAt, setPlayhead, setPlaying])
 
   // ---- effect 4: sync playhead from video during playback (throttled ~30fps) ----
 
@@ -489,89 +578,125 @@ export function Preview(): JSX.Element {
     const audioIds = overlayAudioIdsRef.current
 
     // Remove overlays for clips no longer active
-    for (const [clipId, vid] of assigned) {
+    for (const [clipId, el] of assigned) {
       if (!overlayClips.find((c) => c.id === clipId) || clipId === baseClip?.id) {
-        vid.pause()
-        // Disconnect overlay audio routing
-        const audioId = audioIds.get(clipId)
-        if (audioId) {
-          AudioEngine.disconnectOverlayAudio(audioId)
-          audioIds.delete(clipId)
+        if (el instanceof HTMLVideoElement) {
+          el.pause()
+          // Disconnect overlay audio routing
+          const audioId = audioIds.get(clipId)
+          if (audioId) {
+            AudioEngine.disconnectOverlayAudio(audioId)
+            audioIds.delete(clipId)
+          }
+          el.removeAttribute('src')
+          el.load()
+        } else {
+          el.removeAttribute('src')
         }
-        vid.removeAttribute('src')
-        vid.load()
-        vid.style.display = 'none'
+        el.style.display = 'none'
         assigned.delete(clipId)
       }
     }
 
-    // Create/update overlay for each active higher-track clip
+    // Create/update overlay for each active higher-track clip.
+    // P4.3: stills get an <img> (no playback, no audio routing); the shared
+    // blend/filter/opacity styling below applies to both element kinds.
     for (let i = 0; i < overlayClips.length; i++) {
       const clip = overlayClips[i]
       if (clip.id === baseClip?.id) continue
+      const clipIsStill = isImageFile(clip.path)
 
-      let vid = assigned.get(clip.id)
-      if (!vid) {
-        vid = document.createElement('video')
-        vid.playsInline = true
-        vid.muted = false // audio routed through AudioEngine, not native output
-        vid.volume = 1 // gain controlled by AudioEngine GainNode
-        vid.preload = 'auto'
-        vid.style.cssText = 'position:absolute;inset:0;width:100%;height:100%;object-fit:contain;pointer-events:none;'
-        vid.style.zIndex = String(10 + clip.trackIndex)
-        vid.style.display = 'none'
-        container.appendChild(vid)
-        assigned.set(clip.id, vid)
+      let el = assigned.get(clip.id)
+      if (!el || (clipIsStill !== (el instanceof HTMLImageElement))) {
+        // (Re)create when missing or when the element kind no longer matches
+        // (e.g. the clip's file was relinked from mp4 to png).
+        if (el) {
+          if (el instanceof HTMLVideoElement) {
+            el.pause()
+            const audioId = audioIds.get(clip.id)
+            if (audioId) {
+              AudioEngine.disconnectOverlayAudio(audioId)
+              audioIds.delete(clip.id)
+            }
+          }
+          el.remove()
+          assigned.delete(clip.id)
+        }
+        if (clipIsStill) {
+          const img = document.createElement('img')
+          img.style.cssText = 'position:absolute;inset:0;width:100%;height:100%;object-fit:contain;pointer-events:none;'
+          img.style.zIndex = String(10 + clip.trackIndex)
+          img.style.display = 'none'
+          container.appendChild(img)
+          assigned.set(clip.id, img)
+          el = img
+        } else {
+          const vid = document.createElement('video')
+          vid.playsInline = true
+          vid.muted = false // audio routed through AudioEngine, not native output
+          vid.volume = 1 // gain controlled by AudioEngine GainNode
+          vid.preload = 'auto'
+          vid.style.cssText = 'position:absolute;inset:0;width:100%;height:100%;object-fit:contain;pointer-events:none;'
+          vid.style.zIndex = String(10 + clip.trackIndex)
+          vid.style.display = 'none'
+          container.appendChild(vid)
+          assigned.set(clip.id, vid)
+          el = vid
 
-        // Connect audio through AudioEngine (createMediaElementSource once per element)
-        const clipVol = (clip.muted ?? false) ? 0 : (clip.volume ?? 1)
-        const audioId = AudioEngine.connectOverlayAudio(clip.id, vid, clipVol * masterVolume, clip.muted ?? false)
-        if (audioId) audioIds.set(clip.id, audioId)
+          // Connect audio through AudioEngine (createMediaElementSource once per element)
+          const clipVol = (clip.muted ?? false) ? 0 : (clip.volume ?? 1)
+          const audioId = AudioEngine.connectOverlayAudio(clip.id, vid, clipVol * masterVolume, clip.muted ?? false)
+          if (audioId) audioIds.set(clip.id, audioId)
+        }
       }
 
-      // Use proxy path for playback if available
-      const src = toFileUrl(clip.proxyPath ?? clip.path)
-      if (vid.src !== src) {
+      // Stills have no proxy (P4.5) and no playback position.
+      const src = toFileUrl(!clipIsStill ? (clip.proxyPath ?? clip.path) : clip.path)
+      if (el instanceof HTMLImageElement) {
+        if (el.getAttribute('src') !== src) el.src = src
+        el.style.display = ''
+      } else if (el.src !== src) {
+        const vid = el
         vid.src = src
         const onLoaded = (): void => {
-          vid!.currentTime = clipTimeSec(clip, playheadMs)
+          vid.currentTime = clipTimeSec(clip, playheadMs)
           if (isPlayingRef.current) {
-            vid!.play().catch(() => {})
+            vid.play().catch(() => {})
           }
-          vid!.style.display = ''
+          vid.style.display = ''
         }
         vid.addEventListener('loadedmetadata', onLoaded, { once: true })
       } else {
         if (isPlaying) {
-          vid.currentTime = clipTimeSec(clip, playheadMs)
-          vid.play().catch(() => {})
+          el.currentTime = clipTimeSec(clip, playheadMs)
+          el.play().catch(() => {})
         }
-        vid.style.display = ''
+        el.style.display = ''
       }
 
       // Apply blend mode (GPU-accelerated via CSS compositor)
       const blendMode = clip.blendMode ?? 'normal'
-      vid.style.mixBlendMode = blendMode
+      el.style.mixBlendMode = blendMode
 
       // Apply CSS filter from modifier stack
       const cssFilter = buildCssFilter(clip.modifiers)
-      vid.style.filter = cssFilter
+      el.style.filter = cssFilter
 
       // Apply keyframe-evaluated opacity
       const localTimeMs = playheadMs - clip.startMs
       const kfValues = evaluateKeyframes(clip.keyframes, localTimeMs)
       if (kfValues.opacity !== undefined) {
-        vid.style.opacity = String(kfValues.opacity / 100)
+        el.style.opacity = String(kfValues.opacity / 100)
       } else {
-        vid.style.opacity = '1'
+        el.style.opacity = '1'
       }
     }
 
     // Pause unused overlays when no active clips
     if (activeClips.length === 0) {
-      for (const [, vid] of assigned) {
-        vid.pause()
-        vid.style.display = 'none'
+      for (const [, el] of assigned) {
+        if (el instanceof HTMLVideoElement) el.pause()
+        el.style.display = 'none'
       }
     }
   }, [playheadMs, isPlaying, findAllClipsAt, clipTimeSec, toFileUrl, clips, masterVolume])
@@ -1077,14 +1202,14 @@ export function Preview(): JSX.Element {
     return () => { window.removeEventListener('keydown', onDown); window.removeEventListener('keyup', onUp) }
   }, [])
 
-  // ---- Apply playback speed to video elements ----
+  // ---- Apply playback speed to video elements (stills ignore speed) ----
   useEffect(() => {
     const video = videoRef.current
     if (video) video.playbackRate = playbackSpeed
     // Apply to overlay videos
     const assigned = overlayAssignedRef.current
-    for (const [, vid] of assigned) {
-      vid.playbackRate = playbackSpeed
+    for (const [, el] of assigned) {
+      if (el instanceof HTMLVideoElement) el.playbackRate = playbackSpeed
     }
   }, [playbackSpeed])
 
@@ -1263,8 +1388,38 @@ export function Preview(): JSX.Element {
             }}
           />
 
+          {/* Still-image sibling for the base layer (P4.3) — shown iff the
+              base clip is a still (see effect 1); same transform/filter/opacity
+              treatment as the video element above. */}
+          <img
+            ref={stillRef}
+            className="absolute inset-0 w-full h-full object-contain"
+            style={{
+              zIndex: 0,
+              display: 'none',
+              ...(videoTransform ? { transform: videoTransform, transformOrigin: 'center' } : {}),
+              ...(baseClipFilter ? { filter: baseClipFilter } : {}),
+              ...(transitionExitOpacity !== undefined ? { opacity: transitionExitOpacity } : {}),
+              ...(transitionExitTransform ? { transform: (videoTransform || '') + ' ' + transitionExitTransform, transformOrigin: 'center' } : {})
+            }}
+          />
+
           {/* Transition enter overlay — renders incoming clip during transition */}
-          {transitionEnterClip && (
+          {transitionEnterClip && isImageFile(transitionEnterClip.path) && (
+            <img
+              key={`trans-enter-${transitionEnterClip.id}`}
+              src={toFileUrl(transitionEnterClip.path)}
+              className="absolute inset-0 w-full h-full object-contain"
+              style={{
+                zIndex: 4,
+                opacity: transitionEnterOpacity ?? 1,
+                transform: transitionEnterTransform || undefined,
+                transformOrigin: 'center',
+                filter: buildCssFilter(transitionEnterClip.modifiers)
+              }}
+            />
+          )}
+          {transitionEnterClip && !isImageFile(transitionEnterClip.path) && (
             <video
               key={`trans-enter-${transitionEnterClip.id}`}
               src={`file:///${encodeURI(transitionEnterClip.path.replace(/\\/g, '/'))}`}

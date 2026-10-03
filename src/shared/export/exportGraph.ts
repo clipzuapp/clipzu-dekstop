@@ -38,6 +38,7 @@ import type {
   CanonicalKeyframeTrack,
   CanonicalModifier,
 } from '../project/projectSchema'
+import { isImageFile } from '../media/extensions'
 
 // ---------------------------------------------------------------------------
 // Easing (ported 1:1 from src/renderer/effects/utils/easing.ts)
@@ -569,6 +570,13 @@ export interface ClipExportNode {
   index: number
   visible: boolean
   includeNativeAudio: boolean
+  /**
+   * P4.4: still image (first frame looped by FFmpegService via `-loop 1
+   * -framerate`). Derived from the path extension — no schema change.
+   * Stills flow through the same visibility/mute/blend/fade/transition
+   * resolution as video below.
+   */
+  isStill: boolean
   startMs: number
   durationMs: number
   trimStart: number
@@ -718,6 +726,7 @@ export function buildExportGraph(input: BuildExportGraphInput): ExportGraph {
       index,
       visible,
       includeNativeAudio,
+      isStill: isImageFile(clip.path),
       startMs: clip.startMs,
       durationMs: clip.durationMs,
       trimStart: clip.trimStart,

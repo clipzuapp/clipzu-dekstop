@@ -33,6 +33,8 @@ interface ExportParams {
   clipPaths: string[]
   clipTrackIndices: number[]
   clipHasAudio?: boolean[]
+  /** P4.4 still-image loop flags parallel to clipPaths. */
+  clipIsStill?: boolean[]
   clipHidden?: boolean[]
   clipVideoMuted?: boolean[]
   clipFadeInMs?: number[]
@@ -158,6 +160,7 @@ class ExportQueueManager {
       clipPaths: params.clipPaths,
       clipTrackIndices: params.clipTrackIndices,
       clipHasAudio: params.clipHasAudio,
+      clipIsStill: params.clipIsStill,
       clipHidden: params.clipHidden,
       clipVideoMuted: params.clipVideoMuted,
       clipFadeInMs: params.clipFadeInMs,

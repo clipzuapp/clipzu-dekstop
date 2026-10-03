@@ -68,6 +68,8 @@ interface ExportActions {
     clipPaths: string[]
     clipTrackIndices: number[]
     clipHasAudio?: boolean[]
+    /** P4.4 still-image loop flags parallel to clipPaths. */
+    clipIsStill?: boolean[]
     clipHidden?: boolean[]
     clipVideoMuted?: boolean[]
     clipFadeInMs?: number[]

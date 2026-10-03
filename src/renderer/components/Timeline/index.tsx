@@ -10,6 +10,7 @@ import { useTimelineInteraction } from '../../timeline/useTimelineInteraction'
 import { LAYOUT, hitTest, buildLaneLayout, computeBoxRect, rowPositionAtY } from '../../timeline/interaction'
 import { useUiPrefs } from '../../store/useUiPrefs'
 import { resolveCollapsedAudioLanes, applyZoomStep, zoomToFit, ZOOM_MIN, ZOOM_MAX } from '../../../shared/uiPrefs'
+import { isImageFile, resolveImportDurationMs } from '../../../shared/media/extensions'
 import { VolumeX, Headphones, Lock, EyeOff, Trash2 } from 'lucide-react'
 import type { KeyframeTrack } from '../../effects/types/Keyframe'
 
@@ -472,15 +473,19 @@ export function Timeline({ activeTool = 'select' }: TimelineProps): JSX.Element 
             trackIndex: audioLaneIdx
           })
         } else {
+          // P4.2: stills land on a video lane with the still default and no
+          // audio (extension-derived — drag payloads predate isImage).
+          const isStill = isImageFile(item.path)
+          const stillMs = resolveImportDurationMs(true, item.durationMs)
           batchClips.push({
             id: `clip_${ts}_${i}_${rand}`,
             path: item.path,
             startMs: itemDropMs,
-            sourceDurationMs: item.durationMs ?? 0,
-            durationMs: item.durationMs ?? 0,
+            sourceDurationMs: isStill ? stillMs : (item.durationMs ?? 0),
+            durationMs: isStill ? stillMs : (item.durationMs ?? 0),
             trackIndex: 0, trimStart: 0, trimEnd: 0,
             name: item.name ?? 'Clip',
-            hasAudio: item.hasAudio ?? true,
+            hasAudio: isStill ? false : (item.hasAudio ?? true),
             speed: 1.0, volume: 1, muted: false
           })
         }

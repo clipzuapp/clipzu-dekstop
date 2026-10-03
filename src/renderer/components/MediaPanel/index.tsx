@@ -8,7 +8,7 @@ import { formatDuration } from '../../utils/format'
 import type { ContextMenuItem } from '../ContextMenu/index'
 import { createLimiter, MEDIA_FANOUT_LIMIT } from '../../../shared/utils/concurrency'
 import { toFileUrl } from '../../../shared/utils/fileUrl'
-import { isSupportedMedia, isAudioFile, ACCEPTED_MEDIA_LABEL } from '../../../shared/media/extensions'
+import { isSupportedMedia, isAudioFile, isImageFile, resolveImportDurationMs, ACCEPTED_MEDIA_LABEL } from '../../../shared/media/extensions'
 import { Trash2, Check, Search, Film, Music as MusicIcon, X } from 'lucide-react'
 
 /** Module-level video element pool for hover preview (max 2) */
@@ -106,18 +106,21 @@ export function MediaPanel(): JSX.Element {
         const info = await window.electron.ipcRenderer.invoke('ffmpeg:getMediaInfo', p)
         const name = p.split(/[\\/]/).pop() || 'Untitled'
         const isAudio = isAudioFile(p)
+        // P4.2: stills probe at 0ms — take the documented still default.
+        const isImage = isImageFile(p)
         const ts = Date.now()
         const rand = Math.random().toString(36).slice(2, 6)
-  
+
         addToLibrary({
           id: `media_${ts}_${rand}`,
           path: p,
           name,
-          durationMs: info?.durationMs ?? 0,
+          durationMs: resolveImportDurationMs(isImage, info?.durationMs),
           width: info?.width,
           height: info?.height,
-          hasAudio: info?.hasAudio,
-          isAudio
+          hasAudio: isImage ? false : info?.hasAudio,
+          isAudio,
+          isImage
         })
       } catch (err) {
         console.error('Failed to add media:', err)
@@ -357,42 +360,49 @@ export function MediaPanel(): JSX.Element {
       })
     } else {
       const clipId = `clip_${ts}_${rand}`
+      // P4.2/P4.5: stills take the still default and never proxy (no motion).
+      const isStill = item.isImage || isImageFile(item.path)
+      const stillMs = resolveImportDurationMs(true, item.durationMs)
       useTimeline.getState().addClip({
         id: clipId,
         path: item.path,
         startMs: ph,
-        sourceDurationMs: item.durationMs ?? 0,
-        durationMs: item.durationMs ?? 0,
+        sourceDurationMs: isStill ? stillMs : (item.durationMs ?? 0),
+        durationMs: isStill ? stillMs : (item.durationMs ?? 0),
         trackIndex: 0,
         trimStart: 0,
         trimEnd: 0,
         name: item.name ?? 'Clip',
-        hasAudio: item.hasAudio ?? true,
+        hasAudio: isStill ? false : (item.hasAudio ?? true),
         speed: 1.0,
         volume: 1,
         muted: false
       })
 
-      // Fire-and-forget proxy generation for video files
-      // Proxy is used for timeline preview; export always uses original path
-      void (async () => {
-        try {
-          const proxyPath = await window.electron.ipcRenderer.invoke(
-            'proxy:generate', item.path, item.durationMs ?? 0
-          ) as string
-          if (proxyPath) {
-            useTimeline.getState().setClipProxyPath(clipId, proxyPath)
+      // Fire-and-forget proxy generation for video files (never stills —
+      // export always uses the original path for both).
+      if (!isStill) {
+        void (async () => {
+          try {
+            const proxyPath = await window.electron.ipcRenderer.invoke(
+              'proxy:generate', item.path, item.durationMs ?? 0
+            ) as string
+            if (proxyPath) {
+              useTimeline.getState().setClipProxyPath(clipId, proxyPath)
+            }
+          } catch {
+            // Proxy generation is best-effort — timeline falls back to original
           }
-        } catch {
-          // Proxy generation is best-effort — timeline falls back to original
-        }
-      })()
+        })()
+      }
     }
   }, [])
 
   // ---- Hover preview ----
   const startHoverPreview = useCallback((item: MediaInfo, cardEl: HTMLElement) => {
-    if (item.isAudio) return
+    // Audio has no picture; stills already show their thumbnail (a <video>
+    // hover element would seek NaN on a single frame — skip it).
+    if (item.isAudio || item.isImage) return
     let vid = hoverVideoPool.find((v) => v !== hoverVideoInUse)
     if (!vid) {
       if (hoverVideoPool.length >= 2) return

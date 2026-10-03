@@ -24,9 +24,11 @@ import {
   MEDIA_EXTENSIONS,
   AUDIO_EXTENSIONS,
   VIDEO_EXTENSIONS,
+  IMAGE_EXTENSIONS,
   isSupportedMedia,
   isAudioFile,
   isVideoFile,
+  isImageFile,
   mediaDialogFilters,
   MEDIA_EXTS_REGEX,
   ACCEPTED_MEDIA_LABEL,
@@ -389,11 +391,17 @@ describe('phase 1 — track/layer bug fixes + SSOT extractions', () => {
       assert.equal(isSupportedMedia(`FILE.${ext.toUpperCase()}`), true, ext)
     }
     assert.ok(ACCEPTED_MEDIA_LABEL.includes('m4a'))
-    // Audio/video partition covers the whole set with no overlap.
+    // Audio/video/image partition covers the whole set with no overlap (P4.1).
     assert.deepEqual(
-      [...VIDEO_EXTENSIONS, ...AUDIO_EXTENSIONS].sort(),
+      [...VIDEO_EXTENSIONS, ...AUDIO_EXTENSIONS, ...IMAGE_EXTENSIONS].sort(),
       [...MEDIA_EXTENSIONS].sort(),
     )
+    for (const ext of IMAGE_EXTENSIONS) {
+      assert.equal(isImageFile(`still.${ext}`), true)
+      assert.equal(isSupportedMedia(`still.${ext}`), true)
+      assert.equal(isAudioFile(`still.${ext}`), false)
+      assert.equal(isVideoFile(`still.${ext}`), false)
+    }
     for (const ext of AUDIO_EXTENSIONS) {
       assert.equal(isAudioFile(`clip.${ext}`), true)
       assert.equal(isVideoFile(`clip.${ext}`), false)
@@ -408,7 +416,9 @@ describe('phase 1 — track/layer bug fixes + SSOT extractions', () => {
     assert.equal(isSupportedMedia("I made an air fryer in ancient China. It didn't go well.srt"), false)
     assert.equal(isSupportedMedia('movie.m4a'), true)
     assert.equal(isAudioFile('movie.m4a'), true)
-    assert.equal(isSupportedMedia('still.png'), false)
+    // P4.1: stills are importable media (image-only partition, see images.inttest).
+    assert.equal(isSupportedMedia('still.png'), true)
+    assert.equal(isImageFile('still.png'), true)
   })
 
   it('P1.6 clearQueue keeps running/pending and clears finished history', () => {

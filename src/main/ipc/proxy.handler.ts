@@ -3,6 +3,7 @@ import { join } from 'path'
 import { existsSync, mkdirSync } from 'fs'
 import { createHash } from 'crypto'
 import { normalizeNFC } from '../../shared/utils/encoding'
+import { isImageFile } from '../../shared/media/extensions'
 import { FFmpegService } from '../services/FFmpegService'
 
 /**
@@ -62,6 +63,12 @@ export function registerProxyHandler(getFFmpeg: () => FFmpegService): void {
    * If the proxy already exists, returns immediately without regenerating.
    */
   ipcMain.handle('proxy:generate', async (event, sourcePath: string, durationMs?: number): Promise<string> => {
+    // P4.5: stills have no motion to proxy — hand back the source path so
+    // any caller (present or future) previews/exports the original. The
+    // renderer also skips invoking this for stills; this is defense in depth.
+    if (isImageFile(sourcePath)) {
+      return sourcePath
+    }
     const proxyPath = proxyPathForSource(sourcePath)
 
     // Skip if proxy already exists

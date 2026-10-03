@@ -65,6 +65,8 @@ export interface MediaInfo {
   height?: number
   hasAudio?: boolean
   isAudio: boolean
+  /** Still image (P4): renders/burns from the first frame, no proxy/audio. */
+  isImage: boolean
 }
 
 interface MediaLibraryState {
