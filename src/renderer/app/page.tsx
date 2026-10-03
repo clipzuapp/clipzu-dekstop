@@ -27,6 +27,7 @@ import { useExport } from '../store/useExport'
 import { useTimeline, createTextClip, performUndo, performRedo } from '../store/useTimeline'
 import { useStartup } from '../store/useStartup'
 import { useCaption, defaultStyle } from '../store/useCaption'
+import { laneForManualText } from '../../shared/captions/lanes'
 import { useToast } from '../store/useToast'
 import { usePreviewView } from '../store/usePreviewView'
 
@@ -200,7 +201,8 @@ export default function Page(): JSX.Element {
   }, [])
 
   const handleAddText = useCallback(() => {
-    const { playheadMs, totalDurationMs } = useTimeline.getState()
+    const st = useTimeline.getState()
+    const { playheadMs, totalDurationMs } = st
     const durationMs = Math.min(3000, Math.max(500, totalDurationMs - playheadMs))
 
     const clip = createTextClip({
@@ -208,6 +210,8 @@ export default function Page(): JSX.Element {
       startMs: playheadMs,
       durationMs,
       endMs: playheadMs + durationMs,
+      // P2.1: same first-free routing as TextPanel — never silently lane 0.
+      trackIndex: laneForManualText(st.textClips),
       style: { ...defaultStyle },
     })
 
