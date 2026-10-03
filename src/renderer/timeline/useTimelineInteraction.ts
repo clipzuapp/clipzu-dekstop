@@ -14,10 +14,13 @@ import {
   computeBoxRect,
   findClipsInBox,
   getCursorForHit,
+  rowPositionAtY,
   LAYOUT,
   type HitTarget,
   type ModeState
 } from './interaction'
+import { useUiPrefs } from '../store/useUiPrefs'
+import { applyZoomStep, ZOOM_MIN, ZOOM_MAX } from '../../shared/uiPrefs'
 
 export function useTimelineInteraction(
   canvasRef: React.RefObject<HTMLCanvasElement>,
@@ -78,7 +81,9 @@ export function useTimelineInteraction(
     const x = clientX - rect.left - LAYOUT.LANE_LABEL_W
     const { ppm, playheadMs } = stateRef.current
     const state = useTimeline.getState()
-    const lanes = buildLaneLayout(state.tracks, state.clips, state.audioTracks, state.textClips)
+    const lanes = buildLaneLayout(
+      state.tracks, state.clips, state.audioTracks, state.textClips, useUiPrefs.getState()
+    )
     return hitTest(x, clientY - rect.top, ppm, playheadMs, lanes, state.clips, state.audioTracks, state.textClips)
   }, [canvasRef])
 
@@ -152,11 +157,8 @@ export function useTimelineInteraction(
     }
 
     if (activeTool === 'zoom') {
-      if (e.altKey) {
-        setZoom(zoom / 1.5)
-      } else {
-        setZoom(zoom * 1.5)
-      }
+      // P3.3: unified discrete step (was x1.5).
+      setZoom(applyZoomStep(zoom, e.altKey ? 'out' : 'in'))
       return
     }
 
@@ -164,7 +166,9 @@ export function useTimelineInteraction(
 
     // ---- Hit test ----
     const state = useTimeline.getState()
-    const lanes = buildLaneLayout(state.tracks, state.clips, state.audioTracks, state.textClips)
+    const lanes = buildLaneLayout(
+      state.tracks, state.clips, state.audioTracks, state.textClips, useUiPrefs.getState()
+    )
     const hit = hitTest(x, y, ppm, playheadMs, lanes, state.clips, state.audioTracks, state.textClips)
 
     // ---- Check locked track ----
@@ -571,19 +575,20 @@ export function useTimelineInteraction(
               const canvasRect = canvasRef.current?.getBoundingClientRect()
               if (!canvasRect) return
               // Horizontal: time (snapped like video would be; audio keeps
-              // time-only snap via deltaMs). Vertical: audio lane change
-              // (P1.2) — absolute lane minus video lane count.
+              // time-only snap via deltaMs). Vertical: audio lane change —
+              // row position walks shared cumulative geometry so collapsed
+              // lanes map correctly (P3.2), minus the video row count.
               const dx = ev.clientX - dm.startClientX
               const deltaMs = dx / ppm
               const dy = ev.clientY - canvasRect.top - LAYOUT.RULER_H
-              const absoluteLane = Math.max(0, Math.floor(dy / (LAYOUT.TRACK_LANE_H + LAYOUT.LANE_GAP)))
               const live = useTimeline.getState()
-              const videoCount = Math.max(
-                1,
-                ...live.tracks.filter((t) => t.kind === 'video').map((t) => t.index + 1),
-                ...live.clips.map((c) => c.trackIndex + 1)
+              const dragLanes = buildLaneLayout(
+                live.tracks, live.clips, live.audioTracks, live.textClips,
+                useUiPrefs.getState()
               )
-              const newAudioLane = Math.max(0, absoluteLane - videoCount)
+              const videoCount = dragLanes.filter((l) => l.trackKind === 'video').length
+              const absolutePos = rowPositionAtY(dragLanes.map((l) => l.h), dy)
+              const newAudioLane = Math.max(0, absolutePos - videoCount)
               const origin = dm.originPositions.get(hit.id)
               if (origin) {
                 moveAudioTrackLive(hit.id, Math.max(0, origin.startMs + deltaMs), newAudioLane)
@@ -636,7 +641,9 @@ export function useTimelineInteraction(
               const box = computeBoxRect(bs.startClientX, bs.startClientY, ev.clientX, ev.clientY, canvasRect)
               const { ppm } = stateRef.current
               const st = useTimeline.getState()
-              const lanes = buildLaneLayout(st.tracks, st.clips, st.audioTracks, st.textClips)
+              const lanes = buildLaneLayout(
+                st.tracks, st.clips, st.audioTracks, st.textClips, useUiPrefs.getState()
+              )
               const ids = findClipsInBox(box, ppm, lanes, st.clips, st.audioTracks, st.textClips)
               if (ids.length > 0) {
                 selectBox(ids)
@@ -721,11 +728,8 @@ export function useTimelineInteraction(
       return
     }
     if (activeTool === 'zoom') {
-      if (e.altKey) {
-        setZoom(zoom / 1.5)
-      } else {
-        setZoom(zoom * 1.5)
-      }
+      // P3.3: unified discrete step (was x1.5).
+      setZoom(applyZoomStep(zoom, e.altKey ? 'out' : 'in'))
     }
   }, [canvasRef, activeTool, setPlayhead, setZoom, splitClipAtPlayhead])
 
@@ -743,9 +747,11 @@ export function useTimelineInteraction(
         const mouseX = e.clientX - rect.left - LAYOUT.LANE_LABEL_W
         const { ppm, zoom } = stateRef.current
         const timeUnderCursor = mouseX / ppm
-        // Multiplicative zoom step: 15% per scroll tick, feels proportional at any zoom level
-        const factor = e.deltaY > 0 ? 0.85 : 1.15
-        const newZoom = Math.max(0.02, Math.min(10, zoom * factor))
+        // P3.3: unified discrete step with cursor anchoring. Clamped here
+        // for the anchor math; setZoom remains the single policy clamp.
+        const newZoom = Math.max(
+          ZOOM_MIN, Math.min(ZOOM_MAX, applyZoomStep(zoom, e.deltaY > 0 ? 'out' : 'in'))
+        )
         const newPPM = 0.1 * newZoom
         const newScrollLeft = timeUnderCursor * newPPM - mouseX + LAYOUT.LANE_LABEL_W
         container.scrollLeft = Math.max(0, newScrollLeft)

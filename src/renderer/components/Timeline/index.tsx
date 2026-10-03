@@ -7,7 +7,9 @@ import { ContextMenu, type ContextMenuItem } from '../ContextMenu/index'
 import { formatTime } from '../../utils/format'
 import { getWaveform, extractWaveform } from '../../services/WaveformService'
 import { useTimelineInteraction } from '../../timeline/useTimelineInteraction'
-import { LAYOUT, hitTest, buildLaneLayout, computeBoxRect } from '../../timeline/interaction'
+import { LAYOUT, hitTest, buildLaneLayout, computeBoxRect, rowPositionAtY } from '../../timeline/interaction'
+import { useUiPrefs } from '../../store/useUiPrefs'
+import { resolveCollapsedAudioLanes, applyZoomStep, zoomToFit, ZOOM_MIN, ZOOM_MAX } from '../../../shared/uiPrefs'
 import { VolumeX, Headphones, Lock, EyeOff, Trash2 } from 'lucide-react'
 import type { KeyframeTrack } from '../../effects/types/Keyframe'
 
@@ -81,8 +83,23 @@ export function Timeline({ activeTool = 'select' }: TimelineProps): JSX.Element 
   // P2.2: one row per used caption lane (sorted distinct indices).
   const captionLaneIndices = [...new Set<number>(textClips.map((t) => t.trackIndex))].sort((a, b) => a - b)
   const captionLaneCount = captionLaneIndices.length
+  // P3.2: effective audio collapse (persisted pref) drives every y-coordinate
+  // below through ONE shared lane layout (canvas, headers, hit-test agree).
+  const uiCollapse = useUiPrefs(useShallow((s) => ({
+    collapsed: s.collapsedAudioLanes, expanded: s.expandedAudioLanes, def: s.collapseAudioByDefault
+  })))
+  const collapsedAudio = resolveCollapsedAudioLanes(audioLaneCount, {
+    collapsedAudioLanes: uiCollapse.collapsed,
+    expandedAudioLanes: uiCollapse.expanded,
+    collapseAudioByDefault: uiCollapse.def
+  })
+  const lanes = buildLaneLayout(tracks, clips, audioTracks, textClips, collapsedAudio)
+  const laneY = (pos: number): number => lanes[pos]?.y ?? (LAYOUT.RULER_H + pos * (LAYOUT.TRACK_LANE_H + LAYOUT.LANE_GAP))
+  const laneH = (pos: number): number => lanes[pos]?.h ?? LAYOUT.TRACK_LANE_H
   const totalLanes = videoTrackIndices.length + audioLaneCount + captionLaneCount
-  const totalH = LAYOUT.RULER_H + totalLanes * (LAYOUT.TRACK_LANE_H + LAYOUT.LANE_GAP)
+  // P3.2: cumulative heights (collapsed audio rows are shorter).
+  let totalH = LAYOUT.RULER_H
+  for (const lane of lanes) totalH += lane.h + LAYOUT.LANE_GAP
   const timelineEndMs = Math.max(
     totalDurationMs,
     ...clips.map((c) => c.startMs + c.durationMs),
@@ -116,11 +133,10 @@ export function Timeline({ activeTool = 'select' }: TimelineProps): JSX.Element 
 
       drawRuler(ctx, w, LAYOUT.LANE_LABEL_W, LAYOUT.RULER_H, PIXELS_PER_MS, totalDurationMs, markers)
 
-      // Track backgrounds
-      for (let i = 0; i < totalLanes; i++) {
-        const y = LAYOUT.RULER_H + i * (LAYOUT.TRACK_LANE_H + LAYOUT.LANE_GAP)
+      // Track backgrounds — cumulative row geometry (P3.2)
+      for (let i = 0; i < lanes.length; i++) {
         ctx.fillStyle = i % 2 === 0 ? '#101014' : '#121218'
-        ctx.fillRect(LAYOUT.LANE_LABEL_W, y, w - LAYOUT.LANE_LABEL_W, LAYOUT.TRACK_LANE_H)
+        ctx.fillRect(LAYOUT.LANE_LABEL_W, lanes[i].y, w - LAYOUT.LANE_LABEL_W, lanes[i].h)
       }
 
       // Video clips
@@ -129,7 +145,7 @@ export function Timeline({ activeTool = 'select' }: TimelineProps): JSX.Element 
       clips.forEach((clip) => {
         if (clip.startMs + clip.durationMs < viewStartMs || clip.startMs > viewEndMs) return
         const laneIdx = videoTrackIndices.indexOf(clip.trackIndex)
-        const y = LAYOUT.RULER_H + (laneIdx >= 0 ? laneIdx : 0) * (LAYOUT.TRACK_LANE_H + LAYOUT.LANE_GAP)
+        const y = laneY(laneIdx >= 0 ? laneIdx : 0)
         const isHidden = tracks.find((t) => t.index === clip.trackIndex)?.hidden ?? false
         if (!isHidden) {
           const isSel = selectedIdSet.has(clip.id)
@@ -155,23 +171,26 @@ export function Timeline({ activeTool = 'select' }: TimelineProps): JSX.Element 
         }
       })
 
-      // Audio tracks — grouped by trackIndex (multiple clips can share a lane)
+      // Audio tracks — grouped by trackIndex (multiple clips can share a lane).
+      // Collapsed lanes draw a thin strip at the shared row geometry (P3.2).
       const sortedAudioIndices = [...new Set<number>(audioTracks.map((t) => t.trackIndex))].sort((a, b) => a - b)
       for (let li = 0; li < audioLaneCount; li++) {
         const laneIdx = li < sortedAudioIndices.length ? sortedAudioIndices[li] : li
-        const audioLaneY = LAYOUT.RULER_H + (videoTrackIndices.length + li) * (LAYOUT.TRACK_LANE_H + LAYOUT.LANE_GAP)
+        const pos = videoTrackIndices.length + li
+        const audioLaneY = laneY(pos)
+        const audioLaneH = laneH(pos)
         const laneTracks = audioTracks.filter((t) => t.trackIndex === laneIdx)
         for (const track of laneTracks) {
           if (track.startMs + track.durationMs < viewStartMs || track.startMs > viewEndMs) continue
           const effMuted = computeEffectiveMuted(track.muted, track.trackIndex, tracks)
-          drawAudioTrack(ctx, track, LAYOUT.LANE_LABEL_W, audioLaneY, PIXELS_PER_MS, w, selectedIdSet, effMuted)
+          drawAudioTrack(ctx, track, LAYOUT.LANE_LABEL_W, audioLaneY, PIXELS_PER_MS, w, selectedIdSet, effMuted, audioLaneH - 4)
         }
       }
 
       // Caption blocks — grouped by lane, one row per used caption index (P2.2)
       for (let li = 0; li < captionLaneIndices.length; li++) {
         const laneIdx = captionLaneIndices[li]
-        const captionLaneY = LAYOUT.RULER_H + (videoTrackIndices.length + audioLaneCount + li) * (LAYOUT.TRACK_LANE_H + LAYOUT.LANE_GAP)
+        const captionLaneY = laneY(videoTrackIndices.length + audioLaneCount + li)
         for (const entry of textClips) {
           if (entry.trackIndex !== laneIdx) continue
           if (entry.endMs < viewStartMs || entry.startMs > viewEndMs) continue
@@ -270,7 +289,8 @@ export function Timeline({ activeTool = 'select' }: TimelineProps): JSX.Element 
       if (rafRef.current !== null) { cancelAnimationFrame(rafRef.current); rafRef.current = null }
     }
   }, [clips, audioTracks, tracks, markers, textClips, playheadMs, totalDurationMs, zoom, selectedIds, focusedId,
-    PIXELS_PER_MS, totalH, timelineContentW, videoTrackIndices, totalLanes, activeTool, getMachine])
+    PIXELS_PER_MS, totalH, timelineContentW, videoTrackIndices, totalLanes, activeTool, getMachine,
+    collapsedAudio])
 
   // ---- Auto-scroll to keep playhead in view during playback ----
 
@@ -316,6 +336,7 @@ export function Timeline({ activeTool = 'select' }: TimelineProps): JSX.Element 
       if (e.ctrlKey || e.metaKey) {
         // Zoom — delegate to the interaction hook's zoom logic by dispatching
         // a synthetic React event is complex; instead replicate it here directly.
+        // P3.3: discrete ZOOM_STEP with cursor anchoring (single clamp in setZoom).
         const { zoom } = useTimeline.getState()
         const canvas = canvasRef.current
         if (canvas) {
@@ -323,8 +344,10 @@ export function Timeline({ activeTool = 'select' }: TimelineProps): JSX.Element 
           const mouseX = e.clientX - rect.left - LAYOUT.LANE_LABEL_W
           const ppm = 0.1 * zoom
           const timeUnderCursor = mouseX / ppm
-          const factor = e.deltaY > 0 ? 0.85 : 1.15
-          const newZoom = Math.max(0.02, Math.min(10, zoom * factor))
+          // Clamped here for the anchor math; setZoom is the policy clamp.
+          const newZoom = Math.max(
+            ZOOM_MIN, Math.min(ZOOM_MAX, applyZoomStep(zoom, e.deltaY > 0 ? 'out' : 'in'))
+          )
           const newPPM = 0.1 * newZoom
           const newScrollLeft = timeUnderCursor * newPPM - mouseX + LAYOUT.LANE_LABEL_W
           container.scrollLeft = Math.max(0, newScrollLeft)
@@ -359,12 +382,11 @@ export function Timeline({ activeTool = 'select' }: TimelineProps): JSX.Element 
       const rect = canvas.getBoundingClientRect()
       const dropMs = Math.max(0, (e.clientX - rect.left - LAYOUT.LANE_LABEL_W) / PIXELS_PER_MS)
 
-      // Calculate audio lane index from drop Y position
+      // Audio lane from drop Y — walks shared row geometry so drops land
+      // correctly on/around collapsed lanes (P3.2).
       const dropY = e.clientY - rect.top - LAYOUT.RULER_H
-      const audioLaneIdx = Math.max(0, Math.floor(
-        (dropY - videoTrackIndices.length * (LAYOUT.TRACK_LANE_H + LAYOUT.LANE_GAP)) /
-        (LAYOUT.TRACK_LANE_H + LAYOUT.LANE_GAP)
-      ))
+      const dropPos = rowPositionAtY(lanes.map((l) => l.h), dropY)
+      const audioLaneIdx = Math.max(0, dropPos - videoTrackIndices.length)
       const ts = Date.now()
 
       // ---- Unified batch path: multi-select from MediaPanel OR single-item ----
@@ -505,7 +527,7 @@ export function Timeline({ activeTool = 'select' }: TimelineProps): JSX.Element 
     const x = e.clientX - rect.left - LAYOUT.LANE_LABEL_W
     const st = useTimeline.getState()
     const ppm = 0.1 * st.zoom
-    const lanes = buildLaneLayout(st.tracks, st.clips, st.audioTracks, st.textClips)
+    const lanes = buildLaneLayout(st.tracks, st.clips, st.audioTracks, st.textClips, useUiPrefs.getState())
     const hit = hitTest(x, e.clientY - rect.top, ppm, st.playheadMs, lanes, st.clips, st.audioTracks, st.textClips)
 
     if (hit.kind === 'clip-body' || hit.kind === 'audio-body') {
@@ -539,7 +561,7 @@ export function Timeline({ activeTool = 'select' }: TimelineProps): JSX.Element 
     const my = e.clientY - rect.top
     const st = useTimeline.getState()
     const ppm = 0.1 * st.zoom
-    const lanes = buildLaneLayout(st.tracks, st.clips, st.audioTracks, st.textClips)
+    const lanes = buildLaneLayout(st.tracks, st.clips, st.audioTracks, st.textClips, useUiPrefs.getState())
     const hit = hitTest(mx, my, ppm, st.playheadMs, lanes, st.clips, st.audioTracks, st.textClips)
     const captionEntries = st.textClips
 
@@ -692,14 +714,27 @@ export function Timeline({ activeTool = 'select' }: TimelineProps): JSX.Element 
         </div>
         <div className="flex items-center gap-1">
           <button className="w-6 h-6 flex items-center justify-center text-gray-500 hover:text-gray-300 text-xs rounded bg-editor-surface"
-            onClick={() => setZoom(Math.max(0.02, zoom * 0.75))}>
+            title="Zoom out"
+            onClick={() => setZoom(applyZoomStep(zoom, 'out'))}>
             <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor"><rect x="2" y="7" width="12" height="2" /></svg>
           </button>
           <span className="text-[12px] text-gray-500 w-8 text-center tabular-nums">{(zoom * 100).toFixed(0)}%</span>
           <button className="w-6 h-6 flex items-center justify-center text-gray-500 hover:text-gray-300 text-xs rounded bg-editor-surface"
-            onClick={() => setZoom(Math.min(10, zoom * 1.33))}>
+            title="Zoom in"
+            onClick={() => setZoom(applyZoomStep(zoom, 'in'))}>
             <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor">
               <rect x="2" y="7" width="12" height="2" /><rect x="7" y="2" width="2" height="12" />
+            </svg>
+          </button>
+          <button className="h-6 px-1.5 flex items-center justify-center text-gray-500 hover:text-gray-300 text-xs rounded bg-editor-surface"
+            title="Zoom to fit — show the whole timeline"
+            onClick={() => {
+              const container = containerRef.current
+              const visiblePx = container ? container.clientWidth - LAYOUT.LANE_LABEL_W : 0
+              setZoom(zoomToFit(timelineEndMs, visiblePx))
+            }}>
+            <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5">
+              <path d="M2 6V2h4M10 2h4v4M14 10v4h-4M6 14H2v-4" />
             </svg>
           </button>
         </div>
@@ -712,10 +747,11 @@ export function Timeline({ activeTool = 'select' }: TimelineProps): JSX.Element 
           style={{ width: LAYOUT.LANE_LABEL_W, paddingTop: LAYOUT.RULER_H }}>
           {allLanes.map((lane, i) => {
             const track = tracks.find((t) => t.id === lane.trackId)
+            const isCollapsed = lane.kind === 'audio' && collapsedAudio.includes(lane.index)
             return (
               <div key={`${lane.kind}-${lane.index}-${i}`}
-                className="group flex items-center justify-between px-1 shrink-0 border-b border-editor-border/20"
-                style={{ height: LAYOUT.TRACK_LANE_H + LAYOUT.LANE_GAP, gap: 2 }}
+                className="group flex items-center justify-between px-1 shrink-0 border-b border-editor-border/20 overflow-hidden"
+                style={{ height: laneH(i) + LAYOUT.LANE_GAP, gap: 2 }}
                 onContextMenu={(e) => {
                   e.preventDefault()
                   const t = tracks.find((tr) => tr.id === lane.trackId)
@@ -757,7 +793,18 @@ export function Timeline({ activeTool = 'select' }: TimelineProps): JSX.Element 
                 }}
               >
                 <span className="text-[12px] text-gray-500 truncate flex-1" title={lane.name}>{lane.name}</span>
-                {track && (
+                {lane.kind === 'audio' && (
+                  <button className="w-4 h-4 shrink-0 flex items-center justify-center rounded text-gray-700 hover:text-gray-300"
+                    title={isCollapsed ? `Expand ${lane.name}` : `Collapse ${lane.name}`}
+                    onClick={() => useUiPrefs.getState().toggleAudioLane(lane.index)}>
+                    <svg width="10" height="10" viewBox="0 0 10 10" fill="currentColor">
+                      {isCollapsed
+                        ? <path d="M2 3.5l3 3 3-3" stroke="currentColor" strokeWidth="1.5" fill="none" />
+                        : <path d="M2 6.5l3-3 3 3" stroke="currentColor" strokeWidth="1.5" fill="none" />}
+                    </svg>
+                  </button>
+                )}
+                {track && !isCollapsed && (
                   <div className="flex gap-0.5">
                     <TrackButton active={!!track.muted} activeColor="text-yellow-400" title="Mute"
                       onClick={() => toggleMuteTrack(track.id)}><VolumeX size={12} /></TrackButton>
@@ -1010,12 +1057,14 @@ function drawAudioTrack(
   ctx: CanvasRenderingContext2D,
   track: { id: string; path: string; startMs: number; durationMs: number; volume: number; muted: boolean; name?: string; role?: string; fadeInMs?: number; fadeOutMs?: number },
   offsetX: number, trackY: number, ppm: number, maxW: number, selectedIdSet: Set<string>,
-  effectiveMuted: boolean
+  effectiveMuted: boolean,
+  /** Block height override for collapsed lanes (P3.2). Defaults to full height. */
+  blockH?: number
 ): void {
   const x = offsetX + track.startMs * ppm
   const w = Math.max(track.durationMs * ppm, 40)
   const clipW = Math.min(w, maxW - x)
-  const h = LAYOUT.TRACK_LANE_H - 4
+  const h = blockH ?? (LAYOUT.TRACK_LANE_H - 4)
   const y = trackY + 2
   const r = 4
   if (clipW < 4) return
@@ -1076,7 +1125,8 @@ function drawAudioTrack(
     }
   }
 
-  if (clipW > 40) {
+  // Collapsed strips (P3.2) skip the label — 8px is a status strip, not a card.
+  if (clipW > 40 && h >= 20) {
     ctx.fillStyle = '#aaa'; ctx.font = '12px Inter, system-ui, sans-serif'
     ctx.fillText(track.name || 'Audio', x + 4, y + h / 2 + 4)
   }

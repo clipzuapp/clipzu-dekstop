@@ -28,6 +28,14 @@ import { useTimeline, createTextClip, performUndo, performRedo } from '../store/
 import { useStartup } from '../store/useStartup'
 import { useCaption, defaultStyle } from '../store/useCaption'
 import { laneForManualText } from '../../shared/captions/lanes'
+import { useUiPrefs } from '../store/useUiPrefs'
+import { useProject } from '../store/useProject'
+import {
+  loadUiPrefs,
+  defaultStorage,
+  resolveStartupZoom,
+  NARROW_WINDOW_PX,
+} from '../../shared/uiPrefs'
 import { useToast } from '../store/useToast'
 import { usePreviewView } from '../store/usePreviewView'
 
@@ -76,10 +84,26 @@ export default function Page(): JSX.Element {
   const isFullscreen = usePreviewView((s) => s.isFullscreen)
   const toggleFullscreen = usePreviewView((s) => s.toggleFullscreen)
 
-  // Panel sizes — initialized from window dimensions, clamped on window resize
-  const [mediaPanelW, setMediaPanelW] = useState(defaultMediaPanelW)
-  const [inspectorW, setInspectorW]   = useState(defaultInspectorW)
-  const [timelineH, setTimelineH]     = useState(defaultTimelineH)
+  // Panel sizes — restored from app prefs when present, else window-derived
+  // defaults (P3.1/interface_blueprint: panel persistence, machine-local).
+  const [mediaPanelW, setMediaPanelW] = useState(
+    () => clampMediaPanelW(loadUiPrefs(defaultStorage()).mediaPanelW ?? defaultMediaPanelW()))
+  const [inspectorW, setInspectorW] = useState(
+    () => clampInspectorW(loadUiPrefs(defaultStorage()).inspectorW ?? defaultInspectorW()))
+  const [timelineH, setTimelineH] = useState(
+    () => clampTimelineH(loadUiPrefs(defaultStorage()).timelineH ?? defaultTimelineH()))
+
+  // Startup (P3.1/D1): hydrate session prefs (narrow-window default applies
+  // on first run), then apply the remembered/smart zoom when no project is
+  // open. A loaded `.clipzu` zoom always wins later via loadTimeline.
+  useEffect(() => {
+    const narrowWindow = window.innerWidth < NARROW_WINDOW_PX
+    useUiPrefs.getState().hydrate(narrowWindow)
+    if (useProject.getState().projectFilePath === null) {
+      const saved = useUiPrefs.getState().timelineZoom
+      useTimeline.getState().setZoom(resolveStartupZoom(saved, window.innerWidth))
+    }
+  }, [])
 
   // Pre-load notification sound paths for instant playback
   useEffect(() => { preloadSounds() }, [])
@@ -104,7 +128,9 @@ export default function Page(): JSX.Element {
     setter: React.Dispatch<React.SetStateAction<number>>,
     min: number,
     maxPct: number,
-    getInitial: () => number
+    getInitial: () => number,
+    /** Persisted on drag-end (P3.1 panel-size memory). Receives the final px. */
+    onCommit?: (value: number) => void
   ) => (e: React.MouseEvent): void => {
     e.preventDefault()
     const startPos = direction === 'vertical' ? e.clientY : e.clientX
@@ -114,6 +140,7 @@ export default function Page(): JSX.Element {
       ? Math.round(window.innerHeight * maxPct)
       : Math.round(window.innerWidth * maxPct)
 
+    let last = startVal
     const onMove = (moveEvent: MouseEvent): void => {
       const currentPos = direction === 'vertical' ? moveEvent.clientY : moveEvent.clientX
       const delta =
@@ -122,12 +149,14 @@ export default function Page(): JSX.Element {
           : direction === 'horizontal-left'
             ? currentPos - startPos
             : startPos - currentPos
-      setter(Math.min(max, Math.max(min, startVal + delta)))
+      last = Math.min(max, Math.max(min, startVal + delta))
+      setter(last)
     }
 
     const onUp = (): void => {
       window.removeEventListener('mousemove', onMove)
       window.removeEventListener('mouseup', onUp)
+      onCommit?.(last)
     }
 
     window.addEventListener('mousemove', onMove)
@@ -359,7 +388,8 @@ export default function Page(): JSX.Element {
             className="resize-handle resize-handle-vertical"
             onMouseDown={makeResizeHandler(
               'horizontal-left', setMediaPanelW, MEDIA_PANEL_MIN, MEDIA_PANEL_MAX_PCT,
-              () => mediaPanelW
+              () => mediaPanelW,
+              (v) => useUiPrefs.getState().setPanelSize('mediaPanelW', v)
             )}
           />
 
@@ -383,7 +413,8 @@ export default function Page(): JSX.Element {
             className="resize-handle resize-handle-vertical"
             onMouseDown={makeResizeHandler(
               'horizontal-right', setInspectorW, INSPECTOR_MIN, INSPECTOR_MAX_PCT,
-              () => inspectorW
+              () => inspectorW,
+              (v) => useUiPrefs.getState().setPanelSize('inspectorW', v)
             )}
           />
 
@@ -409,7 +440,8 @@ export default function Page(): JSX.Element {
           className="resize-handle resize-handle-horizontal"
           onMouseDown={makeResizeHandler(
             'vertical', setTimelineH, TIMELINE_MIN, TIMELINE_MAX_PCT,
-            () => timelineH
+            () => timelineH,
+            (v) => useUiPrefs.getState().setPanelSize('timelineH', v)
           )}
         />
 

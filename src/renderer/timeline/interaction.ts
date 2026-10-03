@@ -4,6 +4,7 @@
 // ---------------------------------------------------------------------------
 
 import type { Clip, AudioTrack, TextClip, Track } from '../store/useTimeline'
+import { resolveCollapsedAudioLanes, type AudioCollapsePrefs } from '../../shared/uiPrefs'
 
 // ========================== Phase 1: State Machine ==========================
 
@@ -173,6 +174,11 @@ const TRACK_LANE_H = 36
 const LANE_GAP = 4
 const LANE_LABEL_W = 128
 const RULER_H = 24
+/**
+ * Collapsed audio lane height in px (P3.2). A collapsed lane renders
+ * 12px + gap (vs 36 + 4) — still hit-testable, still draggable onto.
+ */
+export const AUDIO_LANE_COLLAPSED_H = 12
 /** Minimum handle width in px — ensures short clips remain movable */
 const MIN_HANDLE_PX = 6
 /** Handle width as fraction of clip width — scales with zoom */
@@ -189,19 +195,80 @@ export function getHandleWidth(clipWidthPx: number): number {
   return Math.max(MIN_HANDLE_PX, Math.min(MAX_HANDLE_PX, clipWidthPx * HANDLE_FRACTION))
 }
 
-interface LaneLayout {
+export interface LaneLayout {
   /** Y offset of lane relative to canvas top (includes RULER_H) */
   y: number
+  /** Lane height in px (collapsed audio lanes are shorter). */
+  h: number
   trackKind: 'video' | 'audio' | 'caption'
   trackIndex: number
 }
+
+/** Lane height for an audio lane (P3.2 collapse). */
+export function audioLaneHeight(collapsed: boolean): number {
+  return collapsed ? AUDIO_LANE_COLLAPSED_H : TRACK_LANE_H
+}
+
+/**
+ * Row heights for a dense lane sequence: video rows, then audio rows
+ * (collapsed per `collapsedAudio` indices), then one row per caption index.
+ * Single source for canvas draw, headers, hit-test, and drag mapping —
+ * every consumer shares these numbers (P3.2).
+ */
+export function timelineRowHeights(
+  videoCount: number,
+  audioCount: number,
+  captionCount: number,
+  collapsedAudio: readonly number[] = []
+): number[] {
+  const heights: number[] = []
+  for (let i = 0; i < Math.max(0, videoCount); i++) heights.push(TRACK_LANE_H)
+  for (let i = 0; i < Math.max(0, audioCount); i++) {
+    heights.push(audioLaneHeight(collapsedAudio.includes(i)))
+  }
+  for (let i = 0; i < Math.max(0, captionCount); i++) heights.push(TRACK_LANE_H)
+  return heights
+}
+
+/** Y offset of a row position (cumulative heights + gaps). */
+export function rowYAt(rowHeights: number[], position: number): number {
+  let y = RULER_H
+  const clamped = Math.max(0, Math.min(rowHeights.length, Math.floor(position)))
+  for (let i = 0; i < clamped; i++) y += rowHeights[i] + LANE_GAP
+  return y
+}
+
+/** Total content height for a row-height sequence (keeps trailing gap rhythm). */
+export function rowsTotalHeight(rowHeights: number[]): number {
+  let total = RULER_H
+  for (const h of rowHeights) total += h + LANE_GAP
+  return total
+}
+
+/**
+ * Row position at a canvas Y (below the ruler). Walks cumulative heights —
+ * correct with collapsed lanes, unlike fixed-pitch division. Clamps to the
+ * last row so drops/drags below content still resolve.
+ */
+export function rowPositionAtY(rowHeights: number[], dy: number): number {
+  if (rowHeights.length === 0) return 0
+  let y = 0
+  for (let i = 0; i < rowHeights.length; i++) {
+    y += rowHeights[i] + LANE_GAP
+    if (dy < y) return i
+  }
+  return rowHeights.length - 1
+}
+
+export type { AudioCollapsePrefs } from '../../shared/uiPrefs'
 
 /** Build lane layout from tracks and data */
 export function buildLaneLayout(
   tracks: Track[],
   clips: Clip[],
   audioTracks: AudioTrack[],
-  captionEntries: TextClip[]
+  captionEntries: TextClip[],
+  collapsedAudio: readonly number[] | AudioCollapsePrefs = []
 ): LaneLayout[] {
   const lanes: LaneLayout[] = []
 
@@ -211,12 +278,17 @@ export function buildLaneLayout(
     ...tracks.filter((t) => t.kind === 'video').map((t) => t.index + 1),
     ...clips.map((c) => c.trackIndex + 1)
   )
+  let cursorY = RULER_H
+  const pushLane = (
+    h: number,
+    trackKind: 'video' | 'audio' | 'caption',
+    trackIndex: number
+  ): void => {
+    lanes.push({ y: cursorY, h, trackKind, trackIndex })
+    cursorY += h + LANE_GAP
+  }
   for (let i = 0; i < videoTrackCount; i++) {
-    lanes.push({
-      y: RULER_H + lanes.length * (TRACK_LANE_H + LANE_GAP),
-      trackKind: 'video',
-      trackIndex: i
-    })
+    pushLane(TRACK_LANE_H, 'video', i)
   }
 
   // Audio lanes — counted by max trackIndex (+1) across all audio tracks
@@ -228,23 +300,20 @@ export function buildLaneLayout(
     audioTracks.length > 0 ? 1 : 0,
     tracks.filter((t) => t.kind === 'audio').length
   )
+  // P3.2: callers pass either resolved indices or the prefs object (resolved
+  // here against the same count, so canvas/hit-test/drag can never disagree).
+  const collapsed: readonly number[] = 'collapsedAudioLanes' in collapsedAudio
+    ? resolveCollapsedAudioLanes(audioLaneCount, collapsedAudio)
+    : collapsedAudio
   for (let i = 0; i < audioLaneCount; i++) {
-    lanes.push({
-      y: RULER_H + lanes.length * (TRACK_LANE_H + LANE_GAP),
-      trackKind: 'audio',
-      trackIndex: i
-    })
+    pushLane(audioLaneHeight(collapsed.includes(i)), 'audio', i)
   }
 
   // Caption lanes — one row per used caption lane index (P2.2).
   // Distinct indices sorted so rows are stable; gaps (deleted lanes) collapse.
   const captionLaneIndices = [...new Set(captionEntries.map((c) => c.trackIndex))].sort((a, b) => a - b)
   for (const captionIndex of captionLaneIndices) {
-    lanes.push({
-      y: RULER_H + lanes.length * (TRACK_LANE_H + LANE_GAP),
-      trackKind: 'caption',
-      trackIndex: captionIndex
-    })
+    pushLane(TRACK_LANE_H, 'caption', captionIndex)
   }
 
   return lanes
@@ -290,10 +359,12 @@ export function hitTest(
     return { kind: 'playhead' }
   }
 
-  // Reverse-iterate lanes: topmost visual lane gets hit priority
+  // Reverse-iterate lanes: topmost visual lane gets hit priority.
+  // Row bounds use the lane's own height (P3.2) — collapsed audio lanes
+  // stay hit-testable at 12px; the old 36px band no longer leaks below.
   for (let li = lanes.length - 1; li >= 0; li--) {
     const lane = lanes[li]
-    if (y < lane.y - RULER_H || y > lane.y - RULER_H + TRACK_LANE_H) continue
+    if (y < lane.y - RULER_H || y >= lane.y - RULER_H + lane.h + LANE_GAP) continue
 
     if (lane.trackKind === 'video') {
       // Reverse-iterate clips so topmost-drawn clip gets priority
@@ -558,7 +629,7 @@ export function findClipsInBox(
     const cx = clip.startMs * ppm
     const cw = Math.max(clip.durationMs * ppm, 4)
     const cy = lane.y - RULER_H
-    const ch = TRACK_LANE_H
+    const ch = lane.h
 
     if (rectsOverlap(box.x1, box.y1, box.x2, box.y2, cx, cy, cx + cw, cy + ch)) {
       ids.push(clip.id)
@@ -573,25 +644,22 @@ export function findClipsInBox(
     const ax = track.startMs * ppm
     const aw = Math.max(track.durationMs * ppm, 40)
     const ay = lane.y - RULER_H
-    const ah = TRACK_LANE_H
+    const ah = lane.h
 
     if (rectsOverlap(box.x1, box.y1, box.x2, box.y2, ax, ay, ax + aw, ay + ah)) {
       ids.push(track.id)
     }
   }
 
-  // Caption entries
-  const capLaneIdx = lanes.findIndex((l) => l.trackKind === 'caption')
-  if (capLaneIdx >= 0) {
-    const capLane = lanes[capLaneIdx]
-    const cy = capLane.y - RULER_H
-    const ch = TRACK_LANE_H
-    for (const entry of captionEntries) {
-      const ex = entry.startMs * ppm
-      const ew = Math.max((entry.endMs - entry.startMs) * ppm, 4)
-      if (rectsOverlap(box.x1, box.y1, box.x2, box.y2, ex, cy, ex + ew, cy + ch)) {
-        ids.push(entry.id)
-      }
+  // Caption entries — every used lane (P2 left only the first lane selectable).
+  for (const entry of captionEntries) {
+    const lane = lanes.find((l) => l.trackKind === 'caption' && l.trackIndex === entry.trackIndex)
+    if (!lane) continue
+    const ex = entry.startMs * ppm
+    const ew = Math.max((entry.endMs - entry.startMs) * ppm, 4)
+    const cy = lane.y - RULER_H
+    if (rectsOverlap(box.x1, box.y1, box.x2, box.y2, ex, cy, ex + ew, cy + lane.h)) {
+      ids.push(entry.id)
     }
   }
 

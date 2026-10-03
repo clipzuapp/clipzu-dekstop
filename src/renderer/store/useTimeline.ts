@@ -12,6 +12,7 @@ import {
 } from '../../shared/utils/timeline'
 import type { KeyframeTrack } from '../effects/types/Keyframe'
 import type { Modifier, ModifierPatch } from '../effects/types/Modifier'
+import { saveLastZoom, defaultStorage } from '../../shared/uiPrefs'
 
 export {
   recalcTimelineDuration,
@@ -1413,7 +1414,14 @@ export const useTimeline = create<TimelineState & TimelineActions>()(
 
     // -- Playback --
     setPlayhead: (ms) => set((state) => { state.playheadMs = Math.max(0, ms) }),
-    setZoom: (zoom) => set((state) => { state.zoom = Math.max(0.02, Math.min(10, zoom)) }),
+    // P3.1 (D1): every user zoom change is remembered for the next session
+    // (app-scoped pref, never the project file). Single clamp lives HERE —
+    // callers pass raw stepped values (A-§7 D5). No-op under node:test.
+    setZoom: (zoom) => {
+      const clamped = Math.max(0.02, Math.min(10, zoom))
+      set((state) => { state.zoom = clamped })
+      saveLastZoom(clamped, defaultStorage())
+    },
     setPlaying: (playing) => set((state) => { state.isPlaying = playing }),
 
     // -- Unified Selection (Phase 4) --

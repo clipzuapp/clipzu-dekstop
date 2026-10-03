@@ -38,6 +38,13 @@ const TL = require('../../../renderer/store/useTimeline.js')
 const PJ = require('../../../renderer/store/useProject.js')
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const EX = require('../../../renderer/store/useExport.js')
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+const LAY = require('../../../renderer/timeline/interaction.js')
+import {
+  resolveCollapsedAudioLanes,
+  toggleCollapseLane,
+  DEFAULT_UI_PREFS,
+} from '../../uiPrefs'
 
 interface TimelineTestApi {
   clips: unknown[]
@@ -424,5 +431,48 @@ describe('phase 1 — track/layer bug fixes + SSOT extractions', () => {
     )
     EX.useExport.getState().resetExportSession()
     assert.equal((EX.useExport.getState().queue as unknown[]).length, 0)
+  })
+
+  it('P3.2 lane ops stay correct on collapsed rows (move + hit + cascade + undo)', () => {
+    seedLanes()
+    const st = useTimeline.getState() as unknown as TimelineTestApi & {
+      moveAudioTrack: (id: string, ms: number, lane?: number) => void
+    }
+    // Move a clip onto lane 1, then collapse lane 1 via the pure pref path.
+    st.moveAudioTrack('audio_a0', 500, 1)
+    const collapsed = resolveCollapsedAudioLanes(2, toggleCollapseLane(
+      { ...DEFAULT_UI_PREFS, collapseAudioByDefault: false }, 1
+    ))
+    assert.deepEqual(collapsed, [1])
+    // Hit-test still resolves the moved clip on the collapsed 12px row.
+    const s = useTimeline.getState()
+    const lanes2 = LAY.buildLaneLayout(
+      s.tracks as never, s.clips as never, s.audioTracks as never, s.textClips as never, collapsed
+    )
+    const audioLane1 = lanes2.find(
+      (l: { trackKind: string; trackIndex: number }) => l.trackKind === 'audio' && l.trackIndex === 1
+    ) as { y: number; h: number }
+    assert.equal(audioLane1.h, 12)
+    const hit = LAY.hitTest(150, audioLane1.y + 6, 0.1, 0, lanes2,
+      s.clips as never, s.audioTracks as never, s.textClips as never)
+    assert.equal(hit.kind, 'audio-body')
+    // a0 moved onto lane 1 where a1/a1b already live: the hit must be a
+    // lane-1 clip (reverse paint order yields the topmost, a1).
+    const hitClip = (s.audioTracks as Array<{ id: string; trackIndex: number }>)
+      .find((a) => a.id === (hit as { id: string }).id)
+    assert.equal(hitClip?.trackIndex, 1)
+    // Cascade + undo are collapse-independent.
+    const before = JSON.stringify({
+      clips: s.clips, audioTracks: s.audioTracks, textClips: s.textClips, tracks: s.tracks,
+    })
+    ;(useTimeline.getState() as unknown as TimelineTestApi).deleteTrack('track_audio_1')
+    assert.ok(!(useTimeline.getState().audioTracks as Array<{ id: string }>).some((a) => a.id === 'audio_a0'))
+    assert.equal(performUndo(), true)
+    assert.equal(JSON.stringify({
+      clips: useTimeline.getState().clips,
+      audioTracks: useTimeline.getState().audioTracks,
+      textClips: useTimeline.getState().textClips,
+      tracks: useTimeline.getState().tracks,
+    }), before)
   })
 })
