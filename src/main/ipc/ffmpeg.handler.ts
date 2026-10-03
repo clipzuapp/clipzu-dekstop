@@ -2,6 +2,7 @@ import { ipcMain, dialog, BrowserWindow } from 'electron'
 import { FFmpegService } from '../services/FFmpegService'
 import { ThumbnailService } from '../services/ThumbnailService'
 import { mediaDialogFilters } from '../../shared/media/extensions'
+import { vouchMediaFile } from '../security/fileAccess'
 
 /**
  * FFmpeg IPC handlers - Media info, frame extraction, thumbnails.
@@ -15,7 +16,11 @@ export function registerFFmpegHandler(
   // Get media file info (duration, resolution, fps, codec)
   ipcMain.handle('ffmpeg:getMediaInfo', async (_event, filePath: string) => {
     try {
-      return await ffmpeg.getMediaInfo(filePath)
+      const info = await ffmpeg.getMediaInfo(filePath)
+      // P6.2: a successfully probed path is main-validated media — vouch it
+      // for later file:readBuffer serving (waveform/audio decode).
+      vouchMediaFile(filePath)
+      return info
     } catch (err) {
       throw new Error(`Failed to get media info: ${(err as Error).message}`)
     }

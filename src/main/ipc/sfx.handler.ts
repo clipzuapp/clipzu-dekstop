@@ -3,6 +3,7 @@ import { join } from 'path'
 import { readdirSync, statSync, existsSync } from 'fs'
 import { readFile } from 'fs/promises'
 import { FFmpegService } from '../services/FFmpegService'
+import { vouchMediaFile, vouchMediaFiles, assertFileReadAllowed } from '../security/fileAccess'
 
 /**
  * SFX IPC Handler - Reads sound effects from assets/sfx folder
@@ -84,6 +85,8 @@ export function registerSFXHandler(): void {
       }
 
       files.sort((a, b) => a.category.localeCompare(b.category) || a.name.localeCompare(b.name))
+      // P6.2: listed library files are main-validated media — servable.
+      vouchMediaFiles(files.map((f) => f.path))
       return files
     } catch (error) {
       console.error('[SFX] Failed to read library:', error)
@@ -100,10 +103,12 @@ export function registerSFXHandler(): void {
     }
   })
 
-  /** Generic file read IPC — used by AudioEngine to read local audio files
-   *  since fetch() to file:// is blocked in Electron renderer. */
+  /** Scoped file read IPC (P6.2 / audit S2) — only servable audio reaches
+   *  the renderer (AudioEngine preload + WaveformService decode). Anything
+   *  else fails closed with a typed error the UI surfaces loudly. */
   ipcMain.handle('file:readBuffer', async (_event, filePath: string): Promise<ArrayBuffer> => {
-    const buffer = await readFile(filePath)
+    const allowed = assertFileReadAllowed(filePath)
+    const buffer = await readFile(allowed)
     return buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + buffer.byteLength)
   })
 
@@ -131,6 +136,8 @@ export function registerSFXHandler(): void {
     const filePath = join(sfxDir, filename)
     if (!existsSync(filePath)) return null
 
+    // P6.2: resolved notification sounds are servable.
+    vouchMediaFile(filePath)
     return filePath
   })
 }

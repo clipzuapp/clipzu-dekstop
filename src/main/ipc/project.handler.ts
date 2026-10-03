@@ -26,6 +26,7 @@ import {
 } from '../../shared/project/projectSchema'
 import { v1ToLoadedProject } from '../../shared/project/legacyEcp'
 import { mediaDialogFilters } from '../../shared/media/extensions'
+import { vouchMediaFiles } from '../security/fileAccess'
 import {
   formatMissingMediaError,
   type RelinkListResult,
@@ -218,6 +219,8 @@ async function attemptLoadProject(
       ...legacy.warnings,
     ]
     const loaded = v1ToLoadedProject(patched, notes)
+    // P6.2: resolved legacy media (incl. relink overrides) is servable.
+    vouchMediaFiles(pathByUsageId.values())
     return { ok: true, result: { data: loaded, filePath, format: 'ecp-legacy', migrationNotes: notes } }
   }
 
@@ -246,6 +249,8 @@ async function attemptLoadProject(
   }
 
   const loaded = buildLoadedFromClipzu(document, resolved)
+  // P6.2: resolved manifest assets (incl. relink overrides) are servable.
+  vouchMediaFiles(resolved.values())
   return { ok: true, result: { data: loaded, filePath, format: 'clipzu', migrationNotes } }
 }
 

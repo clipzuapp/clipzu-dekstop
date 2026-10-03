@@ -6,6 +6,19 @@ import { MENU_CHANNELS, PROJECT_CHANNELS } from '../shared/ipc/channels'
  * Context isolation is enabled - renderer cannot access Node.js directly
  */
 
+/**
+ * Renderer-subscribable channels (P6.3): shared by `on` (subscribe) and
+ * `removeAllListeners` (unsubscribe) so the two can never drift apart.
+ * Must stay in sync with main/index.ts sends — see MENU_CHANNELS.
+ */
+const SUBSCRIBE_CHANNELS: string[] = [
+  ...MENU_CHANNELS,
+  'export:progress',
+  'whisper:progress',
+  'startup:validation',
+  'proxy:progress'
+]
+
 const electronAPI = {
   ipcRenderer: {
     invoke: (channel: string, ...args: unknown[]): Promise<unknown> => {
@@ -52,14 +65,7 @@ const electronAPI = {
     on: (channel: string, listener: (event: unknown, ...args: unknown[]) => void): (() => void) => {
       // Native menu events MUST stay in sync with main/index.ts sends and
       // HotkeyManager subscriptions — all three reference MENU_CHANNELS.
-      const validChannels: string[] = [
-        ...MENU_CHANNELS,
-        'export:progress',
-        'whisper:progress',
-        'startup:validation',
-        'proxy:progress'
-      ]
-      if (validChannels.includes(channel)) {
+      if (SUBSCRIBE_CHANNELS.includes(channel)) {
         const subscription = (_event: Electron.IpcRendererEvent, ...args: unknown[]): void => {
           listener(_event, ...args)
         }
@@ -75,7 +81,12 @@ const electronAPI = {
       console.warn(`IPC send not allowed for channel: ${channel}`)
     },
     removeAllListeners: (channel: string): void => {
-      ipcRenderer.removeAllListeners(channel)
+      // P6.3 (audit S3): same allowlist as `on` — listener removal cannot be
+      // abused to silence channels outside the bridge contract (self-DoS only
+      // before; now not even that).
+      if (SUBSCRIBE_CHANNELS.includes(channel)) {
+        ipcRenderer.removeAllListeners(channel)
+      }
     }
   }
 }

@@ -208,8 +208,12 @@ function createWindow(): void {
     {
       label: 'View',
       submenu: [
-        { label: 'Toggle DevTools', accelerator: 'F12', role: 'toggleDevTools' },
-        { type: 'separator' },
+        // P6.3 (audit S3): DevTools/F12 exist in dev builds only. Production
+        // keeps Zoom roles (Preview viewport) but no element inspection.
+        ...(is.dev
+          ? [{ label: 'Toggle DevTools', accelerator: 'F12', role: 'toggleDevTools' as const }]
+          : []),
+        ...(is.dev ? [{ type: 'separator' } as const] : []),
         { label: 'Reset Zoom', accelerator: 'CmdOrCtrl+0', role: 'resetZoom' },
         { label: 'Zoom In', accelerator: 'CmdOrCtrl+=', role: 'zoomIn' },
         { label: 'Zoom Out', accelerator: 'CmdOrCtrl+-', role: 'zoomOut' },
