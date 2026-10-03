@@ -158,7 +158,11 @@ function createWindow(): void {
     frame: process.platform === 'darwin' ? false : true,
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),
-      sandbox: false,
+      // P6.1 TRIAL (branch trial/sandbox): Electron secure default. The
+      // renderer uses zero Node APIs (verified by grep: one typeof-guarded
+      // process.env read); preload is contextBridge-only; waveform/proxy/
+      // thumbnails/transcription all live in main via IPC.
+      sandbox: true,
       contextIsolation: true,
       nodeIntegration: false,
       webSecurity: !is.dev
