@@ -123,6 +123,11 @@ interface ExportClip {
   /** Edge fades in ms (0 = none). Rendered as ASS \fad, matching Preview. */
   fadeInMs?: number
   fadeOutMs?: number
+  /**
+   * P2.4: ASS layer for stacked caption lanes (lower lane index → higher
+   * layer → drawn on top, mirroring the Preview paint order). Defaults 0.
+   */
+  layer?: number
 }
 
 interface SRTOutputEntry {
@@ -448,12 +453,15 @@ export function generateExportASS(clips: ExportClip[], options: ExportASSOptions
     return name
   }
 
-  for (const clip of clips) {
+  // Time order, lanes merged (P2.4) — deterministic regardless of caller order.
+  const ordered = [...clips].sort((a, b) => a.startMs - b.startMs)
+  for (const clip of ordered) {
     const style = clip.style ?? options.fallbackStyle
     const styleName = getStyleName(style)
+    const layer = Math.max(0, Math.floor(clip.layer ?? 0))
     for (const entry of expandExportClip(clip, style)) {
       if (entry.endMs <= entry.startMs) continue
-      dialogues.push(`Dialogue: 0,${formatASSTime(entry.startMs)},${formatASSTime(entry.endMs)},${styleName},,0,0,0,,${entry.text}`)
+      dialogues.push(`Dialogue: ${layer},${formatASSTime(entry.startMs)},${formatASSTime(entry.endMs)},${styleName},,0,0,0,,${entry.text}`)
     }
   }
 

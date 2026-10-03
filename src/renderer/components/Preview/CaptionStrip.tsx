@@ -4,6 +4,7 @@ import { useTimeline, getStyleClipboard } from '../../store/useTimeline'
 import { useConfirm } from '../../store/useConfirm'
 import { useToast } from '../../store/useToast'
 import { ContextMenu, type ContextMenuItem } from '../ContextMenu/index'
+import { resolveActiveCaptions } from '../../../shared/captions/lanes'
 
 const LANGUAGES = [
   { value: 'auto', label: 'Auto' },
@@ -60,9 +61,10 @@ export function CaptionStrip(): JSX.Element {
   // Context menu state
   const [ctxMenu, setCtxMenu] = useState<{ x: number; y: number; items: ContextMenuItem[] } | null>(null)
 
-  // Find active entry (startMs <= playheadMs <= endMs)
-  const activeEntry = entries.find((e) => playheadMs >= e.startMs && playheadMs <= e.endMs)
-  const activeEntryId = activeEntry?.id || selectedId
+  // Active entries across ALL caption lanes (P2.3 stacking parity with Preview).
+  const activeEntries = resolveActiveCaptions(entries, playheadMs)
+  const activeEntryIds = new Set(activeEntries.map((e) => e.id))
+  const activeEntryId = activeEntries.length > 0 ? activeEntries[0].id : selectedId
 
   // Auto-scroll active pill into view
   useEffect(() => {
@@ -162,7 +164,7 @@ export function CaptionStrip(): JSX.Element {
       ) : (
         /* Caption pills */
         entries.map((entry) => {
-          const isActive = entry.id === activeEntryId
+          const isActive = activeEntryIds.has(entry.id)
 
           return (
             <div

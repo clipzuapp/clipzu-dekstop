@@ -10,10 +10,11 @@ import { resolveActiveWord, buildRevealText, createActivationCache, type Activat
 import { TransformOverlay } from './TransformOverlay'
 import { GuideOverlay } from './GuideOverlay'
 import * as AudioEngine from '../../services/AudioEngine'
-import { type AudioTrack, computeEffectiveMuted, getInPoint, getOutPoint } from '../../store/useTimeline'
+import { type AudioTrack, type TextClip, computeEffectiveMuted, getInPoint, getOutPoint } from '../../store/useTimeline'
 import { ContextMenu, type ContextMenuItem } from '../ContextMenu/index'
 import { useConfirm } from '../../store/useConfirm'
 import { computeCaptionLayout } from '../../../shared/utils/renderGeometry'
+import { resolveActiveCaptions, visibleCaptionClips, captionLanePosition } from '../../../shared/captions/lanes'
 import type { CaptionStyle } from '../../../shared/types/caption'
 import { evaluateKeyframes } from '../../services/KeyframeEvaluator'
 import { buildCssFilter } from '../../services/FilterPipeline'
@@ -629,27 +630,26 @@ export function Preview(): JSX.Element {
 
       ctx.clearRect(0, 0, canvas.width, canvas.height)
 
-      // Caption rendering with animation — use per-clip style if available
+      // Caption rendering with animation — use per-clip style if available.
+      // P2.3: overlapping captions on different lanes co-render stacked
+      // (lower lane index on top). Muted/hidden/solo-excluded lanes drop
+      // out (V2.2). Single-caption fast path is pixel-identical to before.
       const currentMs = playheadMsRef.current
-      const activeCaption = captionEntries.find(
-        (e) => currentMs >= e.startMs && currentMs < e.endMs
-      )
-      if (activeCaption) {
-        const elapsed = currentMs - activeCaption.startMs
-        const totalCaptionDuration = activeCaption.endMs - activeCaption.startMs
+      const paintCaption = (cap: (typeof captionEntries)[number], style: typeof captionStyle): void => {
+        const elapsed = currentMs - cap.startMs
+        const totalCaptionDuration = cap.endMs - cap.startMs
         // Per-clip style resolution: each TextClip has its own `style?: CaptionStyle`.
         // This means captionMode, revealFadeMs, and all visual properties are per-clip,
         // NOT global. Creators can mix karaoke + single-word + word-reveal in one timeline.
-        const style = activeCaption.style ?? captionStyle
         const anim = getAnimationProgress(style.animation, elapsed, totalCaptionDuration)
         const mode = style.captionMode ?? 'full-phrase'
-        const words = activeCaption.words
-        const isSynthetic = activeCaption.wordTimestampsSource === 'synthetic'
+        const words = cap.words
+        const isSynthetic = cap.wordTimestampsSource === 'synthetic'
         // Get or create per-clip activation cache (O(1) fast path for sequential playback)
-        let cache = activationCacheMapRef.current.get(activeCaption.id)
+        let cache = activationCacheMapRef.current.get(cap.id)
         if (!cache) {
           cache = createActivationCache()
-          activationCacheMapRef.current.set(activeCaption.id, cache)
+          activationCacheMapRef.current.set(cap.id, cache)
         }
         const activation = words ? resolveActiveWord(words, elapsed, isSynthetic, cache) : null
 
@@ -668,26 +668,40 @@ export function Preview(): JSX.Element {
         // Dispatch to caption mode renderer
         switch (mode) {
           case 'word-reveal':
-            drawWordRevealCaption(ctx, canvas.width, canvas.height, activeCaption.text, words, elapsed, style)
+            drawWordRevealCaption(ctx, canvas.width, canvas.height, cap.text, words, elapsed, style)
             break
           case 'karaoke':
-            drawKaraokeCaption(ctx, canvas.width, canvas.height, activeCaption.text, words, elapsed, style)
+            drawKaraokeCaption(ctx, canvas.width, canvas.height, cap.text, words, elapsed, style)
             break
           case 'single-word':
-            drawSingleWordCaption(ctx, canvas.width, canvas.height, activeCaption.text, activation, style)
+            drawSingleWordCaption(ctx, canvas.width, canvas.height, cap.text, activation, style)
             break
           case 'full-phrase':
           default:
             // Typewriter animation still works in full-phrase mode
-            let displayText = activeCaption.text
+            let displayText = cap.text
             if (style.animation === 'typewriter' && anim.charIndex >= 0) {
-              displayText = activeCaption.text.slice(0, anim.charIndex)
+              displayText = cap.text.slice(0, anim.charIndex)
             }
             drawFullPhraseCaption(ctx, canvas.width, canvas.height, displayText, style)
             break
         }
 
         ctx.restore()
+      }
+
+      const visibleCaptions = visibleCaptionClips<TextClip>(captionEntries, trackLanesRef.current)
+      const activeCaptions = resolveActiveCaptions(visibleCaptions, currentMs)
+      if (activeCaptions.length === 1) {
+        const cap = activeCaptions[0]
+        paintCaption(cap, cap.style ?? captionStyle)
+      } else if (activeCaptions.length > 1) {
+        // Paint in reverse so the lower lane index ends up on top (z rule).
+        for (let i = activeCaptions.length - 1; i >= 0; i--) {
+          const cap = activeCaptions[i]
+          const base = cap.style ?? captionStyle
+          paintCaption(cap, { ...base, ...captionLanePosition(base, cap.trackIndex) })
+        }
       }
 
       // Transform bounding box for selected video clip

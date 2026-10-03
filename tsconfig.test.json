@@ -1,0 +1,30 @@
+{
+  "extends": "./tsconfig.node.json",
+  "compilerOptions": {
+    "composite": false,
+    "noEmit": false,
+    "outDir": "./out-test",
+    "rootDir": "./src",
+    "module": "CommonJS",
+    "moduleResolution": "node"
+  },
+  "exclude": [],
+  "include": [
+    "src/shared/**/*.ts",
+    "src/main/project/**/*.ts",
+    "src/main/services/FFmpegService.ts",
+    "src/renderer/store/useTimeline.ts",
+    "src/renderer/timeline/interaction.ts",
+    "src/renderer/store/useProject.ts",
+    "src/renderer/store/useCaption.ts",
+    "src/renderer/store/useExport.ts",
+    "src/renderer/store/useToast.ts",
+    "src/renderer/services/WaveformService.ts",
+    "src/renderer/services/AudioEngine.ts",
+    "src/renderer/services/NotificationSound.ts",
+    "src/renderer/services/KeyframeEvaluator.ts",
+    "src/renderer/effects/utils/easing.ts",
+    "src/renderer/effects/types/Keyframe.ts",
+    "src/renderer/env.d.ts"
+  ]
+}

@@ -1,6 +1,13 @@
 import { create } from 'zustand'
 import { immer } from 'zustand/middleware/immer'
 import { parseSRT, type CaptionEntry } from '../../shared/utils/srt'
+import {
+  mapEntriesToTextClips,
+  laneForTranscribeClip,
+  laneForTranscribeTrack,
+  laneForTimelineTranscription,
+  laneForSrtImport,
+} from '../../shared/captions/lanes'
 import { useTimeline, pushUndoSnapshot, type TextClip } from './useTimeline'
 import { useToast } from './useToast'
 import type { CaptionStyle } from '../../shared/types/caption'
@@ -26,7 +33,7 @@ interface CaptionActions {
   duplicateEntry: (id: string) => void
   setEntryTiming: (id: string, startMs: number, endMs: number) => void
   applyStyle: (style: Partial<CaptionStyle>) => void
-  importSRT: (content: string) => void
+  importSRT: (content: string, trackIndex?: number) => void
   selectEntry: (id: string | null) => void
   setLanguage: (language: string) => void
   clearCaptions: () => void
@@ -117,12 +124,17 @@ function retimeWordsForEditedText(
  * Shared transcription lifecycle — status/progress management, IPC invocation,
  * TextClip mapping, error handling, and progress listener cleanup.
  * Used by transcribe, transcribeClip, transcribeTrack, and transcribeTimeline.
+ *
+ * P2.1: the lane is resolved AFTER transcription from live state via
+ * `resolveLane` — never a hardcoded 0. Each source picks its lane per the
+ * placement rule (clip→source lane, track→lane i, timeline/file→first free).
  */
 async function _runTranscription(
   set: (fn: (state: any) => void) => void,
   invokeIpc: () => Promise<{ entries?: CaptionEntry[]; language?: string }>,
   sourceId: string,
-  sourceType: TextClip['sourceType']
+  sourceType: TextClip['sourceType'],
+  resolveLane: () => number
 ): Promise<{ entries?: CaptionEntry[]; language?: string } | null> {
   set((state: any) => {
     state.status = 'transcribing'
@@ -143,26 +155,21 @@ async function _runTranscription(
 
     const result = await invokeIpc()
 
-    // Map entries to TextClips and insert in batch
+    // Map entries to TextClips on the resolved lane and insert in batch
+    // (single undo snapshot via addTextClips).
     if (result.entries && result.entries.length > 0) {
       const { addTextClips } = useTimeline.getState()
       const activeStyle = useCaption.getState().activeStyle
       const jobId = `job_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`
-      const newClips: TextClip[] = result.entries.map((entry, idx) => ({
-        id: `text_${Date.now()}_${idx}`,
-        startMs: entry.startMs,
-        durationMs: entry.endMs - entry.startMs,
-        endMs: entry.endMs,
-        trackIndex: 0,
-        text: entry.text,
-        style: { ...activeStyle },
-        words: entry.words,
-        wordTimestampsSource: entry.wordTimestampsSource,
+      const newClips = mapEntriesToTextClips(result.entries, {
+        trackIndex: resolveLane(),
+        idPrefix: `text_${Date.now()}`,
         sourceId,
         sourceType,
-        transcriptionJobId: jobId
-      }))
-      addTextClips(newClips)
+        style: { ...activeStyle },
+        transcriptionJobId: jobId,
+      })
+      addTextClips(newClips as TextClip[])
     } else {
       useToast.getState().warning('Transcription produced no captions — check audio track or model.')
     }
@@ -199,7 +206,8 @@ export const useCaption = create<CaptionState & CaptionActions>()(
         set,
         () => window.electron.ipcRenderer.invoke('whisper:transcribe', audioPath, language || 'auto', true),
         audioPath,
-        'clip'
+        'clip',
+        () => laneForTimelineTranscription(useTimeline.getState().textClips)
       )
 
       // Auto-detect silence gaps and add timeline markers
@@ -236,6 +244,7 @@ export const useCaption = create<CaptionState & CaptionActions>()(
         return
       }
 
+      const sourceLane = laneForTranscribeClip(clip.trackIndex)
       await _runTranscription(
         set,
         () => window.electron.ipcRenderer.invoke('whisper:transcribeFromTimeline', {
@@ -247,7 +256,8 @@ export const useCaption = create<CaptionState & CaptionActions>()(
           language: language || 'auto'
         }),
         clipId,
-        'clip'
+        'clip',
+        () => sourceLane
       )
     },
 
@@ -268,6 +278,7 @@ export const useCaption = create<CaptionState & CaptionActions>()(
       }))
       const allPaths = trackClips.map((c) => c.path)
 
+      const sourceLane = laneForTranscribeTrack(trackIndex)
       await _runTranscription(
         set,
         () => window.electron.ipcRenderer.invoke('whisper:transcribeFromTimeline', {
@@ -277,7 +288,8 @@ export const useCaption = create<CaptionState & CaptionActions>()(
           language: language || 'auto'
         }),
         `track_${trackIndex}`,
-        'audioTrack'
+        'audioTrack',
+        () => sourceLane
       )
     },
 
@@ -313,7 +325,8 @@ export const useCaption = create<CaptionState & CaptionActions>()(
           language: language || 'auto'
         }),
         'timeline',
-        'timeline'
+        'timeline',
+        () => laneForTimelineTranscription(useTimeline.getState().textClips)
       )
     },
 
@@ -371,21 +384,19 @@ export const useCaption = create<CaptionState & CaptionActions>()(
         Object.assign(state.activeStyle, style)
       }),
 
-    importSRT: (content) => {
+    importSRT: (content, trackIndex) => {
       const parsedEntries = parseSRT(content)
       const activeStyle = useCaption.getState().activeStyle
-      const batch: TextClip[] = parsedEntries.map((entry, idx) => ({
-        id: `text_${Date.now()}_${idx}`,
-        startMs: entry.startMs,
-        durationMs: entry.endMs - entry.startMs,
-        endMs: entry.endMs,
-        trackIndex: 0,
-        text: entry.text,
+      // P2.1: explicit lane (picker), default first free — never silently 0.
+      const lane = laneForSrtImport(useTimeline.getState().textClips, trackIndex)
+      const batch = mapEntriesToTextClips(parsedEntries, {
+        trackIndex: lane,
+        idPrefix: `text_${Date.now()}`,
+        sourceType: 'import',
         style: { ...activeStyle },
-        sourceType: 'import' as const
-      }))
+      })
       // Single undo snapshot + single Zustand commit for all entries
-      useTimeline.getState().addTextClips(batch)
+      useTimeline.getState().addTextClips(batch as TextClip[])
       set((state) => { state.status = 'done' })
     },
 

@@ -236,12 +236,14 @@ export function buildLaneLayout(
     })
   }
 
-  // Caption lane
-  if (captionEntries.length > 0) {
+  // Caption lanes — one row per used caption lane index (P2.2).
+  // Distinct indices sorted so rows are stable; gaps (deleted lanes) collapse.
+  const captionLaneIndices = [...new Set(captionEntries.map((c) => c.trackIndex))].sort((a, b) => a - b)
+  for (const captionIndex of captionLaneIndices) {
     lanes.push({
       y: RULER_H + lanes.length * (TRACK_LANE_H + LANE_GAP),
       trackKind: 'caption',
-      trackIndex: 0
+      trackIndex: captionIndex
     })
   }
 
@@ -356,6 +358,8 @@ export function hitTest(
     if (lane.trackKind === 'caption') {
       for (let ci = captionEntries.length - 1; ci >= 0; ci--) {
         const entry = captionEntries[ci]
+        // P2.2: a caption only hit-tests on its own lane's row.
+        if (entry.trackIndex !== lane.trackIndex) continue
         const ex = entry.startMs * ppm
         const ew = Math.max((entry.endMs - entry.startMs) * ppm, 4)
         if (canvasX < ex || canvasX > ex + ew) continue

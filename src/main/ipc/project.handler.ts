@@ -593,6 +593,8 @@ export function registerProjectHandler(getWindow: () => BrowserWindow | null): v
         style?: ExportCaptionStyle
         fadeInMs?: number
         fadeOutMs?: number
+        /** P2.4 stacked-lane ASS layer (lower caption lane → higher layer). */
+        layer?: number
       }>,
       options: ExportASSOptions,
       jobId?: string

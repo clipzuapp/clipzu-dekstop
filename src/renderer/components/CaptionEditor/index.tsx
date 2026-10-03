@@ -5,6 +5,7 @@ import { useConfirm } from '../../store/useConfirm'
 import { useToast } from '../../store/useToast'
 import { ContextMenu, type ContextMenuItem } from '../ContextMenu/index'
 import { formatTime } from '../../utils/format'
+import { firstFreeCaptionLane, usedCaptionLanes } from '../../../shared/captions/lanes'
 
 /** Map raw error strings to user-friendly messages */
 function friendlyErrorMessage(raw: string): string {
@@ -118,6 +119,8 @@ export function CaptionEditor(): JSX.Element {
 
   const [srtInput, setSrtInput] = useState('')
   const [showImport, setShowImport] = useState(false)
+  // P2.1: explicit SRT import lane. null = first free at import time.
+  const [srtLane, setSrtLane] = useState<number | null>(null)
   const [diagnostics, setDiagnostics] = useState<Record<string, unknown> | null>(null)
   const [showDiagnostics, setShowDiagnostics] = useState(false)
   const [editingTimingId, setEditingTimingId] = useState<string | null>(null)
@@ -149,10 +152,15 @@ export function CaptionEditor(): JSX.Element {
     await useCaption.getState().transcribeClip(targetId, language)
   }, [language])
 
+  // P2.1: explicit lane picker (default first free). Resolved against live
+  // lanes at click time so concurrent edits can't silently pile onto lane 0.
+  const srtExistingLanes = usedCaptionLanes(textClips)
+  const srtDefaultLane = firstFreeCaptionLane(textClips)
   const handleImportSRT = (): void => {
     if (srtInput.trim()) {
-      importSRT(srtInput)
+      importSRT(srtInput, srtLane ?? srtDefaultLane)
       setSrtInput('')
+      setSrtLane(null)
       setShowImport(false)
     }
   }
@@ -436,6 +444,23 @@ export function CaptionEditor(): JSX.Element {
             placeholder="Paste SRT content here..."
             className="input w-full h-24 text-xs resize-none"
           />
+          <label className="flex items-center gap-2 text-[11px] text-gray-400">
+            <span className="shrink-0">Caption lane</span>
+            <select
+              value={srtLane ?? srtDefaultLane}
+              onChange={(e) => setSrtLane(Number(e.target.value))}
+              className="input flex-1 text-xs"
+            >
+              {srtExistingLanes.map((lane) => (
+                <option key={lane} value={lane}>
+                  {lane === 0 ? 'Captions' : `Captions ${lane + 1}`} (lane {lane})
+                </option>
+              ))}
+              <option value={srtDefaultLane}>
+                {srtDefaultLane === 0 ? 'Captions' : `Captions ${srtDefaultLane + 1}`} (new lane)
+              </option>
+            </select>
+          </label>
           <button className="btn btn-primary w-full text-xs" onClick={handleImportSRT}>
             Import SRT
           </button>

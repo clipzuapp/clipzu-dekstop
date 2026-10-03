@@ -1,12 +1,18 @@
 import { useShallow } from 'zustand/react/shallow'
 import { useExport, EXPORT_PRESETS } from '../../store/useExport'
 import type { PresetKey } from '../../store/useExport'
-import { useTimeline, DEFAULT_TRANSFORM, computeEffectiveMuted, computeEffectiveVideoHidden, computeEffectiveVideoMuted, type TimelineState } from '../../store/useTimeline'
+import { useTimeline, DEFAULT_TRANSFORM, computeEffectiveMuted, computeEffectiveVideoHidden, computeEffectiveVideoMuted, type TimelineState, type TextClip } from '../../store/useTimeline'
 import { useProject } from '../../store/useProject'
 import { useCaption } from '../../store/useCaption'
 import { useToast } from '../../store/useToast'
 import { formatDuration } from '../../utils/format'
 import { buildExportGraph } from '../../../shared/export/exportGraph'
+import {
+  visibleCaptionClips,
+  sortCaptionsForExport,
+  captionLanePosition,
+  captionAssLayer,
+} from '../../../shared/captions/lanes'
 
 
 /**
@@ -89,23 +95,33 @@ export function ExportDialog({ onClose, show = true }: { onClose: () => void; sh
     try {
       // Create temp ASS if captions exist (before starting video export).
       // ASS preserves per-caption style/font contracts; SRT can only carry one global style.
+      // P2.4: only visible lanes burn (mute/solo/hide respected, V2.2); lanes
+      // merge in time order with per-lane stacked positions + ASS layers so
+      // burned output matches the stacked Preview (G6).
+      const exportCaptions = sortCaptionsForExport(visibleCaptionClips<TextClip>(textClips, tracks))
+      const exportMaxLane = exportCaptions.reduce((m, c) => Math.max(m, c.trackIndex), 0)
       let srtPath: string | null = null
-      if (textClips.length > 0) {
+      if (exportCaptions.length > 0) {
         const dims = useExport.getState().getOutputDimensions()
         const renderWidth = upscaleEnabled ? Math.round(dims.width / 2) : dims.width
         const renderHeight = upscaleEnabled ? Math.round(dims.height / 2) : dims.height
         // fallbackStyle is CaptionStyle — pass it directly, no manual field projection needed
         const fallbackStyle = captionStyle
-        srtPath = await window.electron.ipcRenderer.invoke('project:createTempASS', textClips.map((clip) => ({
-          startMs: clip.startMs,
-          endMs: clip.endMs,
-          text: clip.text,
-          words: clip.words,
-          // Per-clip style is already CaptionStyle — pass through without projection
-          style: clip.style ?? undefined,
-          fadeInMs: clip.fadeInMs ?? 0,
-          fadeOutMs: clip.fadeOutMs ?? 0
-        })), {
+        srtPath = await window.electron.ipcRenderer.invoke('project:createTempASS', exportCaptions.map((clip) => {
+          const base = clip.style ?? fallbackStyle
+          return {
+            startMs: clip.startMs,
+            endMs: clip.endMs,
+            text: clip.text,
+            words: clip.words,
+            // Per-clip style is already CaptionStyle — pass through with the
+            // stacked-lane position override (lane 0 = identity, parity).
+            style: { ...base, ...captionLanePosition(base, clip.trackIndex) },
+            fadeInMs: clip.fadeInMs ?? 0,
+            fadeOutMs: clip.fadeOutMs ?? 0,
+            layer: captionAssLayer(clip.trackIndex, exportMaxLane)
+          }
+        }), {
           outputWidth: renderWidth,
           outputHeight: renderHeight,
           projectWidth: projectResolution.width,
@@ -233,11 +249,12 @@ export function ExportDialog({ onClose, show = true }: { onClose: () => void; sh
         projectHeight: projectResolution.height,
         fps: projectFps
       })
-      // Export SRT sidecar (non-blocking — don't show error since video may still succeed)
-      if (textClips.length > 0) {
+      // Export SRT sidecar (non-blocking — don't show error since video may still succeed).
+      // P2.4: lanes merge in time order; muted/hidden/solo-excluded lanes omitted.
+      if (exportCaptions.length > 0) {
         window.electron.ipcRenderer.invoke(
           'project:exportSRT',
-          textClips,
+          exportCaptions,
           outputPath
         ).catch((err) => {
           console.warn('SRT export failed (video export unaffected):', err)

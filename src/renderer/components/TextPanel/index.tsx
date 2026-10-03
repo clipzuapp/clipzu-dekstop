@@ -1,5 +1,6 @@
 import { useTimeline, createTextClip } from '../../store/useTimeline'
 import { defaultStyle, type CaptionStyle } from '../../store/useCaption'
+import { laneForManualText } from '../../../shared/captions/lanes'
 import { Type } from 'lucide-react'
 
 interface TextPreset {
@@ -23,7 +24,8 @@ const TEXT_PRESETS: TextPreset[] = [
  */
 export function TextPanel(): JSX.Element {
   const handleAddPreset = (preset: TextPreset): void => {
-    const { playheadMs, totalDurationMs } = useTimeline.getState()
+    const st = useTimeline.getState()
+    const { playheadMs, totalDurationMs } = st
     const durationMs = Math.min(3000, Math.max(500, totalDurationMs - playheadMs))
 
     const clip = createTextClip({
@@ -31,6 +33,8 @@ export function TextPanel(): JSX.Element {
       startMs: playheadMs,
       durationMs,
       endMs: playheadMs + durationMs,
+      // P2.1: manual text takes the first free lane, never silently lane 0.
+      trackIndex: laneForManualText(st.textClips),
       style: {
         ...defaultStyle,
         fontSize: preset.fontSize,
@@ -81,7 +85,8 @@ export function TextPanel(): JSX.Element {
       <div style={{ padding: '10px 12px' }}>
         <button
           onClick={() => {
-            const { playheadMs, totalDurationMs } = useTimeline.getState()
+            const st = useTimeline.getState()
+            const { playheadMs, totalDurationMs } = st
             const durationMs = Math.min(3000, Math.max(500, totalDurationMs - playheadMs))
 
             const clip = createTextClip({
@@ -89,6 +94,8 @@ export function TextPanel(): JSX.Element {
               startMs: playheadMs,
               durationMs,
               endMs: playheadMs + durationMs,
+              // P2.1: manual text takes the first free lane, never silently lane 0.
+              trackIndex: laneForManualText(st.textClips),
               style: { ...defaultStyle },
             })
 

@@ -78,7 +78,9 @@ export function Timeline({ activeTool = 'select' }: TimelineProps): JSX.Element 
     tracks.filter((t) => t.kind === 'audio').length
   )
 
-  const captionLaneCount = textClips.length > 0 ? 1 : 0
+  // P2.2: one row per used caption lane (sorted distinct indices).
+  const captionLaneIndices = [...new Set<number>(textClips.map((t) => t.trackIndex))].sort((a, b) => a - b)
+  const captionLaneCount = captionLaneIndices.length
   const totalLanes = videoTrackIndices.length + audioLaneCount + captionLaneCount
   const totalH = LAYOUT.RULER_H + totalLanes * (LAYOUT.TRACK_LANE_H + LAYOUT.LANE_GAP)
   const timelineEndMs = Math.max(
@@ -166,10 +168,12 @@ export function Timeline({ activeTool = 'select' }: TimelineProps): JSX.Element 
         }
       }
 
-      // Caption blocks
-      if (textClips.length > 0) {
-        const captionLaneY = LAYOUT.RULER_H + (videoTrackIndices.length + audioLaneCount) * (LAYOUT.TRACK_LANE_H + LAYOUT.LANE_GAP)
+      // Caption blocks — grouped by lane, one row per used caption index (P2.2)
+      for (let li = 0; li < captionLaneIndices.length; li++) {
+        const laneIdx = captionLaneIndices[li]
+        const captionLaneY = LAYOUT.RULER_H + (videoTrackIndices.length + audioLaneCount + li) * (LAYOUT.TRACK_LANE_H + LAYOUT.LANE_GAP)
         for (const entry of textClips) {
+          if (entry.trackIndex !== laneIdx) continue
           if (entry.endMs < viewStartMs || entry.startMs > viewEndMs) continue
           const bx = LAYOUT.LANE_LABEL_W + entry.startMs * PIXELS_PER_MS
           const bw = Math.max((entry.endMs - entry.startMs) * PIXELS_PER_MS, 4)
@@ -480,12 +484,16 @@ export function Timeline({ activeTool = 'select' }: TimelineProps): JSX.Element 
       return { kind: 'audio' as const, index: i, trackId: t?.id ?? `audio_track_${i}`, name: t?.name ?? `Audio ${i + 1}` }
     })
   ]
-  // P1.5: caption header is a placeholder row until P2 gives the lane a real
-  // Track record per lane. The pseudo-id intentionally matches NO Track
-  // record so the mute/solo/lock/hide/delete header buttons stay hidden
-  // (G8: no placeholder controls). Mute/solo arrive with P2 caption lanes.
-  if (textClips.length > 0) {
-    allLanes.push({ kind: 'caption', index: 0, trackId: 'caption_track', name: 'Captions' })
+  // P2.2: one real header row per used caption lane, backed by the
+  // `track_caption_<i>` Track records auto-created on add/load (P2.5), so
+  // mute/solo/lock/hide/rename/delete all work end-to-end (G8).
+  for (const laneIdx of captionLaneIndices) {
+    const t = tracks.find((tr) => tr.kind === 'caption' && tr.index === laneIdx)
+    allLanes.push({
+      kind: 'caption', index: laneIdx,
+      trackId: t?.id ?? `track_caption_${laneIdx}`,
+      name: t?.name ?? (laneIdx === 0 ? 'Captions' : `Captions ${laneIdx + 1}`)
+    })
   }
 
   // ---- Double-click handler (rename clip/audio) ----

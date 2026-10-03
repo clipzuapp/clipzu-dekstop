@@ -570,6 +570,26 @@ function makeDefaultTracks(): Track[] {
   ]
 }
 
+/**
+ * P2.5: ensure one `track_caption_<i>` record per used caption lane.
+ * Called by addTextClip(s) and loadTimeline normalization so every caption
+ * row has a real Track record (working mute/solo/lock/hide/rename/delete).
+ * Idempotent — never duplicates. Old files (all lane 0) gain exactly one
+ * `track_caption_0` record; placement, styles, and timing are untouched.
+ */
+function ensureCaptionTrackRecords(state: { tracks: Track[]; textClips: Array<{ trackIndex: number }> }): void {
+  const lanes = [...new Set(state.textClips.map((tc) => tc.trackIndex))].sort((a, b) => a - b)
+  for (const lane of lanes) {
+    if (!state.tracks.some((t) => t.kind === 'caption' && t.index === lane)) {
+      state.tracks.push({
+        id: `track_caption_${lane}`, index: lane,
+        name: lane === 0 ? 'Captions' : `Captions ${lane + 1}`,
+        kind: 'caption', muted: false, locked: false, hidden: false, solo: false
+      })
+    }
+  }
+}
+
 /** Find all selectable IDs across clips, textClips, audioTracks */
 function getAllIds(state: TimelineState): string[] {
   return [
@@ -1120,10 +1140,7 @@ export const useTimeline = create<TimelineState & TimelineActions>()(
         if (full.fadeInMs === undefined) full.fadeInMs = 0
         if (full.fadeOutMs === undefined) full.fadeOutMs = 0
         state.textClips.push(full)
-        const hasCaptionTrack = state.tracks.some((t) => t.kind === 'caption')
-        if (!hasCaptionTrack) {
-          state.tracks.push({ id: 'track_caption_0', index: 0, name: 'Captions', kind: 'caption', muted: false, locked: false, hidden: false, solo: false })
-        }
+        ensureCaptionTrackRecords(state)
         syncTotalDuration(state)
       })
     },
@@ -1138,10 +1155,7 @@ export const useTimeline = create<TimelineState & TimelineActions>()(
           if (full.fadeOutMs === undefined) full.fadeOutMs = 0
           state.textClips.push(full)
         }
-        const hasCaptionTrack = state.tracks.some((t) => t.kind === 'caption')
-        if (!hasCaptionTrack) {
-          state.tracks.push({ id: 'track_caption_0', index: 0, name: 'Captions', kind: 'caption', muted: false, locked: false, hidden: false, solo: false })
-        }
+        ensureCaptionTrackRecords(state)
         syncTotalDuration(state)
       })
     },
@@ -1599,6 +1613,9 @@ export const useTimeline = create<TimelineState & TimelineActions>()(
         if (data.tracks && data.tracks.length > 0) {
           state.tracks = data.tracks
         }
+        // P2.5: backfill caption lane records for used lanes (old files gain
+        // exactly one `track_caption_0`; placement/styles/timing untouched).
+        ensureCaptionTrackRecords(state)
         // Restore markers if present
         if (data.markers) {
           state.markers = data.markers

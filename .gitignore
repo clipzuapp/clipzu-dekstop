@@ -72,6 +72,9 @@ tests/
 __tests__/
 *.test.*
 *_test.*
+# ...except the tsc config the committed test command depends on (G3 pin must
+# run from a clean clone; cf. the build/icon exception above)
+!tsconfig.test.json
 
 # AI assistant metadata + local design blueprints (never push)
 .qoder/
