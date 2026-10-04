@@ -187,7 +187,8 @@ async function _runTranscription(
       state.status = 'error'
       state.error = errMsg
     })
-    useToast.getState().error(`Transcription failed: ${errMsg}`)
+    const detail = err instanceof Error ? `${err.name}: ${err.message}\n${err.stack ?? ''}` : String(err)
+    useToast.getState().error(`Transcription failed: ${errMsg}`, detail)
     return null
   } finally {
     if (whisperProgressCleanup) {

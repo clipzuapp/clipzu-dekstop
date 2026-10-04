@@ -32,7 +32,8 @@ async function handleTranscribe(language: string): Promise<void> {
     await useCaption.getState().transcribeClip(targetId, language)
   } catch (e) {
     console.error('Transcription failed:', e)
-    useToast.getState().error(`Transcription failed: ${(e as Error).message}`)
+    const detail = e instanceof Error ? `${e.name}: ${e.message}\n${e.stack ?? ''}` : String(e)
+    useToast.getState().error(`Transcription failed: ${(e as Error).message}`, detail)
   }
 }
 

@@ -6,6 +6,7 @@ import { useToast } from '../../store/useToast'
 import { ContextMenu, type ContextMenuItem } from '../ContextMenu/index'
 import { formatTime } from '../../utils/format'
 import { firstFreeCaptionLane, usedCaptionLanes } from '../../../shared/captions/lanes'
+import { DIAGNOSTICS_EXPORT_CHANNEL } from '../../../shared/ipc/channels'
 
 /** Map raw error strings to user-friendly messages */
 function friendlyErrorMessage(raw: string): string {
@@ -126,6 +127,7 @@ export function CaptionEditor(): JSX.Element {
   const [editingTimingId, setEditingTimingId] = useState<string | null>(null)
   const [diagnosticTests, setDiagnosticTests] = useState<Record<string, unknown> | null>(null)
   const [runningTests, setRunningTests] = useState(false)
+  const [exportingDiagnostics, setExportingDiagnostics] = useState(false)
 
   // Context menu state
   const [ctxMenu, setCtxMenu] = useState<{ x: number; y: number; items: ContextMenuItem[] } | null>(null)
@@ -187,6 +189,23 @@ export function CaptionEditor(): JSX.Element {
       setDiagnosticTests({ error: (e as Error).message })
     } finally {
       setRunningTests(false)
+    }
+  }
+
+  const handleExportDiagnostics = async (): Promise<void> => {
+    setExportingDiagnostics(true)
+    try {
+      const result: unknown = await window.electron.ipcRenderer.invoke(DIAGNOSTICS_EXPORT_CHANNEL)
+      if (typeof result !== 'object' || result === null || typeof (result as { ok?: unknown }).ok !== 'boolean') {
+        throw new Error('Invalid diagnostic export response.')
+      }
+      const response = result as { ok: boolean; canceled?: boolean; error?: string }
+      if (response.ok) useToast.getState().success('Diagnostic bundle saved.')
+      else if (!response.canceled) useToast.getState().error(response.error ?? 'Could not export diagnostics.')
+    } catch (e) {
+      useToast.getState().error('Could not export diagnostics.', e instanceof Error ? e.message : String(e))
+    } finally {
+      setExportingDiagnostics(false)
     }
   }
 
@@ -332,9 +351,12 @@ export function CaptionEditor(): JSX.Element {
         <div className="p-3 bg-editor-surface border border-editor-border rounded space-y-2 text-xs">
           <div className="flex justify-between items-center">
             <span className="font-semibold text-gray-300">System Diagnostics</span>
-            <button className="text-gray-500 hover:text-gray-300" onClick={() => setShowDiagnostics(false)}>
-              Close
-            </button>
+            <div className="flex items-center gap-2">
+              <button className="btn btn-secondary text-xs py-1" onClick={() => void handleExportDiagnostics()} disabled={exportingDiagnostics}>
+                {exportingDiagnostics ? 'Preparing…' : 'Export bundle'}
+              </button>
+              <button className="text-gray-500 hover:text-gray-300" onClick={() => setShowDiagnostics(false)}>Close</button>
+            </div>
           </div>
 
           {/* Binary */}

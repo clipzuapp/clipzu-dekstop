@@ -266,7 +266,8 @@ export function ExportDialog({ onClose, show = true }: { onClose: () => void; sh
       useToast.getState().info('Export started — encoding in progress')
     } catch (err) {
       console.error('Export failed:', err)
-      useToast.getState().error(`Export failed: ${(err as Error).message}`)
+      const detail = err instanceof Error ? `${err.name}: ${err.message}\n${err.stack ?? ''}` : String(err)
+      useToast.getState().error(`Export failed: ${(err as Error).message}`, detail)
     }
   }
 

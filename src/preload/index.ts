@@ -1,5 +1,5 @@
 import { contextBridge, ipcRenderer } from 'electron'
-import { MENU_CHANNELS, PROJECT_CHANNELS } from '../shared/ipc/channels'
+import { DIAGNOSTICS_EXPORT_CHANNEL, MEDIA_RUNTIME_INVOKE_CHANNELS, MEDIA_RUNTIME_PROGRESS_CHANNEL, MENU_CHANNELS, MODEL_INVOKE_CHANNELS, MODEL_PROGRESS_CHANNEL, PROJECT_CHANNELS } from '../shared/ipc/channels'
 
 /**
  * Preload script - Exposes safe IPC bridge to renderer process
@@ -16,7 +16,9 @@ const SUBSCRIBE_CHANNELS: string[] = [
   'export:progress',
   'whisper:progress',
   'startup:validation',
-  'proxy:progress'
+  'proxy:progress',
+  MODEL_PROGRESS_CHANNEL,
+  MEDIA_RUNTIME_PROGRESS_CHANNEL
 ]
 
 const electronAPI = {
@@ -44,11 +46,14 @@ const electronAPI = {
         'whisper:getDiagnostics',
         'whisper:runDiagnosticTests',
         'whisper:validateModel',
+        DIAGNOSTICS_EXPORT_CHANNEL,
         'export:start',
         'export:cancel',
         'export:getJobs',
         'export:clearCompleted',
         ...PROJECT_CHANNELS,
+        ...MODEL_INVOKE_CHANNELS,
+        ...MEDIA_RUNTIME_INVOKE_CHANNELS,
         'waveform:readPeaks',
         'waveform:writePeaks',
         'waveform:getCacheDir',

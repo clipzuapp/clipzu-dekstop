@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+  <dict>
+    <!-- P5.5 (B5): hardened-runtime entitlements for dist:mac (referenced by
+         electron-builder.yml `entitlementsInherit`). Verified present by the
+         P5 exit gate before any dist:mac; notarization stays off until D5
+         funds signing (electron-builder.yml `notarize: false`). -->
+    <!-- V8 JIT (Electron renderer). -->
+    <key>com.apple.security.cs.allow-jit</key>
+    <true/>
+    <!-- Native modules (better-sqlite3) + bundled ffmpeg/whisper binaries. -->
+    <key>com.apple.security.cs.allow-unsigned-executable-memory</key>
+    <true/>
+    <!-- Open/save dialogs + media file access. -->
+    <key>com.apple.security.files.user-selected.read-write</key>
+    <true/>
+  </dict>
+</plist>

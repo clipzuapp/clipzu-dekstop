@@ -1,4 +1,5 @@
 ﻿import { app, BrowserWindow, shell, Menu, dialog } from 'electron'
+import { autoUpdater } from 'electron-updater'
 import { join } from 'path'
 import { existsSync } from 'fs'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
@@ -9,11 +10,16 @@ import { registerProjectHandler } from './ipc/project.handler'
 import { registerSFXHandler } from './ipc/sfx.handler'
 import { registerWaveformCacheHandler } from './ipc/waveform-cache.handler'
 import { registerProxyHandler } from './ipc/proxy.handler'
+import { registerModelHandler } from './ipc/model.handler'
+import { registerDiagnosticsHandler } from './ipc/diagnostics.handler'
+import { registerMediaRuntimeHandler } from './ipc/media-runtime.handler'
+import { initializeDiagnosticLog, writeDiagnostic } from './services/DiagnosticLog'
 import { FFmpegService } from './services/FFmpegService'
 import { WhisperService, type ModelCompatibilityInfo } from './services/WhisperService'
 import { ThumbnailService } from './services/ThumbnailService'
 import { ExportQueueManager } from './services/ExportQueue'
 import { MENU } from '../shared/ipc/channels'
+import { BUNDLED_MODEL, MEDIA_RUNTIME_VERSION } from '../shared/modelCatalog'
 
 interface StartupValidation {
   ffmpeg: boolean
@@ -53,8 +59,10 @@ function resolveFFmpegPath(): string {
   const isPackaged = app.isPackaged
 
   if (isPackaged) {
-    const resourcesPath = join(process.resourcesPath, 'bin')
-    return platform === 'win32' ? join(resourcesPath, 'ffmpeg.exe') : join(resourcesPath, 'ffmpeg')
+    const runtimeDirectory = platform === 'win32'
+      ? join(app.getPath('userData'), 'media-runtime', MEDIA_RUNTIME_VERSION)
+      : join(process.resourcesPath, 'bin')
+    return platform === 'win32' ? join(runtimeDirectory, 'ffmpeg.exe') : join(runtimeDirectory, 'ffmpeg')
   }
 
   // Development: use npm-installed ffmpeg-static
@@ -85,17 +93,35 @@ function resolveFFprobePath(): string {
 
 /** Resolve Whisper model path */
 function resolveModelPath(): string {
-  const isPackaged = app.isPackaged
-  if (isPackaged) {
-    return join(process.resourcesPath, 'models', 'ggml-small-q8_0.bin')
-  }
-  return join(app.getAppPath(), 'models', 'ggml-small-q8_0.bin')
+  const userModel = join(app.getPath('userData'), 'models', BUNDLED_MODEL.fileName)
+  const resourceModel = join(process.resourcesPath, 'models', BUNDLED_MODEL.fileName)
+  const devModel = join(app.getAppPath(), 'models', BUNDLED_MODEL.fileName)
+  if (existsSync(userModel)) return userModel
+  if (!app.isPackaged && existsSync(devModel)) return devModel
+  if (existsSync(resourceModel)) return resourceModel
+  // Installed resources are read-only. Keep a writable destination as the
+  // missing-model path so first-run delivery needs no later path migration.
+  return userModel
 }
 
 let thumbnailService: ThumbnailService | null = null
 let whisperService: WhisperService | null = null
 let ffmpegService: FFmpegService | null = null
 let exportQueue: ExportQueueManager | null = null
+let startupValidation: StartupValidation | null = null
+
+let fatalErrorHandled = false
+process.on('uncaughtException', (error) => {
+  writeDiagnostic('ERROR', 'process.uncaughtException', error.stack ?? error.message)
+  if (fatalErrorHandled) return
+  fatalErrorHandled = true
+  if (app.isReady()) dialog.showErrorBox('Clipzu encountered a fatal error', 'The application must close. A local diagnostic log was saved.')
+  app.exit(1)
+})
+process.on('unhandledRejection', (reason) => {
+  const detail = reason instanceof Error ? reason.stack ?? reason.message : String(reason)
+  writeDiagnostic('ERROR', 'process.unhandledRejection', detail)
+})
 
 /**
  * Copy the Capcraft-era userData directory into the new Clipzu location on
@@ -313,7 +339,43 @@ function createWindow(): void {
   }
 }
 
+function initializeUpdater(): void {
+  if (!app.isPackaged) return
+  autoUpdater.autoDownload = false
+  autoUpdater.autoInstallOnAppQuit = true
+  autoUpdater.on('checking-for-update', () => writeDiagnostic('INFO', 'updater.checking', ''))
+  autoUpdater.on('update-available', async (info) => {
+    writeDiagnostic('INFO', 'updater.available', `version=${info.version}`)
+    const choice = await dialog.showMessageBox({
+      type: 'info', title: 'Clipzu update available',
+      message: `Version ${info.version} is available. Download it now?`,
+      buttons: ['Download', 'Later'], defaultId: 0, cancelId: 1,
+    })
+    if (choice.response === 0) {
+      try { await autoUpdater.downloadUpdate() }
+      catch (error) { writeDiagnostic('ERROR', 'updater.download.failed', error instanceof Error ? error.stack ?? error.message : String(error)) }
+    }
+  })
+  autoUpdater.on('update-not-available', (info) => writeDiagnostic('INFO', 'updater.current', `version=${info.version}`))
+  autoUpdater.on('download-progress', (progress) => writeDiagnostic('INFO', 'updater.progress', `${Math.round(progress.percent)}%`))
+  autoUpdater.on('update-downloaded', async (info) => {
+    writeDiagnostic('INFO', 'updater.downloaded', `version=${info.version}`)
+    const choice = await dialog.showMessageBox({
+      type: 'info', title: 'Clipzu update ready',
+      message: `Version ${info.version} is ready to install. Restart Clipzu now?`,
+      buttons: ['Restart', 'Later'], defaultId: 0, cancelId: 1,
+    })
+    if (choice.response === 0) autoUpdater.quitAndInstall()
+  })
+  autoUpdater.on('error', (error) => writeDiagnostic('ERROR', 'updater.error', error.stack ?? error.message))
+  void autoUpdater.checkForUpdates().catch((error: unknown) => {
+    writeDiagnostic('WARN', 'updater.check.failed', error instanceof Error ? error.message : String(error))
+  })
+}
+
 app.whenReady().then(() => {
+  initializeDiagnosticLog(app.getPath('userData'))
+  initializeUpdater()
   electronApp.setAppUserModelId('com.clipzu.desktop-beta')
 
   // Phase 10: one-time userData migration Capcraft -> Clipzu Desktop Beta.
@@ -350,6 +412,26 @@ app.whenReady().then(() => {
   // Register all IPC handlers with service instances
   registerFFmpegHandler(getWindow, ffmpeg, thumbnails)
   registerWhisperHandler(getWindow, whisper, ffmpeg)
+  registerModelHandler(getWindow, whisper, app.getPath('userData'))
+  const updateMediaRuntimeValidation = (ready: boolean): void => {
+    if (!startupValidation) return
+    startupValidation.ffmpeg = ready
+    startupValidation.ffprobe = ready
+    mainWindow?.webContents.send('startup:validation', startupValidation)
+  }
+  registerMediaRuntimeHandler(getWindow, app.getPath('userData'), app.isPackaged,
+    () => updateMediaRuntimeValidation(true), () => updateMediaRuntimeValidation(false))
+  registerDiagnosticsHandler(getWindow, () => {
+    if (!startupValidation) return { ffmpeg: false, ffprobe: false, whisperCli: false, model: false, vcRuntime: false }
+    return {
+      ffmpeg: startupValidation.ffmpeg,
+      ffprobe: startupValidation.ffprobe,
+      whisperCli: startupValidation.whisperCli,
+      model: startupValidation.model,
+      vcRuntime: startupValidation.vcRuntime,
+      ...(startupValidation.modelWarning ? { modelWarning: startupValidation.modelWarning } : {}),
+    }
+  })
   registerExportHandler(exportQ, ffmpeg)
   registerProjectHandler(getWindow)
   registerSFXHandler()
@@ -358,6 +440,7 @@ app.whenReady().then(() => {
 
   // Push startup validation result to renderer after it loads
   const validation = validateStartupDeps(ffmpegPath, ffprobePath, modelPath)
+  startupValidation = validation
 
   // Fast model check: file-existence + GGML header read (instant, no spawn).
   // Wrapped in try/catch so a validation failure can NEVER abort startup.

@@ -1,6 +1,7 @@
 # Dependencies
 node_modules/
-package-lock.json
+# P5.4 (D7): package-lock.json IS tracked for reproducible installs.
+# (Removed from ignore 2026-10-03; committed alongside.)
 
 # Build outputs
 out/
@@ -8,9 +9,10 @@ out-test/
 build/
 dist/
 
-# ...except the committed Electron installer icons
+# ...except the committed Electron installer icons + mac entitlements
 !build/icon.ico
 !build/icon.icns
+!build/entitlements.mac.plist
 
 # Environment
 .env
@@ -64,6 +66,12 @@ secrets/
 
 # One-time / manual scripts (not part of build)
 scripts/
+!scripts/
+scripts/*
+!scripts/prepare-runtime-resources.mjs
+!scripts/verify-package.mjs
+!scripts/prepare-native-runtime.mjs
+!scripts/prepare-package-assets.mjs
 test_media.ps1
 
 # Test scripts / folders (never push)

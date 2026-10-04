@@ -2,6 +2,7 @@ import { ipcMain, BrowserWindow } from 'electron'
 import { WhisperService } from '../services/WhisperService'
 import type { FFmpegService } from '../services/FFmpegService'
 import { unlinkSync, existsSync } from 'fs'
+import { writeDiagnostic } from '../services/DiagnosticLog'
 
 /**
  * Whisper IPC handlers - Audio transcription via worker_threads.
@@ -41,6 +42,9 @@ export function registerWhisperHandler(
       const win = getWindow()
 
       try {
+        if (!whisper.isModelAvailable()) {
+          throw new Error('The transcription model is missing. Use “Download transcription model” in the startup banner, then retry.')
+        }
         const result = await whisper.transcribe({
           audioPath,
           language: language || 'auto',
@@ -54,6 +58,7 @@ export function registerWhisperHandler(
 
         return result
       } catch (err) {
+        writeDiagnostic('ERROR', 'transcription.failed', err instanceof Error ? err.stack ?? err.message : String(err))
         throw new Error(`Transcription failed: ${(err as Error).message}`)
       }
     }
@@ -96,6 +101,9 @@ export function registerWhisperHandler(
       let audioPath = params.clipPath
 
       try {
+        if (!whisper.isModelAvailable()) {
+          throw new Error('The transcription model is missing. Use “Download transcription model” in the startup banner, then retry.')
+        }
         const progress = (percent: number) => {
           if (win && !win.isDestroyed()) {
             win.webContents.send('whisper:progress', percent * 0.1) // 0-10%
@@ -143,6 +151,7 @@ export function registerWhisperHandler(
 
         return result
       } catch (err) {
+        writeDiagnostic('ERROR', 'timeline-transcription.failed', err instanceof Error ? err.stack ?? err.message : String(err))
         throw new Error(`Transcription failed: ${(err as Error).message}`)
       } finally {
         whisper.activeExtractionProcess = null

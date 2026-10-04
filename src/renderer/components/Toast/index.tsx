@@ -32,6 +32,25 @@ const TEXT: Record<ToastType, string> = {
 function ToastCard({ item }: { item: ToastItem }): JSX.Element {
   const dismiss = useToast((s) => s.dismiss)
   const [entering, setEntering] = useState(true)
+  const [copied, setCopied] = useState(false)
+
+  const copyDetails = async (): Promise<void> => {
+    if (!item.details) return
+    try {
+      await navigator.clipboard.writeText(item.details)
+      setCopied(true)
+    } catch {
+      const field = document.createElement('textarea')
+      field.value = item.details
+      field.style.position = 'fixed'
+      field.style.opacity = '0'
+      document.body.appendChild(field)
+      field.select()
+      const ok = document.execCommand('copy')
+      field.remove()
+      setCopied(ok)
+    }
+  }
 
   useEffect(() => {
     const timer = requestAnimationFrame(() => setEntering(false))
@@ -64,6 +83,15 @@ function ToastCard({ item }: { item: ToastItem }): JSX.Element {
         {ICON[item.type]}
       </span>
       <span style={{ flex: 1 }}>{item.message}</span>
+      {item.details && (
+        <button
+          style={{ flexShrink: 0, background: 'none', border: '1px solid currentColor', borderRadius: 4, color: 'inherit', cursor: 'pointer', fontSize: 10, padding: '3px 5px' }}
+          onClick={() => void copyDetails()}
+          title="Copy diagnostic details to clipboard"
+        >
+          {copied ? 'Copied' : 'Copy details'}
+        </button>
+      )}
       <button
         style={{
           flexShrink: 0,

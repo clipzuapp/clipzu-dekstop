@@ -38,6 +38,31 @@ import {
 } from '../../shared/uiPrefs'
 import { useToast } from '../store/useToast'
 import { usePreviewView } from '../store/usePreviewView'
+import {
+  MODEL_CANCEL_CHANNEL,
+  MODEL_DOWNLOAD_CHANNEL,
+  MODEL_GET_STATUS_CHANNEL,
+  MODEL_PROGRESS_CHANNEL,
+  MEDIA_RUNTIME_CANCEL_CHANNEL,
+  MEDIA_RUNTIME_DOWNLOAD_CHANNEL,
+  MEDIA_RUNTIME_GET_STATUS_CHANNEL,
+  MEDIA_RUNTIME_INSTALL_LOCAL_CHANNEL,
+  MEDIA_RUNTIME_PROGRESS_CHANNEL,
+} from '../../shared/ipc/channels'
+import type { ModelDeliveryResult, ModelDeliveryStatus } from '../../shared/modelCatalog'
+
+function isModelDeliveryStatus(value: unknown): value is ModelDeliveryStatus {
+  if (typeof value !== 'object' || value === null) return false
+  const status = value as Partial<ModelDeliveryStatus>
+  return ['missing', 'downloading', 'verifying', 'ready', 'error'].includes(String(status.phase)) &&
+    typeof status.receivedBytes === 'number' && typeof status.totalBytes === 'number'
+}
+
+function isModelDeliveryResult(value: unknown): value is ModelDeliveryResult {
+  if (typeof value !== 'object' || value === null) return false
+  const result = value as Partial<ModelDeliveryResult>
+  return typeof result.ok === 'boolean' && isModelDeliveryStatus(result.status)
+}
 
 // ---------------------------------------------------------------------------
 // Layout constants
@@ -81,6 +106,8 @@ export default function Page(): JSX.Element {
   const [activeTool, setActiveTool] = useState<ActiveTool>('select')
   const [activeLeftTab, setActiveLeftTab] = useState<LeftTabId>('media')
   const [activeRightTab, setActiveRightTab] = useState<RightTabId>('basic')
+  const [modelStatus, setModelStatus] = useState<ModelDeliveryStatus | null>(null)
+  const [mediaRuntimeStatus, setMediaRuntimeStatus] = useState<ModelDeliveryStatus | null>(null)
   const isFullscreen = usePreviewView((s) => s.isFullscreen)
   const toggleFullscreen = usePreviewView((s) => s.toggleFullscreen)
 
@@ -178,6 +205,92 @@ export default function Page(): JSX.Element {
     }))
   )
 
+  useEffect(() => {
+    let mounted = true
+    void window.electron.ipcRenderer.invoke(MODEL_GET_STATUS_CHANNEL).then((value: unknown) => {
+      if (mounted && isModelDeliveryStatus(value)) setModelStatus(value)
+    }).catch(() => {
+      if (mounted) setModelStatus({ phase: 'missing', receivedBytes: 0, totalBytes: 0, percent: 0 })
+    })
+    const cleanup = window.electron.ipcRenderer.on(MODEL_PROGRESS_CHANNEL, (_event: unknown, value: unknown) => {
+      if (isModelDeliveryStatus(value)) {
+        setModelStatus(value)
+        if (value.phase === 'ready' && validation) {
+          setValidation({ ...validation, model: true, modelWarning: undefined })
+        }
+      }
+    })
+    return () => {
+      mounted = false
+      cleanup()
+    }
+  }, [validation, setValidation])
+
+  useEffect(() => {
+    let mounted = true
+    void window.electron.ipcRenderer.invoke(MEDIA_RUNTIME_GET_STATUS_CHANNEL).then((value: unknown) => {
+      if (mounted && isModelDeliveryStatus(value)) setMediaRuntimeStatus(value)
+    }).catch(() => {
+      if (mounted) setMediaRuntimeStatus({ phase: 'missing', receivedBytes: 0, totalBytes: 0, percent: 0 })
+    })
+    const cleanup = window.electron.ipcRenderer.on(MEDIA_RUNTIME_PROGRESS_CHANNEL, (_event: unknown, value: unknown) => {
+      if (isModelDeliveryStatus(value)) {
+        setMediaRuntimeStatus(value)
+        if (value.phase === 'ready' && validation) setValidation({ ...validation, ffmpeg: true, ffprobe: true })
+      }
+    })
+    return () => {
+      mounted = false
+      cleanup()
+    }
+  }, [validation, setValidation])
+
+  const handleModelDownload = useCallback(async () => {
+    setModelStatus({ phase: 'downloading', receivedBytes: 0, totalBytes: 0, percent: 0 })
+    try {
+      const value: unknown = await window.electron.ipcRenderer.invoke(MODEL_DOWNLOAD_CHANNEL)
+      if (!isModelDeliveryResult(value)) throw new Error('Model download returned an invalid response.')
+      setModelStatus(value.status)
+      if (value.ok) {
+        if (validation) setValidation({ ...validation, model: true, modelWarning: undefined })
+        useToast.getState().success('Transcription model installed and ready.')
+      } else if (value.status.phase === 'error') {
+        useToast.getState().error(value.status.error ?? 'Model download failed. Try again.')
+      }
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Model download failed. Try again.'
+      setModelStatus({ phase: 'error', receivedBytes: 0, totalBytes: 0, percent: null, error: message })
+      useToast.getState().error(message)
+    }
+  }, [validation, setValidation])
+
+  const handleModelCancel = useCallback(() => {
+    void window.electron.ipcRenderer.invoke(MODEL_CANCEL_CHANNEL)
+  }, [])
+
+  const handleMediaRuntimeInstall = useCallback(async (channel: typeof MEDIA_RUNTIME_DOWNLOAD_CHANNEL | typeof MEDIA_RUNTIME_INSTALL_LOCAL_CHANNEL) => {
+    setMediaRuntimeStatus({ phase: 'downloading', receivedBytes: 0, totalBytes: 0, percent: null })
+    try {
+      const value: unknown = await window.electron.ipcRenderer.invoke(channel)
+      if (!isModelDeliveryResult(value)) throw new Error('FFmpeg installation returned an invalid response.')
+      setMediaRuntimeStatus(value.status)
+      if (value.ok) {
+        if (validation) setValidation({ ...validation, ffmpeg: true, ffprobe: true })
+        useToast.getState().success('FFmpeg is installed. Editing and export now work offline.')
+      } else if (value.status.phase === 'error') {
+        useToast.getState().error(value.status.error ?? 'FFmpeg installation failed. Try again.')
+      }
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'FFmpeg installation failed. Try again.'
+      setMediaRuntimeStatus({ phase: 'error', receivedBytes: 0, totalBytes: 0, percent: null, error: message })
+      useToast.getState().error(message)
+    }
+  }, [validation, setValidation])
+
+  const handleMediaRuntimeCancel = useCallback(() => {
+    void window.electron.ipcRenderer.invoke(MEDIA_RUNTIME_CANCEL_CHANNEL)
+  }, [])
+
   // Listen for startup validation result from main process
   useEffect(() => {
     const cleanup = window.electron.ipcRenderer.on('startup:validation', (_event: unknown, data: unknown) => {
@@ -201,7 +314,10 @@ export default function Page(): JSX.Element {
       ) {
         useExport.getState().setJobStatus(d.jobId!, d.status as 'completed' | 'cancelled' | 'error', d.error)
         if (d.status === 'completed') useToast.getState().success('Export job completed')
-        if (d.status === 'error') useToast.getState().error(d.error ? `Export failed: ${d.error}` : 'Export job failed')
+        if (d.status === 'error') {
+          const detail = `Export job: ${d.jobId ?? 'unknown'}\nStatus: ${d.status}\nError: ${d.error ?? 'No failure details supplied.'}`
+          useToast.getState().error(d.error ? `Export failed: ${d.error}` : 'Export job failed', detail)
+        }
       }
     })
     return () => {
@@ -343,10 +459,37 @@ export default function Page(): JSX.Element {
             className="validation-banner"
           >
             <span>
-              {validation?.modelWarning
-                ? validation.modelWarning
-                : `Missing dependencies: ${missingItems.join(', ')}. Some features may not work.`}
+              {validation?.modelWarning ??
+                `Missing dependencies: ${missingItems.join(', ')}. ${!validation?.ffmpeg ? 'Offline media runtime missing: install FFmpeg once to enable media import, preview, and export. It stays available offline afterward.' : 'Some features may not work.'}`}
+              {mediaRuntimeStatus?.phase === 'ready' && validation?.ffmpeg && ' Media runtime ready; editing and export work offline.'}
+              {mediaRuntimeStatus?.phase === 'downloading' && ` Media runtime installing: ${mediaRuntimeStatus.percent === null ? `${Math.round(mediaRuntimeStatus.receivedBytes / 1_048_576)} MB` : `${Math.round(mediaRuntimeStatus.percent)}%`}.`}
+              {mediaRuntimeStatus?.phase === 'verifying' && ' Checking and installing the media runtime…'}
+              {mediaRuntimeStatus?.phase === 'error' && ` ${mediaRuntimeStatus.error ?? 'FFmpeg installation failed.'}`}
+              {modelStatus?.phase === 'downloading' && ` Downloading model: ${modelStatus.percent === null ? `${Math.round(modelStatus.receivedBytes / 1_048_576)} MB` : `${Math.round(modelStatus.percent)}%`}.`}
+              {modelStatus?.phase === 'verifying' && ' Verifying downloaded model…'}
+              {modelStatus?.phase === 'error' && ` ${modelStatus.error ?? 'Model download failed.'}`}
             </span>
+            {!validation?.ffmpeg && mediaRuntimeStatus?.phase !== 'downloading' && mediaRuntimeStatus?.phase !== 'verifying' && (
+              <>
+                <button className="btn btn-primary" onClick={() => void handleMediaRuntimeInstall(MEDIA_RUNTIME_DOWNLOAD_CHANNEL)}>
+                  {mediaRuntimeStatus?.phase === 'error' ? 'Retry FFmpeg download' : 'Download FFmpeg (~104 MB)'}
+                </button>
+                <button className="btn btn-secondary" onClick={() => void handleMediaRuntimeInstall(MEDIA_RUNTIME_INSTALL_LOCAL_CHANNEL)}>
+                  Install from local archive
+                </button>
+              </>
+            )}
+            {!validation?.model && modelStatus?.phase !== 'downloading' && modelStatus?.phase !== 'verifying' && (
+              <button className="btn btn-primary" onClick={() => void handleModelDownload()}>
+                {modelStatus?.phase === 'error' ? 'Retry model download' : 'Download transcription model'}
+              </button>
+            )}
+            {(mediaRuntimeStatus?.phase === 'downloading' || mediaRuntimeStatus?.phase === 'verifying') && (
+              <button className="btn btn-secondary" onClick={handleMediaRuntimeCancel}>Cancel FFmpeg install</button>
+            )}
+            {(modelStatus?.phase === 'downloading' || modelStatus?.phase === 'verifying') && (
+              <button className="btn btn-secondary" onClick={handleModelCancel}>Cancel</button>
+            )}
             <button
               className="validation-banner-dismiss"
               onClick={dismissBanner}

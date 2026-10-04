@@ -364,7 +364,9 @@ export function hitTest(
   // stay hit-testable at 12px; the old 36px band no longer leaks below.
   for (let li = lanes.length - 1; li >= 0; li--) {
     const lane = lanes[li]
-    if (y < lane.y - RULER_H || y >= lane.y - RULER_H + lane.h + LANE_GAP) continue
+    // The inter-row gap is not part of a lane; this matters for collapsed
+    // audio rows where the old full-height band could select a neighbor.
+    if (y < lane.y - RULER_H || y >= lane.y - RULER_H + lane.h) continue
 
     if (lane.trackKind === 'video') {
       // Reverse-iterate clips so topmost-drawn clip gets priority

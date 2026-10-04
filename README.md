@@ -1,10 +1,10 @@
 # Clipzu Desktop Beta
 
-Cross-platform desktop video editor (Windows, macOS, Linux) with offline Whisper transcription, caption styling, and multi-format export. CapCut replacement for stitch → caption → export workflows.
+Desktop video editor with offline Whisper transcription, caption styling, and multi-format export. The current packaged beta target is Windows x64. Editing and export work offline after the pinned media runtime is installed once; transcription needs a separate one-time model download.
 
 **Website:** [clipzu.com](https://clipzu.com)
 
-> **Runs natively on all three desktop platforms.** The app is Electron + React and uses only cross-platform primitives (Node `fs`/`child_process.spawn`, Web Audio, Canvas). Per-OS binaries (FFmpeg/ffprobe/whisper-cli) are swapped in `resources/bin/` by OS/arch — see [Quick Start](#quick-start) and [Platform Setup](#platform-setup).
+> The editor uses cross-platform application code, but packaged macOS and Linux media-runtime bundles have not been validated for this beta. The release gate currently targets Windows x64.
 
 ## Features
 
@@ -73,9 +73,9 @@ Cross-platform desktop video editor (Windows, macOS, Linux) with offline Whisper
 
 | Component | Version | Required For | Notes |
 |---|---|---|---|
-| **Node.js** | 18+ | Development & build | Download from https://nodejs.org |
-| **npm** | 9+ | Package management | Bundled with Node.js 18+ |
-| **FFmpeg / ffprobe** | 5.0+ | Video processing, export | Per-OS build in `resources/bin/` (`ffmpeg.exe` on Windows; `ffmpeg` on macOS/Linux) |
+| **Node.js** | 24.21.0 | Development & build | Pinned by `.nvmrc` and `engines.node` |
+| **npm** | Node-bundled | Package management | Use `npm ci` with the committed lockfile |
+| **FFmpeg / ffprobe** | 8.1.2 essentials | Video processing, export | Windows beta downloads the pinned archive once to per-user app data; local archive installation supports offline setup |
 | **whisper-cli** | 1.8.x | Offline transcription | Per-OS build in `resources/bin/` (`whisper-cli.exe` on Windows; `whisper-cli` elsewhere) |
 | **Whisper Model** | GGML format | Auto-captions | Download to `models/` (dev) or `resources/models/` (packaged) |
 | **MSVC Runtime** | 2015-2022 | Windows only | Checks for `msvcp140.dll` at startup (non-Windows skips this) |
@@ -107,6 +107,7 @@ Whisper binary selection is based on CPU capabilities (auto-detected at runtime)
 
 ### Windows
 
+- **FFmpeg runtime (packaged beta)**: on first launch, download the checksum-pinned FFmpeg 8.1.2 essentials archive (~104 MB), or select that archive from local storage. Clipzu verifies the archive, installs only `ffmpeg.exe` and `ffprobe.exe` into user data, and then edits/exports offline. A removed or damaged runtime can be reinstalled the same way.
 - **Visual C++ Redistributable 2015-2022**: required by `whisper-cli.exe` / `ffmpeg.exe`
   - Startup validation checks for `C:\Windows\System32\msvcp140.dll`
   - Download: https://aka.ms/vs/17/release/vc_redist.x64.exe
@@ -134,23 +135,19 @@ Whisper binary selection is based on CPU capabilities (auto-detected at runtime)
 
 All commands run from the repository root. Works on Windows (PowerShell/CMD), macOS, and Linux.
 
-### 1. Install Node.js 18+ and FFmpeg
+### 1. Install Node.js 24.21.0
 
-| OS | Node.js | FFmpeg |
-|---|---|---|
-| Windows | https://nodejs.org or `winget install OpenJS.NodeJS.LTS` | `winget install Gyan.FFmpeg` (or bundle in `resources/bin/`) |
-| macOS | `brew install node` | `brew install ffmpeg` (or bundle in `resources/bin/`) |
-| Linux | `sudo apt install nodejs npm` | `sudo apt install ffmpeg` (or bundle in `resources/bin/`) |
+Use the version in `.nvmrc` (or install Node.js 24.21.0 from the Node.js release archive). The packaged Windows app obtains its media runtime on first launch; development uses the lockfile's static binaries.
 
-> For a **self-contained build** (no system FFmpeg), drop the per-OS `ffmpeg`/`ffprobe` binaries into `resources/bin/` — the app prefers bundled binaries in production and falls back to `ffmpeg-static`/`ffprobe-static` in development. On Windows the binaries are `ffmpeg.exe` / `ffprobe.exe`; on macOS/Linux they are named `ffmpeg` / `ffprobe`.
+For offline first use, download the pinned FFmpeg archive on a connected computer and copy it to the target computer; choose **Install from local archive** in Clipzu. Only the matching 8.1.2 Gyan archive is accepted.
 
 ### 2. Install dependencies
 
 ```bash
-npm install
+npm ci
 ```
 
-This also compiles the native `better-sqlite3` module for your OS/arch (macOS may need `xcode-select --install` first; Linux needs `build-essential`).
+The postinstall step installs the `better-sqlite3` prebuilt binary for Electron 30, without requiring a local C++ compiler.
 
 ### 3. Download a Whisper model
 
@@ -202,8 +199,9 @@ npm run typecheck
 ```
 
 Notes:
-- **FFmpeg/whisper binaries**: package per-OS binaries into `resources/bin/` before `dist:*` (they are copied via `extraResources`).
-- **Whisper model**: put the chosen model in `resources/models/` so packaged builds ship with it; otherwise end users must add it to the app's data folder.
+- **Windows x64 release**: the installer excludes the FFmpeg/ffprobe pair; first-run setup installs the pinned archive to writable per-user storage. The verified runtime remains available offline afterward.
+- **Whisper model**: downloads on first transcription to per-user app data and is never bundled into the installer.
+- **macOS/Linux packages**: require target-specific media-runtime packs and a separate validation pass; these packaged targets are not release-ready.
 - **macOS signing/notarization** is disabled by default (`electron-builder.yml` → `notarize: false`). Set your Apple credentials to sign for distribution.
 - **Linux** `.AppImage` requires `libfuse2` to run on the target machine.
 - **Windows** installers are built unsigned unless a code-signing certificate is configured.
@@ -213,7 +211,7 @@ Notes:
 ```bash
 npm run dev          # hot-reload dev mode
 npm run typecheck    # typecheck main+preload and renderer tsconfigs
-npm run test:project-format   # project-format / export / relink regression tests (96 tests)
+npm run test:project-format   # project-format / export / relink and runtime downloader tests
 ```
 
 `build.bat` (Windows) wraps these; `build.bat --pack` runs a packaged build.
@@ -234,7 +232,7 @@ npm run test:project-format   # project-format / export / relink regression test
 
 ## VPS / Server Deployment
 
-Clipzu uses **better-sqlite3** for thumbnail caching. On a Linux VPS, native module compilation may be required during `npm install` (install `build-essential` and `python3`). No other native build steps are needed.
+Clipzu uses **better-sqlite3** for thumbnail caching. On supported local installs, `npm ci` uses its Electron-compatible prebuilt binary; the runtime installer does not compile it from source.
 
 ### Minimum VPS Specs
 

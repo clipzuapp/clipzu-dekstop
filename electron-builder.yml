@@ -3,19 +3,80 @@ productName: Clipzu Desktop Beta
 directories:
   buildResources: build
   output: dist
+electronLanguages:
+  - en-US
 files:
+  - 'out/**'
+  - 'package.json'
   - '!**/.vscode/*'
   - '!src/*'
   - '!electron.vite.config.{js,ts,mjs,cjs}'
   - '!{.eslintignore,.eslintrc.cjs,.prettierignore,.prettierrc.yaml,dev-app-update.yml,CHANGELOG.md,README.md}'
   - '!{tsconfig.json,tsconfig.node.json,tsconfig.web.json}'
   - '!{tailwind.config.ts,postcss.config.js}'
+  # P5.1 diet (audit B3): dev-only static binaries are unreachable inside
+  # asar (cannot spawn from it) — the packaged app runs resources/bin only.
+  - '!node_modules/ffmpeg-static/**'
+  - '!node_modules/ffprobe-static/**'
+  # P5.1: ffmpeg docs + player + whisper utilities no code path invokes.
+  # Kept: ffmpeg/ffprobe/whisper-cli executables + all *.dll (ggml runtime).
+  - '!resources/bin/doc/**'
+  - '!**/ffplay*'
+  - '!**/whisper-{server,stream,talk-llama,bench,quantize,command,lsp,stream}*'
+  - '!**/whisper-vad-*'
+  - '!**/test-vad*'
+  - '!**/test-*.exe'
+  - '!**/wchess.exe'
+  - '!**/main.exe'
+  - '!**/bench.exe'
+  - '!**/command.exe'
+  - '!**/{stream,quantize}.exe'
+  # No source maps, test corpora, coverage reports, type declarations, or TS
+  # incremental caches are required by the production runtime.
+  - '!node_modules/**/*.map'
+  - '!node_modules/**/*.d.ts'
+  - '!node_modules/**/*.d.mts'
+  - '!node_modules/**/*.d.cts'
+  - '!node_modules/**/coverage/**'
+  - '!node_modules/**/test/**'
+  - '!node_modules/**/tests/**'
+  - '!node_modules/**/docs/**'
+  - '!node_modules/**/doc/**'
+  - '!out/**/*.tsbuildinfo'
+  # better-sqlite3 ships its SQLite amalgamation and C++ sources for builds;
+  # runtime needs only the Electron-ABI-specific addon binary.
+  - '!node_modules/better-sqlite3/deps/**'
+  - '!node_modules/better-sqlite3/src/**'
+  - 'node_modules/better-sqlite3/build/Release/better_sqlite3.node'
+  # P5.1: dev models, one-time scripts, local notes, and test/data scratch
+  # never ship (gitignore is not a pack filter — these MUST be excluded here).
+  - '!models/**'
+  - '!models-test/**'
+  - '!test/**'
+  - '!test_media.ps1'
+  - '!scripts/**'
+  - '!out-test/**'
+  - '!data/**'
+  - '!task.txt'
+  - '!audit*.txt'
+  - '!roadmap.md'
+  - '!TASK*.md'
+  - '!WORKFLOW.md'
+  - '!*.log'
+  - '!blueprint/**'
+  - '!.qoder/**'
+  - '!.vscode/**'
+  # P5.1: unpacked runtime copies come from extraResources below — never asar.
+  - '!resources/**'
+  - '!assets/**'
+  - '!build/runtime-bin/**'
 asarUnpack:
-  - resources/**
-  - node_modules/better-sqlite3/**
+  - node_modules/better-sqlite3/build/Release/better_sqlite3.node
+npmRebuild: false
 win:
   executableName: clipzu
   icon: build/icon.ico
+  signAndEditExecutable: true
   target:
     - nsis
 nsis:
@@ -25,10 +86,12 @@ nsis:
   createDesktopShortcut: always
 mac:
   icon: build/icon.icns
+  notarize: true
+  hardenedRuntime: true
+  entitlements: build/entitlements.mac.plist
   entitlementsInherit: build/entitlements.mac.plist
   extendInfo:
     - NSDocumentsFolderUsageDescription: Application requests access to the user's Documents folder.
-  notarize: false
   target:
     - target: dmg
       arch:
@@ -44,15 +107,24 @@ linux:
 appImage:
   artifactName: ${name}-${version}.${ext}
 extraResources:
-  - from: resources/bin/
+  # The prepare-runtime-resources script stages only the host platform/arch
+  # binaries and their shared libraries here. It fails closed if unavailable.
+  - from: build/runtime-bin/
     to: bin/
     filter:
       - '**/*'
-  - from: resources/models/
-    to: models/
-    filter:
-      - '**/*'
-  - from: assets/
+  # P5.1: icon + SFX library mp3s (live AudioPanel feature) + burn-in fonts.
+  # Docs/text/zips never ship.
+  - from: build/package-assets/
     to: assets/
     filter:
       - '**/*'
+  - from: resources/bin/LICENSE
+    to: licenses/GPL-3.0.txt
+  - from: third_party/ffmpeg/NOTICE.md
+    to: licenses/FFmpeg-NOTICE.md
+publish:
+  provider: github
+  owner: clipzuapp
+  repo: clipzu-dekstop
+  releaseType: draft

@@ -14,6 +14,7 @@
  */
 
 import type { CaptionStyle } from '../types/caption'
+import type { ModelDeliveryResult, ModelDeliveryStatus } from '../modelCatalog'
 import type {
   CanonicalClip,
   CanonicalAudioTrack,
@@ -47,6 +48,54 @@ export const MENU_CHANNELS: readonly MenuChannel[] = [
   MENU.save,
   MENU.saveAs,
 ]
+
+export const MODEL_GET_STATUS_CHANNEL = 'model:getStatus' as const
+export const MODEL_DOWNLOAD_CHANNEL = 'model:download' as const
+export const MODEL_CANCEL_CHANNEL = 'model:cancel' as const
+export const MODEL_PROGRESS_CHANNEL = 'model:progress' as const
+export const MEDIA_RUNTIME_GET_STATUS_CHANNEL = 'mediaRuntime:getStatus' as const
+export const MEDIA_RUNTIME_DOWNLOAD_CHANNEL = 'mediaRuntime:download' as const
+export const MEDIA_RUNTIME_INSTALL_LOCAL_CHANNEL = 'mediaRuntime:installLocal' as const
+export const MEDIA_RUNTIME_CANCEL_CHANNEL = 'mediaRuntime:cancel' as const
+export const MEDIA_RUNTIME_PROGRESS_CHANNEL = 'mediaRuntime:progress' as const
+export const DIAGNOSTICS_EXPORT_CHANNEL = 'diagnostics:export' as const
+export const MODEL_INVOKE_CHANNELS = [
+  MODEL_GET_STATUS_CHANNEL,
+  MODEL_DOWNLOAD_CHANNEL,
+  MODEL_CANCEL_CHANNEL,
+] as const
+
+export const MEDIA_RUNTIME_INVOKE_CHANNELS = [
+  MEDIA_RUNTIME_GET_STATUS_CHANNEL,
+  MEDIA_RUNTIME_DOWNLOAD_CHANNEL,
+  MEDIA_RUNTIME_INSTALL_LOCAL_CHANNEL,
+  MEDIA_RUNTIME_CANCEL_CHANNEL,
+] as const
+
+export interface ModelIpcContract {
+  [MODEL_GET_STATUS_CHANNEL]: { args: []; result: ModelDeliveryStatus }
+  [MODEL_DOWNLOAD_CHANNEL]: { args: []; result: ModelDeliveryResult }
+  [MODEL_CANCEL_CHANNEL]: { args: []; result: { cancelled: boolean } }
+  [MODEL_PROGRESS_CHANNEL]: { args: [status: ModelDeliveryStatus]; result: void }
+}
+
+export interface MediaRuntimeIpcContract {
+  [MEDIA_RUNTIME_GET_STATUS_CHANNEL]: { args: []; result: ModelDeliveryStatus }
+  [MEDIA_RUNTIME_DOWNLOAD_CHANNEL]: { args: []; result: ModelDeliveryResult }
+  [MEDIA_RUNTIME_INSTALL_LOCAL_CHANNEL]: { args: []; result: ModelDeliveryResult }
+  [MEDIA_RUNTIME_CANCEL_CHANNEL]: { args: []; result: { cancelled: boolean } }
+  [MEDIA_RUNTIME_PROGRESS_CHANNEL]: { args: [status: ModelDeliveryStatus]; result: void }
+}
+
+export interface DiagnosticExportResult {
+  ok: boolean
+  canceled?: boolean
+  error?: string
+}
+
+export interface DiagnosticIpcContract {
+  [DIAGNOSTICS_EXPORT_CHANNEL]: { args: []; result: DiagnosticExportResult }
+}
 
 // ---------------------------------------------------------------------------
 // Project persistence (renderer → main invoke)

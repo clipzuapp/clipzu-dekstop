@@ -13,6 +13,8 @@
     "src/shared/**/*.ts",
     "src/main/project/**/*.ts",
     "src/main/services/FFmpegService.ts",
+    "src/main/services/DiagnosticLog.ts",
+    "src/main/services/diagnosticBundle.ts",
     "src/renderer/store/useTimeline.ts",
     "src/renderer/timeline/interaction.ts",
     "src/renderer/store/useProject.ts",

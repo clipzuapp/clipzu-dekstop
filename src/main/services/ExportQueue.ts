@@ -2,6 +2,7 @@ import { ChildProcess } from 'child_process'
 import { BrowserWindow } from 'electron'
 import { unlink } from 'fs/promises'
 import { FFmpegService, FFmpegProgress, ClipTransformExport } from './FFmpegService'
+import { writeDiagnostic } from './DiagnosticLog'
 import type { ExportCaptionStyle } from '../../shared/utils/srt'
 import type {
   ExportAnimatedFilter,
@@ -217,6 +218,9 @@ class ExportQueueManager {
     this.activeJobs.set(job.id, { job, process: ffmpegProcess, controller, tempFiles })
 
     const finishJob = async (status: ExportJob['status'], error?: string): Promise<void> => {
+      if (status === 'error') {
+        writeDiagnostic('ERROR', 'export.failed', `job=${job.id} ${error ?? 'Unknown export error'}`)
+      }
       await cleanupTempFiles(tempFiles)
       job.status = status
       job.error = error

@@ -59,7 +59,11 @@ export function parseSRT(content: string): CaptionEntry[] {
       parseInt(timeMatch[8])
     const text = lines.slice(2).join('\n').trim()
 
-    if (text) {
+    // P6.4 fuzz hardening: backwards timestamps (end < start) are malformed
+    // input, not captions — drop them at parse time so no downstream stage
+    // (timeline, preview, export) ever sees a negative-duration entry.
+    // Zero-length entries are kept (harmless; export skips them).
+    if (text && endMs >= startMs) {
       entries.push({ id: `cap_${id++}`, startMs, endMs, text })
     }
   }

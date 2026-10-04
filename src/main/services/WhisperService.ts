@@ -221,7 +221,7 @@ export class WhisperService {
   /** Results from the most recent model validation (startup or diagnostic) */
   private lastValidation: ModelCompatibilityInfo | null = null
 
-  constructor(private readonly modelPath: string, ffmpeg?: FFmpegService) {
+  constructor(private modelPath: string, ffmpeg?: FFmpegService) {
     this.activeModelPath = modelPath
     this.ffmpeg = ffmpeg ?? null
   }
@@ -1099,6 +1099,14 @@ export class WhisperService {
    */
   getActiveModelPath(): string {
     return this.activeModelPath
+  }
+
+  /** Use a newly installed model without requiring an application restart. */
+  setModelPath(modelPath: string): void {
+    this.modelPath = modelPath
+    this.activeModelPath = modelPath
+    this.lastValidation = null
+    this.invalidateModelCache()
   }
 
   /**
